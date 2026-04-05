@@ -332,3 +332,36 @@ python train.py --max-train-queries 2000 --max-val-queries 400
 # 4) 对比评测
 python eval_compare.py --rl-adapter-path artifacts/checkpoints/best
 ```
+
+---
+
+## 14. 低显存模式（`--low-mem-mode`）
+
+如果你的机器显存较小（例如 6GB），可以直接使用：
+
+```bash
+python train.py --low-mem-mode
+```
+
+该模式会自动应用一组保守参数（用于跑通链路，不是最终效果配置）：
+
+1. 模型切换为 `Qwen/Qwen2.5-0.5B-Instruct`
+2. `batch_size=1`
+3. `group_size=1`
+4. `max_new_tokens=8`
+5. `max_train_queries=64`
+6. `max_val_queries=32`
+7. `max_steps=20`
+8. 输出目录改为 `artifacts_lowmem/`
+
+你仍然可以在低显存模式下覆盖参数，例如：
+
+```bash
+python train.py --low-mem-mode --max-steps 50 --max-train-queries 128
+```
+
+Windows PowerShell 示例：
+
+```powershell
+python train.py --low-mem-mode --max-steps 50 --max-train-queries 128
+```

@@ -54,7 +54,46 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--save-dir", type=str, default=None)
     parser.add_argument("--log-path", type=str, default=None)
     parser.add_argument("--adapter-path", type=str, default=None, help="Optional LoRA adapter for warm start.")
+    parser.add_argument(
+        "--low-mem-mode",
+        action="store_true",
+        help="Use an aggressive low-memory preset (for 6GB-class GPU quick smoke runs).",
+    )
     return parser.parse_args()
+
+
+def apply_low_mem_mode(config: AppConfig) -> AppConfig:
+    """Apply a conservative low-memory preset.
+
+    This preset is designed for machines with very limited VRAM (e.g. 6GB).
+    It targets *pipeline validation* rather than final-quality training.
+    """
+
+    # Use a smaller model to fit actor+ref on low-VRAM cards.
+    config.model.model_name = "Qwen/Qwen2.5-0.5B-Instruct"
+    config.model.load_in_4bit = True
+    config.model.lora_r = 8
+    config.model.lora_alpha = 16
+    config.model.lora_dropout = 0.05
+
+    # Keep per-step memory footprint as low as possible.
+    config.train.batch_size = 1
+    config.train.group_size = 1
+    config.train.max_new_tokens = 8
+    config.train.temperature = 0.8
+    config.train.top_p = 0.9
+    config.train.eval_every_steps = 10
+    config.train.max_steps = 20
+    config.train.num_epochs = 1
+
+    # Reduce dataset size for quick end-to-end verification.
+    config.data.max_train_queries = 64
+    config.data.max_val_queries = 32
+
+    # Keep outputs separate from normal runs.
+    config.train.save_dir = "artifacts_lowmem/checkpoints"
+    config.train.log_path = "artifacts_lowmem/train_log.jsonl"
+    return config
 
 
 def apply_overrides(config: AppConfig, args: argparse.Namespace) -> AppConfig:
@@ -190,12 +229,18 @@ def main() -> int:
     """训练主流程。"""
 
     args = parse_args()
-    config = apply_overrides(get_default_config(), args)
+    config = get_default_config()
+    if args.low_mem_mode:
+        config = apply_low_mem_mode(config)
+    # CLI explicit values should still win over low-mem preset.
+    config = apply_overrides(config, args)
     ensure_runtime_dirs(config)
     set_seed(config.data.seed)
 
     print("[config]")
     print(json.dumps(config.to_dict(), ensure_ascii=False, indent=2))
+    if args.low_mem_mode:
+        print("[mode] low-mem preset enabled (intended for smoke tests on limited VRAM).")
 
     # 数据来源严格使用 Pyserini 预编译 topics/qrels。
     queries, qrels = load_topics_qrels(config.data.topic_name)
