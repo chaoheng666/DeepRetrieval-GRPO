@@ -27,6 +27,7 @@ def parse_args() -> argparse.Namespace:
 
     parser = argparse.ArgumentParser(description="Compare Original vs Zero-shot vs RL-rewritten query MRR@10.")
     parser.add_argument("--rl-adapter-path", type=str, required=True, help="Path to trained LoRA adapter.")
+    parser.add_argument("--model-name", type=str, default=None, help="Override base model name for evaluation.")
     parser.add_argument("--topic-name", type=str, default=None)
     parser.add_argument("--prebuilt-index", type=str, default=None)
     parser.add_argument("--train-ratio", type=float, default=None)
@@ -35,12 +36,26 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sample-print", type=int, default=5)
     parser.add_argument("--report-path", type=str, default="artifacts/eval_compare_report.json")
     parser.add_argument("--max-new-tokens", type=int, default=None)
+    parser.add_argument(
+        "--low-mem-mode",
+        action="store_true",
+        help="Use low-memory evaluation preset (0.5B model + slim index + smaller eval set).",
+    )
     return parser.parse_args()
 
 
 def apply_overrides(config: AppConfig, args: argparse.Namespace) -> AppConfig:
     """应用配置覆盖参数。"""
 
+    if args.low_mem_mode:
+        config.model.model_name = "Qwen/Qwen2.5-0.5B-Instruct"
+        config.data.prebuilt_index = "msmarco-v1-passage-slim"
+        config.data.max_val_queries = 100
+        config.train.max_new_tokens = 16
+        config.reward.topk = 20
+
+    if args.model_name is not None:
+        config.model.model_name = args.model_name
     if args.topic_name is not None:
         config.data.topic_name = args.topic_name
     if args.prebuilt_index is not None:
@@ -61,7 +76,7 @@ def evaluate_original(queries: Sequence[QueryExample], rewarder: Rewarder) -> tu
 
     per_qid: dict[str, RewardBreakdown] = {}
     for query in queries:
-        per_qid[query.qid] = rewarder.score(query.qid, query.text)
+        per_qid[query.qid] = rewarder.score(query.qid, query.text, source_query=query.text)
 
     values = list(per_qid.values())
     return (
@@ -91,7 +106,7 @@ def evaluate_with_model(
             temperature=0.0,
             top_p=1.0,
         )
-        per_qid[query.qid] = (rewritten, rewarder.score(query.qid, rewritten))
+        per_qid[query.qid] = (rewritten, rewarder.score(query.qid, rewritten, source_query=query.text))
 
     values = [item[1] for item in per_qid.values()]
     return (
@@ -108,6 +123,9 @@ def main() -> int:
 
     args = parse_args()
     config = apply_overrides(get_default_config(), args)
+    if args.low_mem_mode:
+        print("[mode] low-mem eval preset enabled.")
+    print(f"[config] model={config.model.model_name}, index={config.data.prebuilt_index}, topk={config.reward.topk}")
 
     # 与训练保持同样的数据切分策略，确保比较公平。
     queries, qrels = load_topics_qrels(config.data.topic_name)

@@ -138,6 +138,7 @@ class GRPOEngine:
         rewards: list[float] = []
         mrr_scores: list[float] = []
         penalties: list[float] = []
+        overlaps: list[float] = []
         all_advantages: list[float] = []
         valid_samples = 0
         sampled = 0
@@ -155,7 +156,7 @@ class GRPOEngine:
                     top_p=self.top_p,
                 )
                 # Step 2: 序列级奖励（检索质量 + 文本质量）。
-                reward = self.rewarder.score(query.qid, generated.response_text)
+                reward = self.rewarder.score(query.qid, generated.response_text, source_query=query.text)
                 sample = Sample(
                     qid=query.qid,
                     prompt=prompt,
@@ -177,6 +178,7 @@ class GRPOEngine:
                 rewards.append(sample.reward)
                 mrr_scores.append(sample.mrr)
                 penalties.append(sample.penalty)
+                overlaps.append(reward.overlap)
 
             for sample in group_samples:
                 # 空生成无法做 token-level 更新，直接跳过。
@@ -237,6 +239,7 @@ class GRPOEngine:
                 "reward_mean": fmean(rewards) if rewards else 0.0,
                 "mrr_mean": fmean(mrr_scores) if mrr_scores else 0.0,
                 "penalty_mean": fmean(penalties) if penalties else 0.0,
+                "overlap_mean": fmean(overlaps) if overlaps else 0.0,
                 "adv_mean": fmean(all_advantages) if all_advantages else 0.0,
                 "adv_std": float(torch.tensor(all_advantages).std(unbiased=False)) if all_advantages else 0.0,
                 "sampled": float(sampled),
@@ -254,6 +257,7 @@ class GRPOEngine:
                 "reward_mean": fmean(rewards) if rewards else 0.0,
                 "mrr_mean": fmean(mrr_scores) if mrr_scores else 0.0,
                 "penalty_mean": fmean(penalties) if penalties else 0.0,
+                "overlap_mean": fmean(overlaps) if overlaps else 0.0,
                 "adv_mean": fmean(all_advantages) if all_advantages else 0.0,
                 "adv_std": float(torch.tensor(all_advantages).std(unbiased=False)) if all_advantages else 0.0,
                 "sampled": float(sampled),
@@ -274,6 +278,7 @@ class GRPOEngine:
             "reward_mean": fmean(rewards) if rewards else 0.0,
             "mrr_mean": fmean(mrr_scores) if mrr_scores else 0.0,
             "penalty_mean": fmean(penalties) if penalties else 0.0,
+            "overlap_mean": fmean(overlaps) if overlaps else 0.0,
             "adv_mean": fmean(all_advantages) if all_advantages else 0.0,
             "adv_std": float(torch.tensor(all_advantages).std(unbiased=False)) if all_advantages else 0.0,
             "sampled": float(sampled),

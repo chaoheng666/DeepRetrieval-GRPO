@@ -47,6 +47,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-new-tokens", type=int, default=None)
     parser.add_argument("--temperature", type=float, default=None)
     parser.add_argument("--top-p", type=float, default=None)
+    parser.add_argument("--reward-topk", type=int, default=None, help="MRR@k reward cutoff, e.g. 10/20/50.")
+    parser.add_argument("--reward-overlap-weight", type=float, default=None, help="Weight for lexical-overlap shaping reward.")
+    parser.add_argument("--reward-mrr-weight", type=float, default=None, help="Weight for MRR reward term.")
     parser.add_argument("--eval-every-steps", type=int, default=None)
     parser.add_argument("--max-steps", type=int, default=None)
     parser.add_argument("--max-train-queries", type=int, default=None)
@@ -69,26 +72,32 @@ def apply_low_mem_mode(config: AppConfig) -> AppConfig:
     It targets *pipeline validation* rather than final-quality training.
     """
 
-    # Use a smaller model to fit actor+ref on low-VRAM cards.
+    # 使用更小模型，降低 actor+ref 双模型同时驻留带来的显存压力。
     config.model.model_name = "Qwen/Qwen2.5-0.5B-Instruct"
     config.model.load_in_4bit = True
     config.model.lora_r = 8
     config.model.lora_alpha = 16
     config.model.lora_dropout = 0.05
 
-    # Keep per-step memory footprint as low as possible.
+    # 尽量降低每步显存占用。
     config.train.batch_size = 1
-    config.train.group_size = 1
-    config.train.max_new_tokens = 8
-    config.train.temperature = 0.8
-    config.train.top_p = 0.9
+    # NOTE: group_size must be >=2 for GRPO to produce non-zero advantage.
+    config.train.group_size = 2
+    config.train.max_new_tokens = 16
+    config.train.temperature = 0.9
+    config.train.top_p = 0.95
     config.train.eval_every_steps = 10
     config.train.max_steps = 20
     config.train.num_epochs = 1
 
-    # Reduce dataset size for quick end-to-end verification.
+    # 缩小数据规模以快速跑通端到端链路。
     config.data.max_train_queries = 64
     config.data.max_val_queries = 32
+    # 使用 slim 预编译索引，首次下载更快（约 0.5GB 级别）。
+    config.data.prebuilt_index = "msmarco-v1-passage-slim"
+    # 低显存快速实验里把奖励窗口放大到 top-20，增加命中概率。
+    config.reward.topk = 20
+    config.reward.overlap_weight = 0.3
 
     # Keep outputs separate from normal runs.
     config.train.save_dir = "artifacts_lowmem/checkpoints"
@@ -130,6 +139,12 @@ def apply_overrides(config: AppConfig, args: argparse.Namespace) -> AppConfig:
         config.train.temperature = args.temperature
     if args.top_p is not None:
         config.train.top_p = args.top_p
+    if args.reward_topk is not None:
+        config.reward.topk = args.reward_topk
+    if args.reward_overlap_weight is not None:
+        config.reward.overlap_weight = args.reward_overlap_weight
+    if args.reward_mrr_weight is not None:
+        config.reward.mrr_weight = args.reward_mrr_weight
     if args.eval_every_steps is not None:
         config.train.eval_every_steps = args.eval_every_steps
     if args.max_steps is not None:
@@ -196,7 +211,7 @@ def evaluate_policy(
             temperature=0.0,
             top_p=1.0,
         )
-        score = rewarder.score(query.qid, rewritten)
+        score = rewarder.score(query.qid, rewritten, source_query=query.text)
         rewards.append(score.total)
         mrr_scores.append(score.mrr)
         penalties.append(score.penalty)
@@ -218,7 +233,7 @@ def evaluate_original(
     """原始 query 基线评估（不做重写）。"""
 
     eval_queries = list(queries[:max_queries]) if max_queries is not None else list(queries)
-    mrr_scores = [rewarder.score(q.qid, q.text).mrr for q in eval_queries]
+    mrr_scores = [rewarder.score(q.qid, q.text, source_query=q.text).mrr for q in eval_queries]
     return {
         "mrr_mean": fmean(mrr_scores) if mrr_scores else 0.0,
         "count": float(len(eval_queries)),
@@ -234,6 +249,21 @@ def main() -> int:
         config = apply_low_mem_mode(config)
     # CLI explicit values should still win over low-mem preset.
     config = apply_overrides(config, args)
+
+    # 低显存模式下，如果 CUDA 不可用，自动切到 CPU 兼容配置，避免 4bit 加载失败。
+    if args.low_mem_mode and not torch.cuda.is_available():
+        config.model.load_in_4bit = False
+        config.model.actor_device_map = "cpu"
+        config.model.ref_device_map = "cpu"
+
+    # GRPO 组内标准化需要至少两个样本。否则 advantage 恒为 0，loss_pg 失效。
+    if config.train.group_size < 2:
+        print(
+            f"[warn] group_size={config.train.group_size} is invalid for GRPO advantage normalization; "
+            "auto-adjusting to 2."
+        )
+        config.train.group_size = 2
+
     ensure_runtime_dirs(config)
     set_seed(config.data.seed)
 
@@ -241,6 +271,8 @@ def main() -> int:
     print(json.dumps(config.to_dict(), ensure_ascii=False, indent=2))
     if args.low_mem_mode:
         print("[mode] low-mem preset enabled (intended for smoke tests on limited VRAM).")
+        if not torch.cuda.is_available():
+            print("[mode] CUDA is unavailable -> switched to CPU-compatible loading (much slower).")
 
     # 数据来源严格使用 Pyserini 预编译 topics/qrels。
     queries, qrels = load_topics_qrels(config.data.topic_name)
@@ -317,7 +349,8 @@ def main() -> int:
             print(
                 f"[train] step={global_step} loss={metrics['loss']:.4f} "
                 f"pg={metrics['loss_pg']:.4f} kl={metrics['loss_kl']:.4f} "
-                f"reward={metrics['reward_mean']:.4f} mrr={metrics['mrr_mean']:.4f}"
+                f"reward={metrics['reward_mean']:.4f} mrr={metrics['mrr_mean']:.4f} "
+                f"overlap={metrics.get('overlap_mean', 0.0):.4f}"
             )
 
             # 周期性做验证并保存 checkpoint。

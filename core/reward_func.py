@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Iterable, Sequence
 
 from app_config import RewardConfig
@@ -39,6 +40,7 @@ class RewardBreakdown:
 
     total: float
     mrr: float
+    overlap: float
     penalty: float
     hit_rank: int | None
     short_penalty: float
@@ -130,6 +132,59 @@ def compute_text_penalty(text: str, cfg: RewardConfig) -> TextPenaltyDetails:
     )
 
 
+def _tokenize_for_overlap(text: str) -> list[str]:
+    return TOKEN_RE.findall(text.lower())
+
+
+def compute_lexical_overlap(source_query: str, rewritten_query: str) -> float:
+    """计算原 query 与重写 query 的词面重叠分（0~1）。
+
+    这里采用集合 Jaccard：
+      |A ∩ B| / |A ∪ B|
+    作为轻量语义保真近似项，避免纯 MRR 过于稀疏导致训练无梯度信号。
+    """
+
+    src = set(_tokenize_for_overlap(source_query))
+    rew = set(_tokenize_for_overlap(rewritten_query))
+    if not src or not rew:
+        return 0.0
+    union = src | rew
+    if not union:
+        return 0.0
+    return len(src & rew) / float(len(union))
+
+
+def clean_rewritten_query(text: str) -> str:
+    """清洗模型输出，提取更适合检索的 query 文本。
+
+    常见问题：
+    - 模型会输出 "Rewritten Query:" / "Search Query:" 前后缀
+    - 会附带解释性句子、多行内容
+    处理策略：
+    1) 若含显式标签，优先取标签后文本
+    2) 否则取第一条非空行
+    3) 去掉包裹引号并压缩空白
+    """
+
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return ""
+
+    markers = ["Rewritten Query:", "Search Query:"]
+    for marker in markers:
+        idx = cleaned.rfind(marker)
+        if idx >= 0:
+            cleaned = cleaned[idx + len(marker) :].strip()
+
+    lines = [ln.strip() for ln in cleaned.splitlines() if ln.strip()]
+    if lines:
+        cleaned = lines[0]
+
+    cleaned = cleaned.strip().strip("'").strip('"')
+    cleaned = " ".join(cleaned.split())
+    return cleaned
+
+
 class Rewarder:
     def __init__(
         self,
@@ -146,7 +201,7 @@ class Rewarder:
 
         from pyserini.search.lucene import LuceneSearcher
 
-        searcher = LuceneSearcher.from_prebuilt_index(prebuilt_index)
+        searcher = self._build_searcher_with_recovery(LuceneSearcher, prebuilt_index)
         if searcher is None:
             raise RuntimeError(f"Failed to initialize prebuilt index: {prebuilt_index}")
 
@@ -155,7 +210,45 @@ class Rewarder:
         self.cfg = reward_cfg
         self.topk = reward_cfg.topk
 
-    def score(self, qid: str, rewritten_query: str) -> RewardBreakdown:
+    @staticmethod
+    def _extract_corrupted_index_path(error_text: str) -> Path | None:
+        """从 Pyserini 的 size mismatch 报错中提取损坏压缩包路径。"""
+
+        # 典型报错形态：
+        # C:\...\file.tar.gz does not match expected file size! ...
+        marker = " does not match expected file size"
+        idx = error_text.find(marker)
+        if idx <= 0:
+            return None
+        path_text = error_text[:idx].strip()
+        candidate = Path(path_text)
+        return candidate if candidate.suffixes else None
+
+    def _build_searcher_with_recovery(self, lucene_searcher_cls, prebuilt_index: str):
+        """构建检索器，遇到损坏索引缓存时自动清理并重试一次。"""
+
+        for attempt in range(2):
+            try:
+                return lucene_searcher_cls.from_prebuilt_index(prebuilt_index)
+            except AssertionError as exc:
+                # Pyserini 下载中断后，缓存 tar.gz 可能尺寸不完整，后续启动会一直失败。
+                # 这里自动删除坏包并重试一次。
+                error_text = str(exc)
+                bad_file = self._extract_corrupted_index_path(error_text)
+                can_recover = (
+                    "does not match expected file size" in error_text
+                    and bad_file is not None
+                    and bad_file.exists()
+                )
+                if can_recover and attempt == 0:
+                    try:
+                        bad_file.unlink()
+                    except OSError:
+                        pass
+                    continue
+                raise
+
+    def score(self, qid: str, rewritten_query: str, source_query: str | None = None) -> RewardBreakdown:
         """为单条重写 query 打分。
 
         流程：
@@ -165,7 +258,7 @@ class Rewarder:
         4. 汇总 total = mrr - penalty
         """
 
-        query = rewritten_query.strip()
+        query = clean_rewritten_query(rewritten_query)
         relevant_docids = self.qrels.get(str(qid), set())
 
         hits_docids: list[str] = []
@@ -179,11 +272,13 @@ class Rewarder:
                 hits_docids = []
 
         mrr, hit_rank = compute_mrr_at_k(hits_docids, relevant_docids, topk=self.topk)
+        overlap = compute_lexical_overlap(source_query or "", query) if source_query else 0.0
         penalty = compute_text_penalty(query, self.cfg)
-        total = mrr - penalty.total
+        total = self.cfg.mrr_weight * mrr + self.cfg.overlap_weight * overlap - penalty.total
         return RewardBreakdown(
             total=total,
             mrr=mrr,
+            overlap=overlap,
             penalty=penalty.total,
             hit_rank=hit_rank,
             short_penalty=penalty.short,

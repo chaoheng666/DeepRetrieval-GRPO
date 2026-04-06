@@ -216,6 +216,12 @@ python train.py \
 python eval_compare.py --rl-adapter-path artifacts/checkpoints/best
 ```
 
+低显存训练产物推荐这样评估（更快）：
+
+```bash
+python eval_compare.py --rl-adapter-path artifacts_lowmem/checkpoints/best --low-mem-mode
+```
+
 ## 7.2 输出更多样例 + 自定义报告路径
 
 ```bash
@@ -236,6 +242,8 @@ python eval_compare.py \
 ## 7.4 常用参数说明（评测）
 
 - `--rl-adapter-path`：必填，RL adapter 目录  
+- `--model-name`：覆盖评测基础模型（adapter 必须与该模型匹配）  
+- `--low-mem-mode`：评测低显存预设（0.5B + slim 索引 + 较小样本）  
 - `--sample-print`：打印样例数量  
 - `--max-eval-queries`：评估样本数上限  
 - `--report-path`：评测结果 JSON 输出路径  
@@ -277,9 +285,58 @@ python eval_compare.py \
 2. Java 是否安装并可用（`java -version`）  
 3. pip 是否最新（`python -m pip install --upgrade pip`）  
 
+## 10.1.1 `UnsupportedClassVersionError`（你遇到的这个）
+
+报错特征（示例）：
+
+```text
+... compiled by a more recent version ...
+... only recognizes class file versions up to 62.0
+```
+
+这表示：运行时 Java 太低（62=Java 18），而当前 Pyserini 需要 Java 21（65）或更高。
+
+本项目已在 `data/loader.py` 里加入自动修复逻辑：
+
+1. 若 `JAVA_HOME` 太低，但 PATH 上 `java` 足够新，会自动切换到新 JDK  
+2. 若两者都不满足，会给出明确错误说明
+
+你也可以手动修复（Windows PowerShell）：
+
+```powershell
+$env:JAVA_HOME = "D:\JDK"        # 改成你自己的 JDK21+ 路径
+$env:Path = "$env:JAVA_HOME\\bin;$env:Path"
+java -version
+python train.py --low-mem-mode
+```
+
 ## 10.2 首次运行很慢
 
 这是正常现象，通常是 Pyserini 在下载预编译索引与评测资源缓存。
+
+## 10.2.1 预编译索引下载中断后报尺寸不匹配
+
+报错示例：
+
+```text
+... does not match expected file size! Expecting ..., got ...
+```
+
+原因：
+- 下载被中断，缓存目录里留下了损坏的 `.tar.gz` 半包。
+
+本项目已在 `core/reward_func.py` 内加入自动恢复：
+
+1. 检测到该错误时自动删除坏包  
+2. 自动重试一次下载
+
+若你想手动清理，可删除：
+
+```text
+C:\Users\<你的用户名>\.cache\pyserini\indexes\
+```
+
+然后重跑训练命令即可。
 
 ## 10.3 显存不足（OOM）
 
@@ -347,21 +404,27 @@ python train.py --low-mem-mode
 
 1. 模型切换为 `Qwen/Qwen2.5-0.5B-Instruct`
 2. `batch_size=1`
-3. `group_size=1`
-4. `max_new_tokens=8`
+3. `group_size=2`（保证 GRPO 有组内优势信号）
+4. `max_new_tokens=16`
 5. `max_train_queries=64`
 6. `max_val_queries=32`
 7. `max_steps=20`
-8. 输出目录改为 `artifacts_lowmem/`
+8. 奖励计算切换到 `MRR@20`（`topk=20`）
+9. 启用词面重叠奖励（`overlap_weight=0.3`）避免纯 MRR 稀疏导致无学习信号
+10. 检索索引切换为 `msmarco-v1-passage-slim`（下载体积更小）
+11. 输出目录改为 `artifacts_lowmem/`
+
+另外：
+- 若检测到 CUDA 不可用，会自动切换为 CPU 兼容加载（很慢，但可用于排障和链路验证）。
 
 你仍然可以在低显存模式下覆盖参数，例如：
 
 ```bash
-python train.py --low-mem-mode --max-steps 50 --max-train-queries 128
+python train.py --low-mem-mode --max-steps 50 --max-train-queries 128 --reward-topk 20 --reward-overlap-weight 0.3
 ```
 
 Windows PowerShell 示例：
 
 ```powershell
-python train.py --low-mem-mode --max-steps 50 --max-train-queries 128
+python train.py --low-mem-mode --max-steps 50 --max-train-queries 128 --reward-topk 20 --reward-overlap-weight 0.3
 ```

@@ -1,0 +1,84 @@
+{
+  "config": {
+    "data": {
+      "topic_name": "msmarco-passage-dev-subset",
+      "prebuilt_index": "msmarco-v1-passage-slim",
+      "train_ratio": 0.8,
+      "seed": 42,
+      "max_train_queries": 2000,
+      "max_val_queries": 50
+    },
+    "model": {
+      "model_name": "Qwen/Qwen2.5-0.5B-Instruct",
+      "trust_remote_code": true,
+      "load_in_4bit": true,
+      "bnb_4bit_quant_type": "nf4",
+      "bnb_4bit_compute_dtype": "float16",
+      "bnb_4bit_use_double_quant": true,
+      "actor_device_map": "auto",
+      "ref_device_map": "auto",
+      "lora_r": 16,
+      "lora_alpha": 32,
+      "lora_dropout": 0.05,
+      "lora_target_modules": [
+        "q_proj",
+        "k_proj",
+        "v_proj",
+        "o_proj",
+        "gate_proj",
+        "up_proj",
+        "down_proj"
+      ]
+    },
+    "train": {
+      "num_epochs": 1,
+      "batch_size": 2,
+      "group_size": 4,
+      "learning_rate": 2e-05,
+      "weight_decay": 0.0,
+      "clip_range": 0.2,
+      "kl_beta": 0.02,
+      "grad_clip_norm": 1.0,
+      "max_new_tokens": 16,
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "eval_every_steps": 20,
+      "max_steps": null,
+      "save_dir": "artifacts/checkpoints",
+      "log_path": "artifacts/train_log.jsonl"
+    },
+    "reward": {
+      "topk": 20,
+      "mrr_weight": 1.0,
+      "overlap_weight": 0.2,
+      "min_query_chars": 3,
+      "max_repeat_ratio": 0.35,
+      "max_unreadable_char_ratio": 0.3,
+      "penalty_short": 0.2,
+      "penalty_repeat": 0.2,
+      "penalty_unreadable": 0.3
+    },
+    "prompt": {
+      "system_prompt": "You are a search assistant. Rewrite the user query into a concise and specific search query. Keep factual intent and output only the rewritten query.",
+      "template": "User Query: {query}\nSearch Query:"
+    }
+  },
+  "num_eval_queries": 50,
+  "original": {
+    "mrr@10": 0.22332506176314226,
+    "reward_mean": 0.4233250617631423
+  },
+  "zero_shot": {
+    "mrr@10": 0.07740977443609022,
+    "reward_mean": 0.06448801057903225
+  },
+  "rl": {
+    "mrr@10": 0.052420299858380356,
+    "reward_mean": 0.08021106464914515
+  },
+  "deltas": {
+    "zero_minus_original": -0.14591528732705206,
+    "rl_minus_original": -0.1709047619047619,
+    "rl_minus_zero": -0.024989474577709864
+  }
+}

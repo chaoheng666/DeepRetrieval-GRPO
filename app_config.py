@@ -103,6 +103,10 @@ class RewardConfig:
 
     # 检索截断深度：计算 MRR@topk。
     topk: int = 10
+    # 奖励组合权重：
+    # total = mrr_weight * mrr + overlap_weight * lexical_overlap - penalty
+    mrr_weight: float = 1.0
+    overlap_weight: float = 0.2
     # 生成 query 过短时的阈值与惩罚。
     min_query_chars: int = 3
     # 重复比例与不可读字符比例阈值（用于轻量文本质量约束）。
