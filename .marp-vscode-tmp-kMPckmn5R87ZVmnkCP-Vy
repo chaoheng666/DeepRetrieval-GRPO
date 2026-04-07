@@ -1,0 +1,197 @@
+---
+marp: true
+theme: default
+paginate: true
+style: |
+  /* 通用页面：顶部对齐 */
+  section {
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-start;
+    align-items: flex-start;
+    padding: 50px 70px;
+    background-color: #ffffff;
+    font-size: 26px;
+  }
+
+  /* 封面页专用样式：居中对齐 */
+  section.title-page {
+    justify-content: center;
+    align-items: center;
+    text-align: center;
+  }
+
+  section.title-page h1 {
+    font-size: 2.8em;
+    margin-bottom: 0.3em;
+  }
+  section.title-page h2 {
+    border-bottom: none;
+    margin: 0;
+    font-size: 1.2em;
+    color: #7f8c8d;
+  }
+  section.title-page .info-block {
+    margin-top: 60px;
+    font-size: 0.85em;
+    line-height: 2;
+    width: auto;              /* ❗取消固定宽度 */
+    max-width: 500px;         /* 控制可读性 */
+    text-align: center;
+  }
+
+  h1 {
+    font-size: 2.5em;
+    color: #2c3e50;
+    margin-bottom: 0.2em;
+  }
+
+  h2 {
+    margin-top: 0;
+    margin-bottom: 20px;
+    width: 100%;
+    color: #2c3e50;
+    font-size: 1.5em;
+    border-bottom: 2px solid #2c3e50;
+    padding-bottom: 10px;
+    flex-shrink: 0;
+  }
+
+  /* 封面页不显示横线 */
+  section.title-page h2 {
+    border-bottom: none;
+    margin-top: 10px;
+    font-size: 1.2em;
+    color: #7f8c8d;
+  }
+
+  .info-block {
+    margin: 80px auto 0;
+    font-size: 0.9em;
+    line-height: 1.8;
+    width: 600px; /* 或你需要的宽度 */
+    }
+
+  section::after {
+    content: attr(data-marpit-pagination) ' / ' attr(data-marpit-pagination-total);
+    font-size: 18px;
+    color: #bdc3c7;
+    position: absolute;
+    bottom: 30px;
+    right: 50px;
+  }
+---
+<!-- _class: title-page -->
+# 基于强化学习的生成式检索
+## Generative Retrieval via Reinforcement Learning
+
+<div class="info-block">
+
+**汇报人：** 晁恒
+**日期：** 2026年4月9日
+**单位：** 山东大学计算机科学与技术学院
+
+</div>
+
+---
+
+## 研究背景与目标 (Background & Objectives)
+
+### 核心背景
+* **输入 (Input):** 用户输入的 Query 通常是模糊、不完整或缺乏关键语义的。
+* **目标 (Output):** 利用大语言模型（LLM）进行重写，生成能**准确命中**目标信息的清晰 Query。
+
+### 研究任务
+1.  **理论建模：** 设计面向生成式检索的 MDP（马尔可夫决策过程）模型。
+2.  **算法优化：** 实现基于 **GRPO**（Group Relative Policy Optimization）的强化学习算法。
+3.  **闭环验证：** 完成代码开发、实验对比及学术论文撰写。
+
+---
+
+## 理论建模：面向生成式检索的 MDP 设计
+
+| **状态 (State, $S_t$)** | **动作 (Action, $A_t$)** | **奖励 (Reward, $R$)** |
+| :--- | :--- | :--- |
+| **定义：** 初始 Query Prompt + 当前已生成的 Token 序列。 | **定义：** 词表上的概率分布。 | **定义：** 序列结束后的延迟奖励。 |
+| **含义：** 模型决策的上下文环境，随生成进程动态更新。 | **含义：** 模型决定生成的下一个词（Token）。 | **含义：** 结合检索质量（MRR）与文本约束的综合得分。 |
+
+---
+
+## 核心算法：GRPO 的优势函数与“去 Critic”化
+
+### 为什么选择 GRPO？
+* **PPO 的痛点：** 必须训练额外的 Critic 网络来估算 Value，显存开销极大。
+* **GRPO 的创新：** **组内相对优势**。对同一个 Query 采样 $G$ 个样本，通过组内得分标准化代替 Critic。
+
+### 核心公式
+$$A_i = \frac{r_i - \mu}{\sigma + \epsilon}$$
+
+> **变量含义：**
+> * $r_i$：第 $i$ 个采样回答的奖励得分。
+> * $\mu, \sigma$：该组 $G$ 个采样的奖励均值与标准差。
+> * $\epsilon$：极小值，确保数值稳定性。
+
+---
+
+## 核心算法：GRPO 的目标函数与 KL 正则约束
+
+### 损失函数分解
+
+1. **裁剪代理目标 (Clipped Surrogate Objective):**
+$$L_{GRPO} = \mathbb{E} \left[ \min \left( \frac{\pi_{\theta}}{\pi_{old}} A_i, \text{clip} \left( \frac{\pi_{\theta}}{\pi_{old}}, 1-\epsilon, 1+\epsilon \right) A_i \right) \right]$$
+* **左侧：** 鼓励生成带来高优势 $A_i$ 的 Token。
+* **右侧：** 限制更新幅度，防止策略偏移过快导致“学崩”。
+
+2. **引入 KL 散度惩罚的总损失:**
+$$L = L_{GRPO} - \beta \cdot KL(\pi_{\theta} || \pi_{ref})$$
+* **KL 散度：** 正则项。惩罚新策略偏离参考模型过远，防止产生不可读的乱码或过度拟合奖励。
+
+---
+
+## 奖励函数设计 (Reward Engineering)
+
+**总奖励 = 检索奖励 + 保真奖励 - 文本惩罚**
+
+* **检索质量驱动 (Core):**
+    * 基于 **Pyserini BM25** 检索器。
+    * 计算 **MRR@10** (Mean Reciprocal Rank)，确保改写后的 Query 能排在相关文档前列。
+* **文本保真约束:**
+    * 利用 **Jaccard 相似度** 计算词面重叠，防止模型“放飞自我”篡改原意。
+* **质量惩罚机制 (Sanity Check):**
+    * **长度惩罚：** 避免过长或过短。
+    * **重复惩罚：** 阻断 Token 循环生成。
+    * **不可读字符惩罚：** 保持生成文本的自然性。
+
+---
+
+## 实验设计与评估方案 (Experimental Design)
+
+### 实验设置
+* **数据集：** **MS MARCO Passage Ranking**（权威机器阅读理解与检索基准）。
+* **模型规格：** 基于 0.5B 参数规模的 LLM 跑通端到端流程。3B参数规模的LLM正式训练。
+
+### 三路对比实验 (Baselines)
+| 方案 | 说明 | 预期效果 |
+| :--- | :--- | :--- |
+| **Original Baseline** | 原始模糊 Query 直接检索 | 基准分 |
+| **Zero-shot LLM** | 基础模型直接改写 (无 RL) | 提升语义，但缺乏检索针对性 |
+| **RL-trained (Ours)** | **经 GRPO 优化后的模型** | **最优：兼顾语义与检索性能** |
+
+---
+
+## 总结与目前已完成工作 (Summary)
+
+### 阶段性成果
+* **理论贡献：** 成功将 GRPO 算法适配至生成式检索任务，建立了高效的“去 Critic”训练范式。
+* **工程实现：**
+    * 搭建了基于 Transformer + Pyserini 的闭环 RL 训练框架。
+    * 在小规模模型上验证了奖励函数收敛的有效性。
+
+### 未来计划
+1.  **规模化扩展：** 在更高参数规模（如 3B/7B）模型上进行消融实验。
+2.  **指标深挖：** 进一步分析 KL 散度与检索准确率之间的 Pareto 边界。
+3.  **论文撰写：** 整理实验数据，完成最终学术论文。
+
+---
+
+**感谢各位老师的聆听！请批评指正。**
