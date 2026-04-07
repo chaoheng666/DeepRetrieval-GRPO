@@ -22,6 +22,22 @@ from typing import Iterable, Sequence
 from app_config import RewardConfig
 
 TOKEN_RE = re.compile(r"\w+", flags=re.UNICODE)
+MARKER_LINE_RE = re.compile(r"^(?:rewritten\s+query|search\s+query)\s*:\s*(.*)$", flags=re.IGNORECASE)
+MARKER_INLINE_RE = re.compile(r"(?:rewritten\s+query|search\s+query)\s*:\s*([^\n\r]+)", flags=re.IGNORECASE)
+TRAILING_PARTIAL_TOKENS = {
+    "a",
+    "an",
+    "and",
+    "by",
+    "for",
+    "in",
+    "of",
+    "on",
+    "or",
+    "the",
+    "to",
+    "with",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,35 +170,81 @@ def compute_lexical_overlap(source_query: str, rewritten_query: str) -> float:
     return len(src & rew) / float(len(union))
 
 
-def clean_rewritten_query(text: str) -> str:
-    """清洗模型输出，提取更适合检索的 query 文本。
-
-    常见问题：
-    - 模型会输出 "Rewritten Query:" / "Search Query:" 前后缀
-    - 会附带解释性句子、多行内容
-    处理策略：
-    1) 若含显式标签，优先取标签后文本
-    2) 否则取第一条非空行
-    3) 去掉包裹引号并压缩空白
-    """
-
-    cleaned = (text or "").strip()
-    if not cleaned:
-        return ""
-
-    markers = ["Rewritten Query:", "Search Query:"]
-    for marker in markers:
-        idx = cleaned.rfind(marker)
-        if idx >= 0:
-            cleaned = cleaned[idx + len(marker) :].strip()
-
-    lines = [ln.strip() for ln in cleaned.splitlines() if ln.strip()]
-    if lines:
-        cleaned = lines[0]
-
-    cleaned = cleaned.strip().strip("'").strip('"')
+def _normalize_candidate_text(text: str) -> str:
+    cleaned = (text or "").strip().strip("'").strip('"').strip("`")
+    cleaned = re.sub(r"^[\-\*\d\.\)\]\s]+", "", cleaned)
     cleaned = " ".join(cleaned.split())
     return cleaned
+
+
+def _extract_query_candidates(text: str) -> list[str]:
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    candidates: list[str] = []
+
+    for idx, line in enumerate(lines):
+        marker_match = MARKER_LINE_RE.match(line)
+        if marker_match:
+            tail = marker_match.group(1).strip()
+            if tail:
+                candidates.append(tail)
+            elif idx + 1 < len(lines):
+                candidates.append(lines[idx + 1])
+            continue
+
+        inline_match = MARKER_INLINE_RE.search(line)
+        if inline_match:
+            candidates.append(inline_match.group(1))
+            continue
+
+        lowered = line.lower()
+        if lowered in {"assistant:", "search query:", "rewritten query:"}:
+            continue
+        if line.endswith(":") and len(line.split()) <= 4:
+            continue
+        candidates.append(line)
+
+    for match in MARKER_INLINE_RE.finditer(text):
+        candidates.append(match.group(1))
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        cleaned = _normalize_candidate_text(candidate)
+        if not cleaned or cleaned in seen:
+            continue
+        seen.add(cleaned)
+        normalized.append(cleaned)
+    return normalized
+
+
+def _candidate_rank_key(candidate: str, source_query: str | None, index: int) -> tuple[float, int, int, int, int]:
+    tokens = _tokenize_for_overlap(candidate)
+    overlap = compute_lexical_overlap(source_query, candidate) if source_query else 0.0
+    tail = tokens[-1] if tokens else ""
+    completeness = 0 if tail in TRAILING_PARTIAL_TOKENS else 1
+    unique_count = len(set(tokens))
+    return (overlap, completeness, -index, unique_count, len(tokens))
+
+
+def clean_rewritten_query(text: str, source_query: str | None = None) -> str:
+    """清洗模型输出并选择最可用的一条检索 query。
+
+    策略：
+    1) 从 marker 行、普通行中提取候选并标准化；
+    2) 若提供 source_query，优先按词面重叠排序；
+    3) 同分时优先更完整、信息量更高的候选，避免截断残句。
+    """
+
+    raw = (text or "").strip()
+    if not raw:
+        return ""
+
+    candidates = _extract_query_candidates(raw)
+    if not candidates:
+        return _normalize_candidate_text(raw)
+
+    best = max(enumerate(candidates), key=lambda item: _candidate_rank_key(item[1], source_query, item[0]))[1]
+    return best
 
 
 class Rewarder:
@@ -258,7 +320,7 @@ class Rewarder:
         4. 汇总 total = mrr - penalty
         """
 
-        query = clean_rewritten_query(rewritten_query)
+        query = clean_rewritten_query(rewritten_query, source_query=source_query)
         relevant_docids = self.qrels.get(str(qid), set())
 
         hits_docids: list[str] = []

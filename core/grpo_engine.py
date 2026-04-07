@@ -38,6 +38,7 @@ class Sample:
     logprob_old: torch.Tensor
     reward: float
     mrr: float
+    overlap: float
     penalty: float
     advantage: float = 0.0
 
@@ -165,6 +166,7 @@ class GRPOEngine:
                     logprob_old=generated.logprob_old,
                     reward=reward.total,
                     mrr=reward.mrr,
+                    overlap=reward.overlap,
                     penalty=reward.penalty,
                 )
                 group_samples.append(sample)
@@ -178,7 +180,7 @@ class GRPOEngine:
                 rewards.append(sample.reward)
                 mrr_scores.append(sample.mrr)
                 penalties.append(sample.penalty)
-                overlaps.append(reward.overlap)
+                overlaps.append(sample.overlap)
 
             for sample in group_samples:
                 # 空生成无法做 token-level 更新，直接跳过。
@@ -216,7 +218,7 @@ class GRPOEngine:
                     advantage=sample.advantage,
                     clip_range=self.clip_range,
                 )
-                loss_pg = -clipped_obj.mean()
+                loss_pg = -clipped_obj.mean()#句子的loss是所有token的平均，整个batch的loss是所有句子的平均
                 # Step 4d: KL 正则项，约束新策略不要偏离 ref 过快。
                 loss_kl = self.kl_beta * (logprob_new - logprob_ref).mean()
                 loss = loss_pg + loss_kl
@@ -230,6 +232,8 @@ class GRPOEngine:
                 loss_kl_terms.append(float(loss_kl.detach().cpu()))
                 valid_samples += 1
 
+        nonzero_reward_ratio = (sum(1 for value in rewards if value > 0.0) / len(rewards)) if rewards else 0.0
+
         if not loss_terms:
             # 没有可用的 token-level 样本，返回指标但不更新参数。
             return {
@@ -240,6 +244,7 @@ class GRPOEngine:
                 "mrr_mean": fmean(mrr_scores) if mrr_scores else 0.0,
                 "penalty_mean": fmean(penalties) if penalties else 0.0,
                 "overlap_mean": fmean(overlaps) if overlaps else 0.0,
+                "nonzero_reward_ratio": nonzero_reward_ratio,
                 "adv_mean": fmean(all_advantages) if all_advantages else 0.0,
                 "adv_std": float(torch.tensor(all_advantages).std(unbiased=False)) if all_advantages else 0.0,
                 "sampled": float(sampled),
@@ -258,6 +263,7 @@ class GRPOEngine:
                 "mrr_mean": fmean(mrr_scores) if mrr_scores else 0.0,
                 "penalty_mean": fmean(penalties) if penalties else 0.0,
                 "overlap_mean": fmean(overlaps) if overlaps else 0.0,
+                "nonzero_reward_ratio": nonzero_reward_ratio,
                 "adv_mean": fmean(all_advantages) if all_advantages else 0.0,
                 "adv_std": float(torch.tensor(all_advantages).std(unbiased=False)) if all_advantages else 0.0,
                 "sampled": float(sampled),
@@ -279,6 +285,7 @@ class GRPOEngine:
             "mrr_mean": fmean(mrr_scores) if mrr_scores else 0.0,
             "penalty_mean": fmean(penalties) if penalties else 0.0,
             "overlap_mean": fmean(overlaps) if overlaps else 0.0,
+            "nonzero_reward_ratio": nonzero_reward_ratio,
             "adv_mean": fmean(all_advantages) if all_advantages else 0.0,
             "adv_std": float(torch.tensor(all_advantages).std(unbiased=False)) if all_advantages else 0.0,
             "sampled": float(sampled),

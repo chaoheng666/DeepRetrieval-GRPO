@@ -428,3 +428,23 @@ Windows PowerShell 示例：
 ```powershell
 python train.py --low-mem-mode --max-steps 50 --max-train-queries 128 --reward-topk 20 --reward-overlap-weight 0.3
 ```
+
+
+python train.py `
+  --num-epochs 3 `
+  --batch-size 4 `
+  --group-size 8 `
+  --learning-rate 1.5e-5 `
+  --clip-range 0.2 `
+  --kl-beta 0.03 `
+  --max-new-tokens 32 `
+  --temperature 0.9 `
+  --top-p 0.95 `
+  --reward-topk 20 `
+  --reward-overlap-weight 0.3 `
+  --reward-mrr-weight 1.0 `
+  --eval-every-steps 100 `
+  --save-dir artifacts_3b_heavy/checkpoints `
+  --log-path artifacts_3b_heavy/train_log.jsonl
+
+默认就是Qwen/Qwen2.5-3B-Instruct

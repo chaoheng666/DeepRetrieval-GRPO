@@ -194,7 +194,7 @@ def evaluate_policy(
     - reward_mean: 平均总奖励（mrr - penalty）
     - mrr_mean: 平均 MRR@10
     - penalty_mean: 平均惩罚
-    - count: 实际评估样本数
+    - count: 数实际评估样本
     """
 
     eval_queries = list(queries[:max_queries]) if max_queries is not None else list(queries)
@@ -277,8 +277,8 @@ def main() -> int:
     # 数据来源严格使用 Pyserini 预编译 topics/qrels。
     queries, qrels = load_topics_qrels(config.data.topic_name)
     train_queries, val_queries = split_queries(queries, train_ratio=config.data.train_ratio, seed=config.data.seed)
-    train_queries = maybe_limit(train_queries, config.data.max_train_queries)
-    val_queries = maybe_limit(val_queries, config.data.max_val_queries)
+    # train_queries = maybe_limit(train_queries, config.data.max_train_queries)
+    # val_queries = maybe_limit(val_queries, config.data.max_val_queries)
 
     print(f"[data] train_queries={len(train_queries)}, val_queries={len(val_queries)}, qrels_qids={len(qrels)}")
 

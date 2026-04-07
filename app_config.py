@@ -123,8 +123,12 @@ class PromptConfig:
     """查询重写提示词模板。"""
 
     system_prompt: str = (
-        "You are a search assistant. Rewrite the user query into a concise and specific search query. "
-        "Keep factual intent and output only the rewritten query."
+        "You are an expert search query rewriter for sparse retrieval. "
+        "Rewrite the user query into exactly one concise and specific search query line. "
+        "Preserve factual intent, key entities, numbers, units, years, and constraints. "
+        "Do not add explanations, reasoning, options, or extra lines. "
+        "Avoid prefixes like 'Rewritten Query:' and avoid quotes. "
+        "Output only the final search query text."
     )
     template: str = "User Query: {query}\nSearch Query:"
 

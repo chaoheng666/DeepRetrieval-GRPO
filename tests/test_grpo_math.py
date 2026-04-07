@@ -4,7 +4,7 @@ import torch
 
 from app_config import RewardConfig
 from core.grpo_engine import normalize_advantages, ppo_clipped_objective
-from core.reward_func import compute_mrr_at_k, compute_text_penalty
+from core.reward_func import clean_rewritten_query, compute_mrr_at_k, compute_text_penalty
 
 
 class AdvantageTests(unittest.TestCase):
@@ -52,6 +52,40 @@ class RewardMathTests(unittest.TestCase):
         p = compute_text_penalty("aa aa aa", cfg)
         self.assertGreaterEqual(p.repeat, 0.3)
         self.assertEqual(p.short, 0.0)
+
+
+class QueryCleaningTests(unittest.TestCase):
+    def test_clean_rewritten_query_prefers_high_overlap_complete_candidate(self):
+        raw = (
+            "Androgen receptor definition\n\n"
+            "Rewritten Query: Definition of the androgen receptor protein\n\n"
+            "Rewritten Query: Information on the"
+        )
+        cleaned = clean_rewritten_query(raw, source_query="Androgen receptor define")
+        self.assertEqual(cleaned, "Androgen receptor definition")
+
+    def test_clean_rewritten_query_handles_single_line_quotes(self):
+        raw = '   "causes   of climate change 2024 report"   '
+        cleaned = clean_rewritten_query(raw)
+        self.assertEqual(cleaned, "causes of climate change 2024 report")
+
+    def test_clean_rewritten_query_uses_marker_next_line(self):
+        raw = (
+            "Search Query:\n"
+            "  best budget gaming laptop 2024\n"
+            "\n"
+            "Explanation: keep under $1000"
+        )
+        cleaned = clean_rewritten_query(raw, source_query="best budget gaming laptop 2024")
+        self.assertEqual(cleaned, "best budget gaming laptop 2024")
+
+    def test_clean_rewritten_query_without_source_is_deterministic(self):
+        raw = (
+            "Rewritten Query: travel insurance for japan\n"
+            "Search Query: travel insurance japan coverage"
+        )
+        cleaned = clean_rewritten_query(raw)
+        self.assertEqual(cleaned, "travel insurance for japan")
 
 
 if __name__ == "__main__":
