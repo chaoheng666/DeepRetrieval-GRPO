@@ -1,21 +1,18 @@
 from __future__ import annotations
 
-"""模型包装层（Actor/Ref 策略 + token 级 logprob 接口）。
+"""模型包装层：统一管理 Actor/Ref 策略与 token 级 logprob 接口。
 
-本模块承担四类职责：
-
-1. 加载基础模型（支持 4-bit 量化，适配 QLoRA 显存约束）。
-2. 构建 Actor 策略（带 LoRA，可训练）。
-3. 构建 Ref 策略（冻结，仅用于 KL 正则）。
-4. 提供两个关键能力：
-   - 采样时返回 logprob_old（PPO ratio 的旧策略项）
-   - 对固定 response 重算 logprob（new/ref 策略对齐比较）
+核心功能：
+1. 按配置加载 tokenizer、actor、ref（支持 4bit/全精度/自动回退）
+2. 统一生成接口（可选返回 rollout 阶段 old logprob）
+3. 对固定 response 重新计算 actor/ref 的 token 级 logprob
 """
 
 from contextlib import nullcontext
 from dataclasses import dataclass
+import json
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import torch
 
@@ -26,7 +23,7 @@ PolicyName = Literal["actor", "ref"]
 
 @dataclass(frozen=True, slots=True)
 class GeneratedSample:
-    """采样输出结构。"""
+    """单条采样结果（文本 + token + old logprob）。"""
 
     response_text: str
     response_token_ids: list[int]
@@ -34,7 +31,7 @@ class GeneratedSample:
 
 
 def _str_to_dtype(dtype_name: str) -> torch.dtype:
-    """把配置里的字符串精度映射到 torch dtype。"""
+    """将字符串精度映射到 torch dtype。"""
 
     mapping = {
         "float16": torch.float16,
@@ -57,67 +54,71 @@ class ModelWrapper:
         enable_lora: bool = True,
         load_ref_model: bool = False,
         adapter_path: str | None = None,
+        strict_tokenizer_model_match: bool = False,
     ) -> None:
-        """初始化 tokenizer、actor 模型，以及可选的 ref 模型。
+        """初始化模型组件。
 
-        参数说明：
-        - train_mode:
-          True 时 actor 进入训练态，LoRA 参数可更新；False 时用于推理/评估。
-        - enable_lora:
-          True 时构建 LoRA actor；False 时使用纯基础模型（用于 zero-shot baseline）。
-        - load_ref_model:
-          True 时额外加载一个冻结参考模型，供 KL 惩罚使用。
-        - adapter_path:
-          若提供则从该目录加载已训练 LoRA adapter；否则新建 adapter。
+        - train_mode=True 时 actor 以训练模式创建
+        - load_ref_model=True 时额外加载冻结 ref 模型用于 KL 项
         """
 
         from peft import LoraConfig, PeftModel, get_peft_model, prepare_model_for_kbit_training
-        from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+        from transformers import AutoModelForCausalLM, AutoTokenizer
 
         self.model_cfg = model_cfg
         self.prompt_cfg = prompt_cfg
         self.train_mode = train_mode
         self.enable_lora = enable_lora
         self.adapter_path = adapter_path
+        self.ref_precision_used: str | None = None
+        self.ref_dtype_used: torch.dtype | None = None
+
+        # 4bit + bf16 在部分运行环境不稳定，这里做安全回退。
+        if model_cfg.load_in_4bit and model_cfg.bnb_4bit_compute_dtype.lower() == "bfloat16":
+            bf16_supported = bool(torch.cuda.is_available() and torch.cuda.is_bf16_supported())
+            if not bf16_supported:
+                print("[warn] bfloat16 4-bit compute dtype is unsupported on this runtime; fallback to float16.")
+                model_cfg.bnb_4bit_compute_dtype = "float16"
 
         self.tokenizer = AutoTokenizer.from_pretrained(
             model_cfg.model_name,
             trust_remote_code=model_cfg.trust_remote_code,
             use_fast=False,
         )
+        # 保证 decoder-only 模型有 pad_token，避免 batch/generate 报错。
         if self.tokenizer.pad_token is None:
-            # 许多 decoder-only 模型没有显式 pad_token。
-            # 复用 eos_token 可避免 generate/batch 输入报错。
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
-        self.quantization_config = None
-        if model_cfg.load_in_4bit:
-            # QLoRA 路径：显著降低显存占用，适合单卡训练。
-            self.quantization_config = BitsAndBytesConfig(
-                load_in_4bit=True,
-                bnb_4bit_quant_type=model_cfg.bnb_4bit_quant_type,
-                bnb_4bit_use_double_quant=model_cfg.bnb_4bit_use_double_quant,
-                bnb_4bit_compute_dtype=_str_to_dtype(model_cfg.bnb_4bit_compute_dtype),
-            )
-
+        self.quantization_config = self._build_4bit_config(enabled=model_cfg.load_in_4bit)
+        actor_dtype = _str_to_dtype(model_cfg.bnb_4bit_compute_dtype)
+        # CPU 环境下统一用 float32，避免无意义的半精度设置。
+        if not torch.cuda.is_available():
+            actor_dtype = torch.float32
         base_actor = AutoModelForCausalLM.from_pretrained(
             model_cfg.model_name,
             trust_remote_code=model_cfg.trust_remote_code,
             quantization_config=self.quantization_config,
             device_map=model_cfg.actor_device_map,
-            torch_dtype=_str_to_dtype(model_cfg.bnb_4bit_compute_dtype),
+            dtype=actor_dtype,
+        )
+        self._validate_tokenizer_model_match(
+            tokenizer=self.tokenizer,
+            model=base_actor,
+            model_name=model_cfg.model_name,
+            adapter_path=adapter_path,
+            strict=strict_tokenizer_model_match,
         )
 
         if enable_lora:
             if train_mode:
-                # k-bit 训练前的标准准备步骤（PEFT 建议）。
+                # k-bit 训练前的标准准备流程（PEFT 推荐）。
                 base_actor = prepare_model_for_kbit_training(base_actor)
 
             if adapter_path:
-                # 从已有 adapter 恢复（继续训练或评估）。
+                # 从已有 adapter 恢复（续训或评估）。
                 self.actor_model = PeftModel.from_pretrained(base_actor, adapter_path, is_trainable=train_mode)
             else:
-                # 新建 LoRA adapter 并挂载到基础模型。
+                # 新建 LoRA adapter。
                 lora_cfg = LoraConfig(
                     r=model_cfg.lora_r,
                     lora_alpha=model_cfg.lora_alpha,
@@ -134,35 +135,283 @@ class ModelWrapper:
 
         self.ref_model = None
         if load_ref_model:
-            # 参考策略固定不训练，作为 KL anchor 分布。
-            self.ref_model = AutoModelForCausalLM.from_pretrained(
-                model_cfg.model_name,
-                trust_remote_code=model_cfg.trust_remote_code,
-                quantization_config=self.quantization_config,
-                device_map=model_cfg.ref_device_map,
-                torch_dtype=_str_to_dtype(model_cfg.bnb_4bit_compute_dtype),
-            )
+            # ref 模型始终冻结，只作为 KL anchor。
+            self.ref_model = self._load_ref_model(AutoModelForCausalLM)
             self.ref_model.eval()
             for param in self.ref_model.parameters():
                 param.requires_grad = False
 
-    @staticmethod
-    def _infer_model_device(model: torch.nn.Module) -> torch.device:
-        """从参数推断模型所在设备。"""
+    def _build_4bit_config(self, *, enabled: bool):
+        """按需构建 bitsandbytes 4bit 配置。"""
 
-        return next(model.parameters()).device
+        if not enabled:
+            return None
+        from transformers import BitsAndBytesConfig
+
+        return BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type=self.model_cfg.bnb_4bit_quant_type,
+            bnb_4bit_use_double_quant=self.model_cfg.bnb_4bit_use_double_quant,
+            bnb_4bit_compute_dtype=_str_to_dtype(self.model_cfg.bnb_4bit_compute_dtype),
+        )
+
+    @staticmethod
+    def _is_cuda_oom_error(exc: BaseException) -> bool:
+        """判断异常是否属于 CUDA OOM。"""
+
+        text = str(exc).lower()
+        return "out of memory" in text and ("cuda" in text or "cublas" in text)
+
+    @staticmethod
+    def _preferred_full_precision_dtype() -> torch.dtype:
+        """全精度优先策略：CUDA 上优先 bf16，其次 fp16。"""
+
+        if torch.cuda.is_available():
+            return torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+        return torch.float32
+
+    @staticmethod
+    def _to_device_from_map_value(value: Any) -> torch.device | None:
+        """将 hf_device_map 的值转换为 torch.device。"""
+
+        if isinstance(value, torch.device):
+            return value
+        if isinstance(value, int):
+            return torch.device(f"cuda:{value}")
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered.startswith("cuda"):
+                return torch.device(value)
+            if lowered.startswith("cpu"):
+                return torch.device("cpu")
+        return None
+
+    @classmethod
+    def _extract_hf_device_map(cls, model: torch.nn.Module) -> dict[str, Any] | None:
+        """从模型或其嵌套基类中提取 hf_device_map。"""
+
+        direct = getattr(model, "hf_device_map", None)
+        if isinstance(direct, dict):
+            return direct
+
+        for attr in ("base_model", "model"):
+            nested = getattr(model, attr, None)
+            if nested is None:
+                continue
+            nested_map = getattr(nested, "hf_device_map", None)
+            if isinstance(nested_map, dict):
+                return nested_map
+            deeper = getattr(nested, "model", None)
+            deeper_map = getattr(deeper, "hf_device_map", None) if deeper is not None else None
+            if isinstance(deeper_map, dict):
+                return deeper_map
+        return None
+
+    @classmethod
+    def _summarize_device_map(cls, model: torch.nn.Module) -> dict[str, int]:
+        """统计模型分片落在哪些设备上（用于日志）。"""
+
+        device_map = cls._extract_hf_device_map(model)
+        if not device_map:
+            try:
+                return {str(next(model.parameters()).device): 1}
+            except StopIteration:
+                return {"cpu": 0}
+
+        summary: dict[str, int] = {}
+        for value in device_map.values():
+            device = cls._to_device_from_map_value(value)
+            key = str(device) if device is not None else str(value)
+            summary[key] = summary.get(key, 0) + 1
+        return summary
+
+    def _load_ref_model(self, auto_model_cls):
+        """加载 ref 模型，支持 auto/full/4bit 三种精度模式。
+
+        auto 策略：
+        1) 先尝试全精度（bf16/fp16）
+        2) 若 CUDA OOM，则自动回退到 4bit（保持 GPU 路径）
+        """
+
+        mode = str(getattr(self.model_cfg, "ref_precision_mode", "auto")).strip().lower()
+        if mode not in {"auto", "full", "4bit"}:
+            raise ValueError(f"Unsupported ref_precision_mode: {self.model_cfg.ref_precision_mode}")
+
+        full_dtype = self._preferred_full_precision_dtype()
+        quant_dtype = _str_to_dtype(self.model_cfg.bnb_4bit_compute_dtype)
+        load_kwargs = {
+            "trust_remote_code": self.model_cfg.trust_remote_code,
+            "device_map": self.model_cfg.ref_device_map,
+        }
+
+        def _load(*, use_4bit: bool, dtype: torch.dtype):
+            # use_4bit=True 时传入 4bit 量化配置，否则走全精度加载。
+            quant_cfg = self._build_4bit_config(enabled=use_4bit)
+            return auto_model_cls.from_pretrained(
+                self.model_cfg.model_name,
+                quantization_config=quant_cfg,
+                dtype=dtype,
+                **load_kwargs,
+            )
+
+        if mode == "4bit":
+            ref_model = _load(use_4bit=True, dtype=quant_dtype)
+            self.ref_precision_used = "4bit"
+            self.ref_dtype_used = quant_dtype
+        elif mode == "full":
+            ref_model = _load(use_4bit=False, dtype=full_dtype)
+            self.ref_precision_used = "full"
+            self.ref_dtype_used = full_dtype
+        else:
+            try:
+                ref_model = _load(use_4bit=False, dtype=full_dtype)
+                self.ref_precision_used = "full"
+                self.ref_dtype_used = full_dtype
+            except RuntimeError as exc:
+                if torch.cuda.is_available() and self._is_cuda_oom_error(exc):
+                    # 仅在 CUDA OOM 时回退，其他错误继续抛出便于定位。
+                    print("[warn] ref full-precision load hit CUDA OOM; fallback to 4-bit on GPU path.")
+                    ref_model = _load(use_4bit=True, dtype=quant_dtype)
+                    self.ref_precision_used = "4bit"
+                    self.ref_dtype_used = quant_dtype
+                else:
+                    raise
+
+        print(
+            "[ref] loaded: "
+            f"precision={self.ref_precision_used}, "
+            f"dtype={self.ref_dtype_used}, "
+            f"device_map={self._summarize_device_map(ref_model)}"
+        )
+        return ref_model
+
+    @classmethod
+    def _infer_model_device(cls, model: torch.nn.Module) -> torch.device:
+        """推断执行设备：优先依据 hf_device_map，其次参数设备。"""
+
+        device_map = cls._extract_hf_device_map(model)
+        if isinstance(device_map, dict) and device_map:
+            preferred_keys = (
+                "model.embed_tokens",
+                "model.decoder.embed_tokens",
+                "transformer.wte",
+                "embed_tokens",
+            )
+            for key in preferred_keys:
+                if key in device_map:
+                    preferred = cls._to_device_from_map_value(device_map[key])
+                    if preferred is not None and preferred.type == "cuda":
+                        return preferred
+
+            for value in device_map.values():
+                candidate = cls._to_device_from_map_value(value)
+                if candidate is not None and candidate.type == "cuda":
+                    return candidate
+
+            for value in device_map.values():
+                candidate = cls._to_device_from_map_value(value)
+                if candidate is not None:
+                    return candidate
+
+        try:
+            return next(model.parameters()).device
+        except StopIteration:
+            return torch.device("cpu")
+
+    @staticmethod
+    def _normalize_model_id(name: str) -> str:
+        """标准化模型 ID（路径分隔符与大小写）。"""
+
+        return name.replace("\\", "/").rstrip("/").lower()
+
+    @classmethod
+    def _same_model_id(cls, lhs: str, rhs: str) -> bool:
+        """宽松判断两个模型标识是否可视为同一模型。"""
+
+        left = cls._normalize_model_id(lhs)
+        right = cls._normalize_model_id(rhs)
+        if not left or not right:
+            return False
+        if left == right:
+            return True
+        if left.endswith("/" + right) or right.endswith("/" + left):
+            return True
+        return Path(left).name == Path(right).name
+
+    def _validate_tokenizer_model_match(
+        self,
+        *,
+        tokenizer,
+        model: torch.nn.Module,
+        model_name: str,
+        adapter_path: str | None,
+        strict: bool,
+    ) -> None:
+        """校验 tokenizer/model 兼容性与 adapter 基模型匹配。"""
+
+        tok_name = str(getattr(tokenizer, "name_or_path", ""))
+        cfg_name = str(getattr(getattr(model, "config", None), "_name_or_path", "")) or model_name
+        tok_vocab = int(len(tokenizer))
+        emb = model.get_input_embeddings()
+        model_vocab = int(emb.weight.shape[0]) if emb is not None else -1
+
+        if strict and tok_name and not self._same_model_id(tok_name, model_name):
+            raise ValueError(
+                f"Tokenizer path/name '{tok_name}' does not match runtime model '{model_name}'. "
+                "Please use the tokenizer from the same base model."
+            )
+
+        if model_vocab > 0 and tok_vocab > model_vocab:
+            raise ValueError(
+                f"Tokenizer vocab ({tok_vocab}) is larger than model embedding size ({model_vocab}). "
+                "Tokenizer/model are incompatible."
+            )
+        if model_vocab > 0 and tok_vocab != model_vocab:
+            delta = abs(tok_vocab - model_vocab)
+            msg = (
+                f"[warn] tokenizer/model vocab size mismatch: tokenizer={tok_vocab}, model={model_vocab}. "
+                "Small gaps are often harmless (reserved/unused embeddings), large gaps may be risky."
+            )
+            if strict and delta > 2048:
+                raise ValueError(msg)
+            print(msg)
+
+        adapter_base = None
+        if adapter_path:
+            adapter_cfg_path = Path(adapter_path) / "adapter_config.json"
+            if adapter_cfg_path.exists():
+                try:
+                    adapter_cfg = json.loads(adapter_cfg_path.read_text(encoding="utf-8"))
+                    adapter_base = str(adapter_cfg.get("base_model_name_or_path", "")).strip() or None
+                except Exception:
+                    adapter_base = None
+            if adapter_base is not None:
+                norm_adapter = self._normalize_model_id(adapter_base)
+                norm_expected = self._normalize_model_id(model_name)
+                if norm_adapter != norm_expected:
+                    msg = (
+                        f"[warn] adapter base model mismatch: adapter expects '{adapter_base}', "
+                        f"but runtime model is '{model_name}'."
+                    )
+                    if strict:
+                        raise ValueError(msg)
+                    print(msg)
+
+        print(
+            "[sanity] tokenizer/model check: "
+            f"tokenizer='{tok_name}', model='{cfg_name}', "
+            f"tok_vocab={tok_vocab}, model_vocab={model_vocab}, "
+            f"adapter_base='{adapter_base or '-'}', strict={strict}"
+        )
 
     def build_prompt(self, query: str) -> str:
-        """构建查询重写 prompt。
-
-        这里会先做空白字符压缩，减少输入格式噪声，保证提示模板稳定。
-        """
+        """构建重写 prompt，先压缩输入空白字符。"""
 
         query_clean = " ".join(query.strip().split())
         return f"{self.prompt_cfg.system_prompt}\n\n{self.prompt_cfg.template.format(query=query_clean)}"
 
     def _policy_model(self, policy: PolicyName) -> torch.nn.Module:
-        """根据策略名选择 actor 或 ref 模型。"""
+        """按策略名选择 actor 或 ref 模型。"""
 
         if policy == "actor":
             return self.actor_model
@@ -180,19 +429,13 @@ class ModelWrapper:
         top_p: float,
         with_logprob: bool,
     ) -> GeneratedSample:
-        """执行文本生成，并可选返回采样时 token 级 logprob_old。
-
-        关键说明：
-        - with_logprob=True 时，会请求 generate 返回每步 logits（output_scores）。
-        - 这些 logits 对应“采样当下”的策略概率，是 PPO 中 old policy 的来源。
-        - 后续训练时会再重算 logprob_new，与 logprob_old 组成 ratio。
-        """
+        """执行生成，并可选返回 rollout 阶段 old logprob。"""
 
         inputs = self.tokenizer(prompt, return_tensors="pt")
         device = self._infer_model_device(model)
         inputs = {k: v.to(device) for k, v in inputs.items()}
 
-        # 温度为 0 时按贪心解码处理，避免采样随机性。
+        # 温度 <= 0 时按贪心解码处理。
         do_sample = temperature > 0.0
         kwargs = {
             "max_new_tokens": max_new_tokens,
@@ -224,7 +467,6 @@ class ModelWrapper:
 
         token_logprobs: list[torch.Tensor] = []
         for i in range(steps):
-            # scores[i] 是第 i 步输出 token 的 logits，取 softmax 后再索引采样 token。
             logits_step = scores[i][0].float()
             logprob_step = torch.log_softmax(logits_step, dim=-1)[response_ids[i]]
             token_logprobs.append(logprob_step.detach().cpu())
@@ -243,7 +485,7 @@ class ModelWrapper:
         temperature: float,
         top_p: float,
     ) -> GeneratedSample:
-        """从 actor 采样，并返回采样时 old logprob。"""
+        """从 actor 采样，返回 old-policy token logprob。"""
 
         return self._generate(
             self.actor_model,
@@ -263,7 +505,7 @@ class ModelWrapper:
         temperature: float,
         top_p: float,
     ) -> str:
-        """使用指定策略生成重写 query 文本。"""
+        """使用指定策略生成重写文本。"""
 
         model = self._policy_model(policy)
         prompt = self.build_prompt(query)
@@ -285,17 +527,7 @@ class ModelWrapper:
         policy: PolicyName = "actor",
         no_grad: bool = False,
     ) -> torch.Tensor:
-        """对“固定 response token 序列”重算 token 级 logprob。
-
-        用途：
-        - actor + no_grad=False：得到可反传的 logprob_new
-        - ref + no_grad=True：得到冻结参考概率 logprob_ref
-
-        计算细节：
-        - 将 prompt_ids 与 response_ids 拼接后送入因果 LM。
-        - 利用 shift 对齐规则，从 logits 中截取 response 对应位置。
-        - 对每个目标 token 收集对应 log softmax 值。
-        """
+        """对固定 response 重算 token 级 logprob。"""
 
         if not response_token_ids:
             model = self._policy_model(policy)
@@ -321,8 +553,8 @@ class ModelWrapper:
         with grad_ctx:
             logits = model(input_ids=full_input_ids, attention_mask=attention_mask).logits
 
+        # 因果 LM 对齐：token[t] 由位置 t-1 的 logits 预测。
         prompt_len = int(prompt_ids.shape[1])
-        # 因果语言模型的对齐关系：token[t] 由位置 t-1 的 logits 预测。
         start = max(prompt_len - 1, 0)
         end = start + response_ids.shape[1]
         token_logits = logits[:, start:end, :]
@@ -332,12 +564,12 @@ class ModelWrapper:
         return gathered
 
     def trainable_parameters(self) -> list[torch.nn.Parameter]:
-        """返回可训练参数列表（实际通常为 LoRA 参数）。"""
+        """返回可训练参数（通常是 LoRA 参数）。"""
 
         return [p for p in self.actor_model.parameters() if p.requires_grad]
 
     def save_adapter(self, output_dir: str) -> None:
-        """保存 actor adapter 与 tokenizer，供后续评估/恢复训练使用。"""
+        """保存 actor adapter 与 tokenizer。"""
 
         path = Path(output_dir)
         path.mkdir(parents=True, exist_ok=True)

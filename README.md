@@ -388,6 +388,9 @@ python train.py --max-train-queries 2000 --max-val-queries 400
 
 # 4) 对比评测
 python eval_compare.py --rl-adapter-path artifacts/checkpoints/best
+
+python eval_compare.py --rl-adapter-path artifacts_lowmem/checkpoints/best --low-mem-mode --strict-tokenizer-model-match
+
 ```
 
 ---

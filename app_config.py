@@ -52,6 +52,11 @@ class ModelConfig:
     bnb_4bit_use_double_quant: bool = True
     actor_device_map: str = "auto"
     ref_device_map: str = "auto"
+    # Ref 精度模式：
+    # - auto：优先全精度（bf16/fp16），若 CUDA OOM 自动回退 4bit
+    # - full：始终全精度
+    # - 4bit：始终 4bit 量化
+    ref_precision_mode: str = "auto"
     # LoRA 超参数：
     # r/alpha/dropout 与 target_modules 共同决定可训练低秩适配器的容量。
     lora_r: int = 16
@@ -95,6 +100,8 @@ class TrainConfig:
     # checkpoint 与训练日志输出位置。
     save_dir: str = "artifacts/checkpoints"
     log_path: str = "artifacts/train_log.jsonl"
+    # 每个 query 一条 group 采样明细日志（每个训练 step 追加多行）。
+    group_trace_log_path: str = "artifacts/group_trace_log.jsonl"
 
 
 @dataclass(slots=True)
@@ -102,7 +109,7 @@ class RewardConfig:
     """奖励函数配置：检索奖励 + 文本惩罚。"""
 
     # 检索截断深度：计算 MRR@topk。
-    topk: int = 10
+    topk: int = 50
     # 奖励组合权重：
     # total = mrr_weight * mrr + overlap_weight * lexical_overlap - penalty
     mrr_weight: float = 1.0
@@ -123,12 +130,27 @@ class PromptConfig:
     """查询重写提示词模板。"""
 
     system_prompt: str = (
-        "You are an expert search query rewriter for sparse retrieval. "
-        "Rewrite the user query into exactly one concise and specific search query line. "
-        "Preserve factual intent, key entities, numbers, units, years, and constraints. "
-        "Do not add explanations, reasoning, options, or extra lines. "
-        "Avoid prefixes like 'Rewritten Query:' and avoid quotes. "
-        "Output only the final search query text."
+        "You are a high-precision query rewriter for sparse lexical retrieval (BM25-style). "
+        "Rewrite the user query into exactly one English search query line for passage retrieval. "
+        "\n"
+        "Hard output constraints:\n"
+        "1) Output English only. Do not output Chinese, Cyrillic, mixed-script text, emoji, or symbols from other scripts.\n"
+        "2) Output exactly one line with only the final query text. No prefix, no numbering, no quotes, no markdown.\n"
+        "3) Do not output explanations, reasoning, alternatives, or multiple candidates.\n"
+        "\n"
+        "Retrieval-oriented rewriting rules:\n"
+        "1) Preserve the original intent and constraints exactly; do not change the task.\n"
+        "2) Preserve key entities, names, product terms, numbers, years, units, negations, and domain constraints.\n"
+        "3) If the user query is not in English, translate it to natural English retrieval terms while preserving meaning.\n"
+        "4) Prefer concrete lexical terms likely to match documents: canonical entity names, aliases, and discriminative nouns.\n"
+        "5) Remove filler words and conversational phrasing; keep it concise and specific.\n"
+        "6) Keep explicit comparison or temporal intent when present (for example: vs, before, after, latest, 2021).\n"
+        "7) Keep the query as a compact keyword-rich phrase, not a full explanatory sentence.\n"
+        "\n"
+        "Safety/quality guardrails:\n"
+        "1) Do not invent facts, entities, dates, or constraints that were not in the user query.\n"
+        "2) If the input is already a strong English retrieval query, keep it very close with only minimal normalization.\n"
+        "3) Avoid malformed or repetitive tokens."
     )
     template: str = "User Query: {query}\nSearch Query:"
 
@@ -167,3 +189,6 @@ def ensure_runtime_dirs(config: AppConfig) -> None:
 
     log_path = Path(config.train.log_path)
     log_path.parent.mkdir(parents=True, exist_ok=True)
+
+    group_trace_log_path = Path(config.train.group_trace_log_path)
+    group_trace_log_path.parent.mkdir(parents=True, exist_ok=True)

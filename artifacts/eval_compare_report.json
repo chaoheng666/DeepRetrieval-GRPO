@@ -2,11 +2,11 @@
   "config": {
     "data": {
       "topic_name": "msmarco-passage-dev-subset",
-      "prebuilt_index": "msmarco-v1-passage-slim",
+      "prebuilt_index": "msmarco-v1-passage",
       "train_ratio": 0.8,
       "seed": 42,
       "max_train_queries": 2000,
-      "max_val_queries": 50
+      "max_val_queries": 100
     },
     "model": {
       "model_name": "Qwen/Qwen2.5-0.5B-Instruct",
@@ -17,6 +17,7 @@
       "bnb_4bit_use_double_quant": true,
       "actor_device_map": "auto",
       "ref_device_map": "auto",
+      "ref_precision_mode": "auto",
       "lora_r": 16,
       "lora_alpha": 32,
       "lora_dropout": 0.05,
@@ -39,16 +40,17 @@
       "clip_range": 0.2,
       "kl_beta": 0.02,
       "grad_clip_norm": 1.0,
-      "max_new_tokens": 16,
+      "max_new_tokens": 24,
       "temperature": 1.0,
       "top_p": 0.95,
       "eval_every_steps": 20,
       "max_steps": null,
       "save_dir": "artifacts/checkpoints",
-      "log_path": "artifacts/train_log.jsonl"
+      "log_path": "artifacts/train_log.jsonl",
+      "group_trace_log_path": "artifacts/group_trace_log.jsonl"
     },
     "reward": {
-      "topk": 20,
+      "topk": 50,
       "mrr_weight": 1.0,
       "overlap_weight": 0.2,
       "min_query_chars": 3,
@@ -59,26 +61,26 @@
       "penalty_unreadable": 0.3
     },
     "prompt": {
-      "system_prompt": "You are a search assistant. Rewrite the user query into a concise and specific search query. Keep factual intent and output only the rewritten query.",
+      "system_prompt": "You are a high-precision query rewriter for sparse lexical retrieval (BM25-style). Rewrite the user query into exactly one English search query line for passage retrieval. \nHard output constraints:\n1) Output English only. Do not output Chinese, Cyrillic, mixed-script text, emoji, or symbols from other scripts.\n2) Output exactly one line with only the final query text. No prefix, no numbering, no quotes, no markdown.\n3) Do not output explanations, reasoning, alternatives, or multiple candidates.\n\nRetrieval-oriented rewriting rules:\n1) Preserve the original intent and constraints exactly; do not change the task.\n2) Preserve key entities, names, product terms, numbers, years, units, negations, and domain constraints.\n3) If the user query is not in English, translate it to natural English retrieval terms while preserving meaning.\n4) Prefer concrete lexical terms likely to match documents: canonical entity names, aliases, and discriminative nouns.\n5) Remove filler words and conversational phrasing; keep it concise and specific.\n6) Keep explicit comparison or temporal intent when present (for example: vs, before, after, latest, 2021).\n7) Keep the query as a compact keyword-rich phrase, not a full explanatory sentence.\n\nSafety/quality guardrails:\n1) Do not invent facts, entities, dates, or constraints that were not in the user query.\n2) If the input is already a strong English retrieval query, keep it very close with only minimal normalization.\n3) Avoid malformed or repetitive tokens.",
       "template": "User Query: {query}\nSearch Query:"
     }
   },
-  "num_eval_queries": 50,
+  "num_eval_queries": 100,
   "original": {
-    "mrr@10": 0.22332506176314226,
-    "reward_mean": 0.4233250617631423
+    "mrr@10": 0.24115736281210284,
+    "reward_mean": 0.4411573628121029
   },
   "zero_shot": {
-    "mrr@10": 0.07740977443609022,
-    "reward_mean": 0.06448801057903225
+    "mrr@10": 0.17071632919237284,
+    "reward_mean": 0.22467628493150815
   },
   "rl": {
-    "mrr@10": 0.052420299858380356,
-    "reward_mean": 0.08021106464914515
+    "mrr@10": 0.2090222787240776,
+    "reward_mean": 0.28578716321752246
   },
   "deltas": {
-    "zero_minus_original": -0.14591528732705206,
-    "rl_minus_original": -0.1709047619047619,
-    "rl_minus_zero": -0.024989474577709864
+    "zero_minus_original": -0.07044103361973,
+    "rl_minus_original": -0.032135084088025234,
+    "rl_minus_zero": 0.03830594953170477
   }
 }

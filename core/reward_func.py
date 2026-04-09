@@ -122,6 +122,12 @@ def _unreadable_ratio(text: str) -> float:
     return unreadable / max(1, len(text))
 
 
+def compute_unreadable_ratio(text: str) -> float:
+    """公开的不可读字符比例计算函数（供训练监控使用）。"""
+
+    return _unreadable_ratio(text)
+
+
 def compute_text_penalty(text: str, cfg: RewardConfig) -> TextPenaltyDetails:
     """计算文本惩罚。
 

@@ -2,10 +2,10 @@ from __future__ import annotations
 
 """三路对比评估脚本。
 
-在同一份验证集上比较三种 query 形式：
-1. Original：原始 query（不重写）
-2. Zero-shot：基础模型提示重写（未经过 RL）
-3. RL：加载 GRPO 训练后的 LoRA adapter 重写
+在同一验证集上比较：
+1. Original（原始 query）
+2. Zero-shot（基础模型重写）
+3. RL（基础模型 + LoRA adapter 重写）
 """
 
 import argparse
@@ -23,17 +23,28 @@ from data.loader import QueryExample, load_topics_qrels, maybe_limit, split_quer
 
 
 def parse_args() -> argparse.Namespace:
-    """解析评测命令行参数。"""
+    """解析评估命令行参数。"""
 
     parser = argparse.ArgumentParser(description="Compare Original vs Zero-shot vs RL-rewritten query MRR@10.")
     parser.add_argument("--rl-adapter-path", type=str, required=True, help="Path to trained LoRA adapter.")
     parser.add_argument("--model-name", type=str, default=None, help="Override base model name for evaluation.")
+    parser.add_argument(
+        "--disable-4bit",
+        action="store_true",
+        help="Disable 4-bit quantization for evaluation model loading.",
+    )
+    parser.add_argument(
+        "--strict-tokenizer-model-match",
+        action="store_true",
+        help="Fail fast if tokenizer/model (or adapter base model) mismatch is detected.",
+    )
     parser.add_argument("--topic-name", type=str, default=None)
     parser.add_argument("--prebuilt-index", type=str, default=None)
     parser.add_argument("--train-ratio", type=float, default=None)
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--max-eval-queries", type=int, default=None)
     parser.add_argument("--sample-print", type=int, default=5)
+    parser.add_argument("--progress-every", type=int, default=20, help="Print progress every N queries per stage.")
     parser.add_argument("--report-path", type=str, default="artifacts/eval_compare_report.json")
     parser.add_argument("--max-new-tokens", type=int, default=None)
     parser.add_argument(
@@ -45,17 +56,19 @@ def parse_args() -> argparse.Namespace:
 
 
 def apply_overrides(config: AppConfig, args: argparse.Namespace) -> AppConfig:
-    """应用配置覆盖参数。"""
+    """应用评估配置覆盖参数。"""
 
     if args.low_mem_mode:
         config.model.model_name = "Qwen/Qwen2.5-0.5B-Instruct"
         config.data.prebuilt_index = "msmarco-v1-passage-slim"
         config.data.max_val_queries = 100
-        config.train.max_new_tokens = 16
-        config.reward.topk = 20
+        config.train.max_new_tokens = 24
+        config.reward.topk = 50
 
     if args.model_name is not None:
         config.model.model_name = args.model_name
+    if args.disable_4bit:
+        config.model.load_in_4bit = False
     if args.topic_name is not None:
         config.data.topic_name = args.topic_name
     if args.prebuilt_index is not None:
@@ -71,12 +84,40 @@ def apply_overrides(config: AppConfig, args: argparse.Namespace) -> AppConfig:
     return config
 
 
-def evaluate_original(queries: Sequence[QueryExample], rewarder: Rewarder) -> tuple[dict[str, float], dict[str, RewardBreakdown]]:
+def validate_adapter_path(adapter_path: str) -> dict:
+    """校验 adapter 路径并读取 adapter_config.json。"""
+
+    adapter_dir = Path(adapter_path)
+    if not adapter_dir.exists():
+        raise FileNotFoundError(
+            f"Adapter path does not exist: {adapter_dir}. "
+            "Use the correct folder like artifacts_lowmem/checkpoints/best."
+        )
+    if not adapter_dir.is_dir():
+        raise NotADirectoryError(f"Adapter path is not a directory: {adapter_dir}")
+
+    adapter_cfg_path = adapter_dir / "adapter_config.json"
+    if not adapter_cfg_path.exists():
+        raise FileNotFoundError(f"Missing adapter_config.json in: {adapter_dir}")
+    with adapter_cfg_path.open("r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def evaluate_original(
+    queries: Sequence[QueryExample],
+    rewarder: Rewarder,
+    *,
+    progress_every: int,
+) -> tuple[dict[str, float], dict[str, RewardBreakdown]]:
     """评估原始 query 基线。"""
 
     per_qid: dict[str, RewardBreakdown] = {}
-    for query in queries:
+    total = len(queries)
+    step = max(1, progress_every)
+    for idx, query in enumerate(queries, start=1):
         per_qid[query.qid] = rewarder.score(query.qid, query.text, source_query=query.text)
+        if idx % step == 0 or idx == total:
+            print(f"[progress] stage=original {idx}/{total}")
 
     values = list(per_qid.values())
     return (
@@ -94,11 +135,15 @@ def evaluate_with_model(
     rewarder: Rewarder,
     *,
     max_new_tokens: int,
+    stage_name: str,
+    progress_every: int,
 ) -> tuple[dict[str, float], dict[str, tuple[str, RewardBreakdown]]]:
-    """评估模型重写后的 query。"""
+    """评估模型重写结果。"""
 
     per_qid: dict[str, tuple[str, RewardBreakdown]] = {}
-    for query in queries:
+    total = len(queries)
+    step = max(1, progress_every)
+    for idx, query in enumerate(queries, start=1):
         rewritten = model.generate_rewrite(
             query.text,
             policy="actor",
@@ -107,6 +152,8 @@ def evaluate_with_model(
             top_p=1.0,
         )
         per_qid[query.qid] = (rewritten, rewarder.score(query.qid, rewritten, source_query=query.text))
+        if idx % step == 0 or idx == total:
+            print(f"[progress] stage={stage_name} {idx}/{total}")
 
     values = [item[1] for item in per_qid.values()]
     return (
@@ -122,12 +169,25 @@ def main() -> int:
     """执行完整三路评估并输出报告。"""
 
     args = parse_args()
+    adapter_cfg = validate_adapter_path(args.rl_adapter_path)
+    adapter_base_model = str(adapter_cfg.get("base_model_name_or_path", "")).strip() or None
+
     config = apply_overrides(get_default_config(), args)
+    if args.model_name is None and adapter_base_model:
+        # 默认优先使用 adapter 对应的 base model，避免错配。
+        config.model.model_name = adapter_base_model
+
     if args.low_mem_mode:
         print("[mode] low-mem eval preset enabled.")
-    print(f"[config] model={config.model.model_name}, index={config.data.prebuilt_index}, topk={config.reward.topk}")
+    print(
+        "[config] "
+        f"model={config.model.model_name}, "
+        f"index={config.data.prebuilt_index}, "
+        f"topk={config.reward.topk}, "
+        f"load_in_4bit={config.model.load_in_4bit}, "
+        f"adapter_base={adapter_base_model or '-'}"
+    )
 
-    # 与训练保持同样的数据切分策略，确保比较公平。
     queries, qrels = load_topics_qrels(config.data.topic_name)
     _, val_queries = split_queries(queries, train_ratio=config.data.train_ratio, seed=config.data.seed)
     val_queries = maybe_limit(val_queries, config.data.max_val_queries)
@@ -139,28 +199,38 @@ def main() -> int:
         reward_cfg=config.reward,
     )
 
-    original_metrics, original_by_qid = evaluate_original(val_queries, rewarder)
+    print("[stage] evaluating original queries...")
+    original_metrics, original_by_qid = evaluate_original(
+        val_queries,
+        rewarder,
+        progress_every=args.progress_every,
+    )
 
-    # Zero-shot：基础模型直接重写，不加载 LoRA。
+    print("[stage] loading zero-shot model...")
     zero_shot_model = ModelWrapper(
         model_cfg=config.model,
         prompt_cfg=config.prompt,
         train_mode=False,
         enable_lora=False,
         load_ref_model=False,
+        strict_tokenizer_model_match=args.strict_tokenizer_model_match,
     )
+    print("[stage] evaluating zero-shot rewrites...")
     zero_metrics, zero_by_qid = evaluate_with_model(
         zero_shot_model,
         val_queries,
         rewarder,
         max_new_tokens=config.train.max_new_tokens,
+        stage_name="zero-shot",
+        progress_every=args.progress_every,
     )
-    # 显式释放 zero-shot 模型，降低后续加载 RL 模型的峰值显存占用。
+
+    # 显式释放 zero-shot 模型，减少后续加载 RL 模型时的显存峰值。
     del zero_shot_model
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
-    # RL：基础模型 + 已训练 adapter。
+    print("[stage] loading RL model...")
     rl_model = ModelWrapper(
         model_cfg=config.model,
         prompt_cfg=config.prompt,
@@ -168,12 +238,16 @@ def main() -> int:
         enable_lora=True,
         load_ref_model=False,
         adapter_path=args.rl_adapter_path,
+        strict_tokenizer_model_match=args.strict_tokenizer_model_match,
     )
+    print("[stage] evaluating RL rewrites...")
     rl_metrics, rl_by_qid = evaluate_with_model(
         rl_model,
         val_queries,
         rewarder,
         max_new_tokens=config.train.max_new_tokens,
+        stage_name="rl",
+        progress_every=args.progress_every,
     )
 
     delta_zero = zero_metrics["mrr@10"] - original_metrics["mrr@10"]

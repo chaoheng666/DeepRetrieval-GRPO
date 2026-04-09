@@ -2,16 +2,16 @@ from __future__ import annotations
 
 """GRPO 训练主入口。
 
-这个脚本把训练编排集中在一个文件，便于快速理解和调试：
-1. 读取配置与 CLI 覆盖参数
-2. 加载 Pyserini 数据与检索奖励器
-3. 构建模型（Actor + Ref）与优化器
-4. 执行 GRPO 训练循环
-5. 周期评估并保存 best/latest adapter
+主要职责：
+1. 解析命令行并合并默认配置/覆盖配置
+2. 构建数据、奖励器、Actor/Ref 模型与优化器
+3. 执行训练循环并周期评估
+4. 写入两类日志：训练指标日志 + group 采样明细日志
 """
 
 import argparse
 import json
+import os
 import random
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,16 +24,14 @@ from app_config import AppConfig, ensure_runtime_dirs, get_default_config
 from core.grpo_engine import GRPOEngine
 from core.model_wrapper import ModelWrapper
 from core.reward_func import Rewarder
-from data.loader import QueryExample, load_topics_qrels, maybe_limit, split_queries
+from data.loader import QueryExample, maybe_limit, load_topics_qrels, split_queries
 
 
 def parse_args() -> argparse.Namespace:
-    """解析命令行参数。
+    """解析训练命令行参数。"""
 
-    约定：所有参数均为“可选覆盖项”，若不提供则沿用 app_config 默认值。
-    """
-
-    parser = argparse.ArgumentParser(description="Train Qwen2.5-3B query rewriter with custom GRPO.")
+    parser = argparse.ArgumentParser(description="Train Qwen2.5 query rewriter with custom GRPO.")
+    parser.add_argument("--model-name", type=str, default=None, help="Override base model name.")
     parser.add_argument("--topic-name", type=str, default=None)
     parser.add_argument("--prebuilt-index", type=str, default=None)
     parser.add_argument("--train-ratio", type=float, default=None)
@@ -44,6 +42,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--learning-rate", type=float, default=None)
     parser.add_argument("--clip-range", type=float, default=None)
     parser.add_argument("--kl-beta", type=float, default=None)
+    parser.add_argument(
+        "--disable-4bit",
+        action="store_true",
+        help="Disable 4-bit quantization for actor model loading.",
+    )
+    parser.add_argument(
+        "--strict-tokenizer-model-match",
+        action="store_true",
+        help="Fail fast if tokenizer/model or adapter base-model mismatch is detected.",
+    )
     parser.add_argument("--max-new-tokens", type=int, default=None)
     parser.add_argument("--temperature", type=float, default=None)
     parser.add_argument("--top-p", type=float, default=None)
@@ -56,58 +64,60 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-val-queries", type=int, default=None)
     parser.add_argument("--save-dir", type=str, default=None)
     parser.add_argument("--log-path", type=str, default=None)
+    parser.add_argument("--group-trace-log-path", type=str, default=None)
     parser.add_argument("--adapter-path", type=str, default=None, help="Optional LoRA adapter for warm start.")
+    parser.add_argument(
+        "--print-best-query",
+        action="store_true",
+        help="Print each input query and the best rewritten query (by reward) in every training step.",
+    )
     parser.add_argument(
         "--low-mem-mode",
         action="store_true",
-        help="Use an aggressive low-memory preset (for 6GB-class GPU quick smoke runs).",
+        help="Use an aggressive low-memory preset (for 6GB-class GPU smoke runs).",
     )
     return parser.parse_args()
 
 
 def apply_low_mem_mode(config: AppConfig) -> AppConfig:
-    """Apply a conservative low-memory preset.
+    """应用低显存预设（以 0.5B 快速跑通链路为目标）。"""
 
-    This preset is designed for machines with very limited VRAM (e.g. 6GB).
-    It targets *pipeline validation* rather than final-quality training.
-    """
-
-    # 使用更小模型，降低 actor+ref 双模型同时驻留带来的显存压力。
+    # 低显存模式默认切到更小模型。
     config.model.model_name = "Qwen/Qwen2.5-0.5B-Instruct"
     config.model.load_in_4bit = True
     config.model.lora_r = 8
     config.model.lora_alpha = 16
     config.model.lora_dropout = 0.05
 
-    # 尽量降低每步显存占用。
+    # 减少单步显存占用与训练时长。
     config.train.batch_size = 1
-    # NOTE: group_size must be >=2 for GRPO to produce non-zero advantage.
-    config.train.group_size = 2
-    config.train.max_new_tokens = 16
-    config.train.temperature = 0.9
+    config.train.group_size = 8
+    config.train.max_new_tokens = 20
+    config.train.temperature = 0.1
     config.train.top_p = 0.95
     config.train.eval_every_steps = 10
-    config.train.max_steps = 20
+    config.train.max_steps = 50
     config.train.num_epochs = 1
 
-    # 缩小数据规模以快速跑通端到端链路。
+    # 缩小样本规模并使用 slim 索引，提升启动速度。
     config.data.max_train_queries = 64
     config.data.max_val_queries = 32
-    # 使用 slim 预编译索引，首次下载更快（约 0.5GB 级别）。
     config.data.prebuilt_index = "msmarco-v1-passage-slim"
-    # 低显存快速实验里把奖励窗口放大到 top-20，增加命中概率。
-    config.reward.topk = 20
+    config.reward.topk = 50
     config.reward.overlap_weight = 0.3
 
-    # Keep outputs separate from normal runs.
+    # 将低显存实验输出隔离到单独目录。
     config.train.save_dir = "artifacts_lowmem/checkpoints"
     config.train.log_path = "artifacts_lowmem/train_log.jsonl"
+    config.train.group_trace_log_path = "artifacts_lowmem/group_trace_log.jsonl"
     return config
 
 
 def apply_overrides(config: AppConfig, args: argparse.Namespace) -> AppConfig:
-    """将 CLI 非空字段覆盖到默认配置对象上。"""
+    """应用 CLI 覆盖参数。"""
 
+    if args.model_name is not None:
+        config.model.model_name = args.model_name
     if args.topic_name is not None:
         config.data.topic_name = args.topic_name
     if args.prebuilt_index is not None:
@@ -133,6 +143,8 @@ def apply_overrides(config: AppConfig, args: argparse.Namespace) -> AppConfig:
         config.train.clip_range = args.clip_range
     if args.kl_beta is not None:
         config.train.kl_beta = args.kl_beta
+    if args.disable_4bit:
+        config.model.load_in_4bit = False
     if args.max_new_tokens is not None:
         config.train.max_new_tokens = args.max_new_tokens
     if args.temperature is not None:
@@ -153,6 +165,32 @@ def apply_overrides(config: AppConfig, args: argparse.Namespace) -> AppConfig:
         config.train.save_dir = args.save_dir
     if args.log_path is not None:
         config.train.log_path = args.log_path
+    if args.group_trace_log_path is not None:
+        config.train.group_trace_log_path = args.group_trace_log_path
+
+    return config
+
+
+def apply_runtime_mode_adjustments(config: AppConfig, args: argparse.Namespace) -> AppConfig:
+    """应用运行时安全调整（在预设与 CLI 合并之后）。"""
+
+    # 低显存模式下若 CUDA 不可用，自动切到 CPU 兼容加载。
+    if args.low_mem_mode and not torch.cuda.is_available():
+        config.model.load_in_4bit = False
+        config.model.actor_device_map = "cpu"
+        config.model.ref_device_map = "cpu"
+
+    # 全精度调试时给出更稳妥的 CUDA 分配策略。
+    if args.disable_4bit:
+        os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
+    # GRPO 组内标准化至少需要 2 个样本。
+    if config.train.group_size < 2:
+        print(
+            f"[warn] group_size={config.train.group_size} is invalid for GRPO advantage normalization; "
+            "auto-adjusting to 2."
+        )
+        config.train.group_size = 2
 
     return config
 
@@ -173,7 +211,7 @@ def iter_batches(items: Sequence[QueryExample], batch_size: int) -> Iterable[lis
 
 
 def append_jsonl(path: Path, payload: dict) -> None:
-    """向 JSONL 日志追加一条记录。"""
+    """向 JSONL 文件追加一条记录。"""
 
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as f:
@@ -188,14 +226,7 @@ def evaluate_policy(
     max_queries: int | None,
     max_new_tokens: int,
 ) -> dict[str, float]:
-    """评估当前 actor 策略在验证集上的表现。
-
-    返回值包含：
-    - reward_mean: 平均总奖励（mrr - penalty）
-    - mrr_mean: 平均 MRR@10
-    - penalty_mean: 平均惩罚
-    - count: 数实际评估样本
-    """
+    """评估当前 actor 策略在验证集上的效果。"""
 
     eval_queries = list(queries[:max_queries]) if max_queries is not None else list(queries)
     rewards: list[float] = []
@@ -203,7 +234,6 @@ def evaluate_policy(
     penalties: list[float] = []
 
     for query in eval_queries:
-        # 评估时用贪心解码，减少随机性干扰。
         rewritten = model.generate_rewrite(
             query.text,
             policy="actor",
@@ -230,7 +260,7 @@ def evaluate_original(
     *,
     max_queries: int | None,
 ) -> dict[str, float]:
-    """原始 query 基线评估（不做重写）。"""
+    """评估原始 query（不重写）基线。"""
 
     eval_queries = list(queries[:max_queries]) if max_queries is not None else list(queries)
     mrr_scores = [rewarder.score(q.qid, q.text, source_query=q.text).mrr for q in eval_queries]
@@ -243,27 +273,15 @@ def evaluate_original(
 def main() -> int:
     """训练主流程。"""
 
+    # 1) 合并默认配置 + 低显存预设 + CLI 覆盖 + 运行时调整。
     args = parse_args()
     config = get_default_config()
     if args.low_mem_mode:
         config = apply_low_mem_mode(config)
-    # CLI explicit values should still win over low-mem preset.
     config = apply_overrides(config, args)
+    config = apply_runtime_mode_adjustments(config, args)
 
-    # 低显存模式下，如果 CUDA 不可用，自动切到 CPU 兼容配置，避免 4bit 加载失败。
-    if args.low_mem_mode and not torch.cuda.is_available():
-        config.model.load_in_4bit = False
-        config.model.actor_device_map = "cpu"
-        config.model.ref_device_map = "cpu"
-
-    # GRPO 组内标准化需要至少两个样本。否则 advantage 恒为 0，loss_pg 失效。
-    if config.train.group_size < 2:
-        print(
-            f"[warn] group_size={config.train.group_size} is invalid for GRPO advantage normalization; "
-            "auto-adjusting to 2."
-        )
-        config.train.group_size = 2
-
+    # 2) 准备运行目录和随机种子。
     ensure_runtime_dirs(config)
     set_seed(config.data.seed)
 
@@ -274,7 +292,7 @@ def main() -> int:
         if not torch.cuda.is_available():
             print("[mode] CUDA is unavailable -> switched to CPU-compatible loading (much slower).")
 
-    # 数据来源严格使用 Pyserini 预编译 topics/qrels。
+    # 3) 加载数据并切分 train/val。
     queries, qrels = load_topics_qrels(config.data.topic_name)
     train_queries, val_queries = split_queries(queries, train_ratio=config.data.train_ratio, seed=config.data.seed)
     # train_queries = maybe_limit(train_queries, config.data.max_train_queries)
@@ -282,17 +300,18 @@ def main() -> int:
 
     print(f"[data] train_queries={len(train_queries)}, val_queries={len(val_queries)}, qrels_qids={len(qrels)}")
 
-    # 奖励器内部持有 Pyserini 预编译索引检索器，负责 MRR 计算。
+    # 4) 初始化奖励器与模型组件。
     rewarder = Rewarder(
         qrels=qrels,
         prebuilt_index=config.data.prebuilt_index,
         reward_cfg=config.reward,
     )
 
+    # 5) 基线评估（原始 query）。
     base_original_val = evaluate_original(rewarder, val_queries, max_queries=config.data.max_val_queries)
     print(f"[baseline] original_val_mrr@10={base_original_val['mrr_mean']:.4f}")
 
-    # 训练时同时加载 actor（可训练）和 ref（冻结）以支持 KL 项。
+    # 6) 构建训练引擎。
     model = ModelWrapper(
         model_cfg=config.model,
         prompt_cfg=config.prompt,
@@ -300,13 +319,13 @@ def main() -> int:
         enable_lora=True,
         load_ref_model=True,
         adapter_path=args.adapter_path,
+        strict_tokenizer_model_match=args.strict_tokenizer_model_match,
     )
     optimizer = torch.optim.AdamW(
         model.trainable_parameters(),
         lr=config.train.learning_rate,
         weight_decay=config.train.weight_decay,
     )
-    # GRPO 引擎封装了采样、优势归一化、loss 计算与反传更新。
     engine = GRPOEngine(
         model_wrapper=model,
         rewarder=rewarder,
@@ -320,28 +339,46 @@ def main() -> int:
         top_p=config.train.top_p,
     )
 
+    # 7) 日志与 checkpoint 路径。
     log_path = Path(config.train.log_path)
+    group_trace_log_path = Path(config.train.group_trace_log_path)
     ckpt_root = Path(config.train.save_dir)
     best_path = ckpt_root / "best"
     latest_path = ckpt_root / "latest"
 
+    # 8) 训练循环：每 step 更新参数、写日志、按周期评估与保存 best/latest。
     global_step = 0
     best_val_mrr = float("-inf")
     should_stop = False
 
     for epoch in range(1, config.train.num_epochs + 1):
-        # 每个 epoch 重新乱序，seed 采用可复现的偏移策略。
         random.Random(config.data.seed + epoch).shuffle(train_queries)
         for batch in iter_batches(train_queries, config.train.batch_size):
             global_step += 1
-            # 执行一次参数更新。
-            metrics = engine.train_step(batch)
+            metrics = engine.train_step(batch, collect_best_queries=args.print_best_query)
+            best_query_pairs = metrics.pop("best_query_pairs", [])
+            group_query_summaries = metrics.pop("group_query_summaries", [])
+            timestamp_utc = datetime.now(timezone.utc).isoformat()
+
+            # 独立落盘：每个 query 一条 group 采样明细。
+            for summary in group_query_summaries:
+                append_jsonl(
+                    group_trace_log_path,
+                    {
+                        "phase": "train_group_trace",
+                        "epoch": epoch,
+                        "step": global_step,
+                        "timestamp_utc": timestamp_utc,
+                        **summary,
+                    },
+                )
+
             metrics.update(
                 {
                     "phase": "train",
                     "epoch": epoch,
                     "step": global_step,
-                    "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                    "timestamp_utc": timestamp_utc,
                 }
             )
             append_jsonl(log_path, metrics)
@@ -350,10 +387,18 @@ def main() -> int:
                 f"[train] step={global_step} loss={metrics['loss']:.4f} "
                 f"pg={metrics['loss_pg']:.4f} kl={metrics['loss_kl']:.4f} "
                 f"reward={metrics['reward_mean']:.4f} mrr={metrics['mrr_mean']:.4f} "
-                f"overlap={metrics.get('overlap_mean', 0.0):.4f}"
+                f"overlap={metrics.get('overlap_mean', 0.0):.4f} "
+                f"unreadable={metrics.get('unreadable_ratio_mean', 0.0):.4f}"
             )
+            if args.print_best_query and best_query_pairs:
+                for pair in best_query_pairs:
+                    print(
+                        f"[best-query] qid={pair['qid']} "
+                        f"input={pair['input_query']} "
+                        f"best={pair['best_rewritten_query']} "
+                        f"reward={pair['best_reward']:.4f}"
+                    )
 
-            # 周期性做验证并保存 checkpoint。
             if global_step % config.train.eval_every_steps == 0:
                 eval_metrics = evaluate_policy(
                     model,
@@ -376,11 +421,9 @@ def main() -> int:
                     f"val_reward={eval_metrics['reward_mean']:.4f}"
                 )
 
-                # latest 始终刷新，便于中断后恢复。
                 model.save_adapter(str(latest_path))
                 if eval_metrics["mrr_mean"] > best_val_mrr:
                     best_val_mrr = eval_metrics["mrr_mean"]
-                    # best 仅在验证 MRR 提升时更新。
                     model.save_adapter(str(best_path))
                     print(f"[ckpt] best updated: mrr={best_val_mrr:.4f} -> {best_path}")
 
@@ -390,8 +433,8 @@ def main() -> int:
         if should_stop:
             break
 
+    # 9) 训练结束后做最终评估与输出汇总。
     model.save_adapter(str(latest_path))
-    # 训练结束后做一次最终验证汇总。
     final_eval = evaluate_policy(
         model,
         rewarder,
@@ -406,6 +449,7 @@ def main() -> int:
     )
     print(f"[done] checkpoints: best={best_path}, latest={latest_path}")
     print(f"[done] train log: {log_path}")
+    print(f"[done] group trace log: {group_trace_log_path}")
     return 0
 
 

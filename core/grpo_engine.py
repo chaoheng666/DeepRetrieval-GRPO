@@ -1,15 +1,6 @@
 from __future__ import annotations
 
-"""GRPO 训练核心模块。
-
-本模块实现了你要求的“纯 PyTorch 自写 GRPO”关键流程，不依赖第三方 RL 框架：
-
-1. 组采样（每个 query 采样 K 个 response）
-2. 组内优势归一化（relative advantage）
-3. PPO clipped policy objective
-4. 与参考策略的 KL 正则项
-5. 反向传播、梯度裁剪与优化器更新
-"""
+"""GRPO 训练核心模块（纯 PyTorch 实现）。"""
 
 from dataclasses import dataclass
 from statistics import fmean
@@ -20,38 +11,30 @@ from torch.nn.utils import clip_grad_norm_
 
 from data.loader import QueryExample
 
+from .reward_func import compute_unreadable_ratio
+
 
 @dataclass(slots=True)
 class Sample:
-    """单条采样结果。
-
-    该结构把训练所需字段放在一起，方便从采样阶段流向 loss 计算阶段：
-    - response_token_ids / logprob_old：用于 PPO ratio
-    - reward / mrr / penalty：用于训练监控和优势归一化
-    - advantage：组内归一化后的相对优势
-    """
+    """单条采样样本，承载 loss 计算与日志所需字段。"""
 
     qid: str
     prompt: str
     response_text: str
+    rewritten_query: str
     response_token_ids: list[int]
     logprob_old: torch.Tensor
     reward: float
     mrr: float
     overlap: float
     penalty: float
+    unreadable_penalty: float
+    unreadable_ratio: float
     advantage: float = 0.0
 
 
 def normalize_advantages(rewards: Sequence[float], eps: float = 1e-8) -> torch.Tensor:
-    """组内奖励标准化，得到相对优势。
-
-    公式：
-      adv_i = (r_i - mean(r)) / (std(r) + eps)
-
-    数值稳定性：
-    - 若 std 非常小（接近 0），返回全 0，避免除零和极端梯度。
-    """
+    """组内奖励标准化，得到相对优势。"""
 
     rewards_tensor = torch.tensor(list(rewards), dtype=torch.float32)
     if rewards_tensor.numel() == 0:
@@ -70,13 +53,7 @@ def ppo_clipped_objective(
     advantage: float,
     clip_range: float,
 ) -> torch.Tensor:
-    """计算 token 级 PPO clipped surrogate objective。
-
-    ratio = exp(logprob_new - logprob_old)
-    objective = min(ratio * adv, clip(ratio, 1-eps, 1+eps) * adv)
-
-    返回逐 token 的 objective，调用方再做 mean 和负号得到 loss_pg。
-    """
+    """计算 token 级 PPO clipped surrogate objective。"""
 
     advantage_tensor = torch.full_like(logprob_new, float(advantage))
     ratios = torch.exp(logprob_new - logprob_old)
@@ -102,7 +79,7 @@ class GRPOEngine:
     ) -> None:
         """初始化训练引擎。
 
-        参数由 train.py 统一注入，避免在此模块里关心 CLI 与配置读取细节。
+        这里不负责解析配置，仅接收 train.py 注入的超参数。
         """
 
         self.model_wrapper = model_wrapper
@@ -116,179 +93,209 @@ class GRPOEngine:
         self.temperature = temperature
         self.top_p = top_p
 
-    def train_step(self, batch_queries: Sequence[QueryExample]) -> dict[str, float]:
-        """执行一个 batch 的 GRPO 更新步骤。
+    def train_step(
+        self,
+        batch_queries: Sequence[QueryExample],
+        *,
+        collect_best_queries: bool = False,
+    ) -> dict[str, object]:
+        """执行一个 batch 的 GRPO 更新。"""
 
-        每条 query 的流程：
-        1. 从当前策略采样 K 个重写结果（并记录采样时 old logprob）
-        2. 计算每条样本的序列级奖励（MRR - penalty）
-        3. 在组内做奖励标准化，得到 relative advantage
-        4. 重新前向计算：
-           - logprob_new（当前 actor）
-           - logprob_ref（冻结参考策略）
-           并构造 loss_pg + loss_kl
-        5. 聚合整个 batch 的损失，反传并更新参数
-        """
+        previous_mode = self.model_wrapper.actor_model.training
+        # rollout 与重算 logprob 阶段关闭 dropout，降低采样噪声。
+        self.model_wrapper.actor_model.eval()
+        try:
+            self.optimizer.zero_grad(set_to_none=True)
 
-        self.model_wrapper.actor_model.train(True)
-        self.optimizer.zero_grad(set_to_none=True)
+            loss_terms: list[torch.Tensor] = []
+            loss_pg_terms: list[float] = []
+            loss_kl_terms: list[float] = []
 
-        loss_terms: list[torch.Tensor] = []
-        loss_pg_terms: list[float] = []
-        loss_kl_terms: list[float] = []
-        rewards: list[float] = []
-        mrr_scores: list[float] = []
-        penalties: list[float] = []
-        overlaps: list[float] = []
-        all_advantages: list[float] = []
-        valid_samples = 0
-        sampled = 0
+            rewards: list[float] = []
+            mrr_scores: list[float] = []
+            penalties: list[float] = []
+            overlaps: list[float] = []
+            unreadable_ratios: list[float] = []
+            all_advantages: list[float] = []
 
-        for query in batch_queries:
-            prompt = self.model_wrapper.build_prompt(query.text)
-            group_samples: list[Sample] = []
+            best_query_pairs: list[dict[str, object]] = []
+            group_query_summaries: list[dict[str, object]] = []
 
-            for _ in range(self.group_size):
-                # Step 1: 组内采样。这里得到的是“旧策略概率”（采样时记录）。
-                generated = self.model_wrapper.generate_with_logprob(
-                    prompt,
-                    max_new_tokens=self.max_new_tokens,
-                    temperature=self.temperature,
-                    top_p=self.top_p,
+            valid_samples = 0
+            sampled = 0
+
+            for query in batch_queries:
+                prompt = self.model_wrapper.build_prompt(query.text)
+                group_samples: list[Sample] = []
+
+                for _ in range(self.group_size):
+                    # Step 1) 组内采样，记录 old-policy logprob。
+                    generated = self.model_wrapper.generate_with_logprob(
+                        prompt,
+                        max_new_tokens=self.max_new_tokens,
+                        temperature=self.temperature,
+                        top_p=self.top_p,
+                    )
+                    reward = self.rewarder.score(query.qid, generated.response_text, source_query=query.text)
+                    group_samples.append(
+                        Sample(
+                            qid=query.qid,
+                            prompt=prompt,
+                            response_text=generated.response_text,
+                            rewritten_query=reward.rewritten_query,
+                            response_token_ids=generated.response_token_ids,
+                            logprob_old=generated.logprob_old,
+                            reward=reward.total,
+                            mrr=reward.mrr,
+                            overlap=reward.overlap,
+                            penalty=reward.penalty,
+                            unreadable_penalty=reward.unreadable_penalty,
+                            unreadable_ratio=compute_unreadable_ratio(generated.response_text),
+                        )
+                    )
+                    sampled += 1
+
+                group_query_summaries.append(
+                    {
+                        # 每个 query 一条汇总日志，便于排查 4bit 乱码样本。
+                        "qid": str(query.qid),
+                        "input_query": query.text,
+                        "group_raw_responses": [sample.response_text for sample in group_samples],
+                        "group_cleaned_queries": [sample.rewritten_query for sample in group_samples],
+                        "group_rewards": [sample.reward for sample in group_samples],
+                        "group_mrr": [sample.mrr for sample in group_samples],
+                        "group_penalties": [sample.penalty for sample in group_samples],
+                        "group_unreadable_penalties": [sample.unreadable_penalty for sample in group_samples],
+                    }
                 )
-                # Step 2: 序列级奖励（检索质量 + 文本质量）。
-                reward = self.rewarder.score(query.qid, generated.response_text, source_query=query.text)
-                sample = Sample(
-                    qid=query.qid,
-                    prompt=prompt,
-                    response_text=generated.response_text,
-                    response_token_ids=generated.response_token_ids,
-                    logprob_old=generated.logprob_old,
-                    reward=reward.total,
-                    mrr=reward.mrr,
-                    overlap=reward.overlap,
-                    penalty=reward.penalty,
-                )
-                group_samples.append(sample)
-                sampled += 1
 
-            # Step 3: GRPO 核心——组内相对优势，而不是显式 value function。
-            advantages = normalize_advantages([s.reward for s in group_samples]).tolist()
-            for sample, advantage in zip(group_samples, advantages):
-                sample.advantage = float(advantage)
-                all_advantages.append(sample.advantage)
-                rewards.append(sample.reward)
-                mrr_scores.append(sample.mrr)
-                penalties.append(sample.penalty)
-                overlaps.append(sample.overlap)
+                if collect_best_queries and group_samples:
+                    # ties 时 max 保留先出现的候选。
+                    best_sample = max(group_samples, key=lambda sample: sample.reward)
+                    best_query_pairs.append(
+                        {
+                            "qid": str(query.qid),
+                            "input_query": query.text,
+                            "best_rewritten_query": best_sample.rewritten_query,
+                            "best_reward": best_sample.reward,
+                        }
+                    )
 
-            for sample in group_samples:
-                # 空生成无法做 token-level 更新，直接跳过。
-                if not sample.response_token_ids or sample.logprob_old.numel() == 0:
-                    continue
+                # Step 2) 组内优势标准化（GRPO 核心）。
+                advantages = normalize_advantages([sample.reward for sample in group_samples]).tolist()
+                for sample, advantage in zip(group_samples, advantages):
+                    sample.advantage = float(advantage)
+                    all_advantages.append(sample.advantage)
+                    rewards.append(sample.reward)
+                    mrr_scores.append(sample.mrr)
+                    penalties.append(sample.penalty)
+                    overlaps.append(sample.overlap)
+                    unreadable_ratios.append(sample.unreadable_ratio)
 
-                # Step 4a: 新策略概率（保留梯度，用于更新 actor）。
-                logprob_new = self.model_wrapper.compute_logprob(
-                    sample.prompt,
-                    sample.response_token_ids,
-                    policy="actor",
-                    no_grad=False,
-                )
-                # Step 4b: 参考策略概率（冻结，不回传梯度）。
-                logprob_ref = self.model_wrapper.compute_logprob(
-                    sample.prompt,
-                    sample.response_token_ids,
-                    policy="ref",
-                    no_grad=True,
-                )
-                # 保护措施：采样阶段和重算阶段 token 数可能存在轻微不一致，
-                # 统一截断到最短长度，确保张量对齐可计算。
-                t = min(logprob_new.numel(), sample.logprob_old.numel(), logprob_ref.numel())
-                if t == 0:
-                    continue
+                for sample in group_samples:
+                    if not sample.response_token_ids or sample.logprob_old.numel() == 0:
+                        continue
 
-                logprob_new = logprob_new[:t]
-                logprob_old = sample.logprob_old[:t].to(logprob_new.device)
-                logprob_ref = logprob_ref[:t].to(logprob_new.device)
+                    # Step 3) 新策略与参考策略的 token 级 logprob。
+                    logprob_new = self.model_wrapper.compute_logprob(
+                        sample.prompt,
+                        sample.response_token_ids,
+                        policy="actor",
+                        no_grad=False,
+                    )
+                    logprob_ref = self.model_wrapper.compute_logprob(
+                        sample.prompt,
+                        sample.response_token_ids,
+                        policy="ref",
+                        no_grad=True,
+                    )
 
-                # Step 4c: PPO clipped policy loss。
-                clipped_obj = ppo_clipped_objective(
-                    logprob_new=logprob_new,
-                    logprob_old=logprob_old,
-                    advantage=sample.advantage,
-                    clip_range=self.clip_range,
-                )
-                loss_pg = -clipped_obj.mean()#句子的loss是所有token的平均，整个batch的loss是所有句子的平均
-                # Step 4d: KL 正则项，约束新策略不要偏离 ref 过快。
-                loss_kl = self.kl_beta * (logprob_new - logprob_ref).mean()
-                loss = loss_pg + loss_kl
+                    t = min(logprob_new.numel(), sample.logprob_old.numel(), logprob_ref.numel())
+                    if t == 0:
+                        continue
 
-                if not torch.isfinite(loss):
-                    # 出现 NaN/Inf 时跳过该样本，避免污染优化器状态。
-                    continue
+                    logprob_new = logprob_new[:t]
+                    logprob_old = sample.logprob_old[:t].to(logprob_new.device)
+                    logprob_ref = logprob_ref[:t].to(logprob_new.device)
 
-                loss_terms.append(loss)
-                loss_pg_terms.append(float(loss_pg.detach().cpu()))
-                loss_kl_terms.append(float(loss_kl.detach().cpu()))
-                valid_samples += 1
+                    # Step 4) PPO clipped loss + KL 正则。
+                    clipped_obj = ppo_clipped_objective(
+                        logprob_new=logprob_new,
+                        logprob_old=logprob_old,
+                        advantage=sample.advantage,
+                        clip_range=self.clip_range,
+                    )
+                    loss_pg = -clipped_obj.mean()
+                    loss_kl = self.kl_beta * (logprob_new - logprob_ref).mean()
+                    loss = loss_pg + loss_kl
+                    if not torch.isfinite(loss):
+                        continue
 
-        nonzero_reward_ratio = (sum(1 for value in rewards if value > 0.0) / len(rewards)) if rewards else 0.0
+                    loss_terms.append(loss)
+                    loss_pg_terms.append(float(loss_pg.detach().cpu()))
+                    loss_kl_terms.append(float(loss_kl.detach().cpu()))
+                    valid_samples += 1
 
-        if not loss_terms:
-            # 没有可用的 token-level 样本，返回指标但不更新参数。
-            return {
-                "loss": 0.0,
-                "loss_pg": 0.0,
-                "loss_kl": 0.0,
+            nonzero_reward_ratio = (sum(1 for value in rewards if value > 0.0) / len(rewards)) if rewards else 0.0
+
+            metrics: dict[str, object] = {
                 "reward_mean": fmean(rewards) if rewards else 0.0,
                 "mrr_mean": fmean(mrr_scores) if mrr_scores else 0.0,
                 "penalty_mean": fmean(penalties) if penalties else 0.0,
                 "overlap_mean": fmean(overlaps) if overlaps else 0.0,
-                "nonzero_reward_ratio": nonzero_reward_ratio,
-                "adv_mean": fmean(all_advantages) if all_advantages else 0.0,
-                "adv_std": float(torch.tensor(all_advantages).std(unbiased=False)) if all_advantages else 0.0,
-                "sampled": float(sampled),
-                "valid_samples": 0.0,
-                "updated": 0.0,
-            }
-
-        loss_batch = torch.stack(loss_terms).mean()
-        if not torch.isfinite(loss_batch):
-            # 聚合后再次做数值检查，双重保险。
-            return {
-                "loss": float("nan"),
-                "loss_pg": float("nan"),
-                "loss_kl": float("nan"),
-                "reward_mean": fmean(rewards) if rewards else 0.0,
-                "mrr_mean": fmean(mrr_scores) if mrr_scores else 0.0,
-                "penalty_mean": fmean(penalties) if penalties else 0.0,
-                "overlap_mean": fmean(overlaps) if overlaps else 0.0,
+                "unreadable_ratio_mean": fmean(unreadable_ratios) if unreadable_ratios else 0.0,
                 "nonzero_reward_ratio": nonzero_reward_ratio,
                 "adv_mean": fmean(all_advantages) if all_advantages else 0.0,
                 "adv_std": float(torch.tensor(all_advantages).std(unbiased=False)) if all_advantages else 0.0,
                 "sampled": float(sampled),
                 "valid_samples": float(valid_samples),
-                "updated": 0.0,
+                "group_query_summaries": group_query_summaries,
             }
 
-        # Step 5: 反向传播 + 梯度裁剪 + 参数更新。
-        loss_batch.backward()
-        # 只裁剪可训练参数（通常是 LoRA 参数）。
-        clip_grad_norm_(self.model_wrapper.trainable_parameters(), self.grad_clip_norm)
-        self.optimizer.step()
+            if not loss_terms:
+                # 没有可训练 token 样本时返回指标但不更新参数。
+                metrics.update(
+                    {
+                        "loss": 0.0,
+                        "loss_pg": 0.0,
+                        "loss_kl": 0.0,
+                        "updated": 0.0,
+                    }
+                )
+                if collect_best_queries:
+                    metrics["best_query_pairs"] = best_query_pairs
+                return metrics
 
-        return {
-            "loss": float(loss_batch.detach().cpu()),
-            "loss_pg": fmean(loss_pg_terms) if loss_pg_terms else 0.0,
-            "loss_kl": fmean(loss_kl_terms) if loss_kl_terms else 0.0,
-            "reward_mean": fmean(rewards) if rewards else 0.0,
-            "mrr_mean": fmean(mrr_scores) if mrr_scores else 0.0,
-            "penalty_mean": fmean(penalties) if penalties else 0.0,
-            "overlap_mean": fmean(overlaps) if overlaps else 0.0,
-            "nonzero_reward_ratio": nonzero_reward_ratio,
-            "adv_mean": fmean(all_advantages) if all_advantages else 0.0,
-            "adv_std": float(torch.tensor(all_advantages).std(unbiased=False)) if all_advantages else 0.0,
-            "sampled": float(sampled),
-            "valid_samples": float(valid_samples),
-            "updated": 1.0,
-        }
+            loss_batch = torch.stack(loss_terms).mean()
+            if not torch.isfinite(loss_batch):
+                # 聚合后再次做 NaN/Inf 保护。
+                metrics.update(
+                    {
+                        "loss": float("nan"),
+                        "loss_pg": float("nan"),
+                        "loss_kl": float("nan"),
+                        "updated": 0.0,
+                    }
+                )
+                if collect_best_queries:
+                    metrics["best_query_pairs"] = best_query_pairs
+                return metrics
+
+            # Step 5) 反传 + 梯度裁剪 + 更新参数。
+            loss_batch.backward()
+            clip_grad_norm_(self.model_wrapper.trainable_parameters(), self.grad_clip_norm)
+            self.optimizer.step()
+
+            metrics.update(
+                {
+                    "loss": float(loss_batch.detach().cpu()),
+                    "loss_pg": fmean(loss_pg_terms) if loss_pg_terms else 0.0,
+                    "loss_kl": fmean(loss_kl_terms) if loss_kl_terms else 0.0,
+                    "updated": 1.0,
+                }
+            )
+            if collect_best_queries:
+                metrics["best_query_pairs"] = best_query_pairs
+            return metrics
+        finally:
+            self.model_wrapper.actor_model.train(previous_mode)
