@@ -34,8 +34,8 @@ class DataConfig:
     # 数据切分与训练乱序的随机种子。
     seed: int = 42
     # 可选上限：用于快速验证，减少训练与验证样本数。
-    max_train_queries: int | None = 2000
-    max_val_queries: int | None = 400
+    max_train_queries: int | None = 20000
+    max_val_queries: int | None = 4000
 
 
 @dataclass(slots=True)
