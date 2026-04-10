@@ -8,6 +8,7 @@ PYTHON_BIN="${PYTHON_BIN:-python}"
 ARTIFACT_ROOT="${ARTIFACT_ROOT:-train_and_eval_data_model}"
 EXP_NAME="${EXP_NAME:-4b}"
 VENV_DIR="${VENV_DIR:-.venv}"
+LOG_DIR="${LOG_DIR:-log}"
 
 TRAIN_DIR="${ARTIFACT_ROOT}/artifacts_${EXP_NAME}_train"
 EVAL_DIR="${ARTIFACT_ROOT}/artifacts_${EXP_NAME}_eval"
@@ -16,7 +17,17 @@ TRAIN_LOG_PATH="${TRAIN_DIR}/train_log.jsonl"
 TRAIN_TRACE_PATH="${TRAIN_DIR}/group_trace_log.jsonl"
 EVAL_REPORT_PATH="${EVAL_DIR}/eval_compare_report_full.json"
 
-mkdir -p "$TRAIN_DIR" "$EVAL_DIR"
+mkdir -p "$TRAIN_DIR" "$EVAL_DIR" "$LOG_DIR"
+
+RUN_TS="$(date '+%Y%m%d_%H%M%S')"
+RUN_LOG_PATH="${LOG_DIR}/run_train_then_full_eval_4b_${RUN_TS}.log"
+
+if [[ -z "${RUN_LOG_REDIRECTED:-}" ]]; then
+  export RUN_LOG_REDIRECTED=1
+  exec > >(tee -a "$RUN_LOG_PATH") 2>&1
+fi
+
+echo "[log] command output is also saved to: $RUN_LOG_PATH"
 
 echo "[1/4] Preparing Python environment..."
 if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then

@@ -4,7 +4,24 @@ Set-StrictMode -Version Latest
 $repoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 Push-Location $repoRoot
 
+$transcriptStarted = $false
+$runLogPath = $null
+
 try {
+  $logDir = if ($env:LOG_DIR) { $env:LOG_DIR } else { "log" }
+  New-Item -ItemType Directory -Path $logDir -Force | Out-Null
+  $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+  $runLogPath = Join-Path $logDir "run_train_then_full_eval_4b_$timestamp.log"
+
+  try {
+    Start-Transcript -Path $runLogPath -Force | Out-Null
+    $transcriptStarted = $true
+    Write-Host "[log] command output is also saved to: $runLogPath"
+  }
+  catch {
+    Write-Warning "Failed to start transcript log at '$runLogPath'. Continuing without transcript."
+  }
+
   $pythonBin = if ($env:PYTHON_BIN) { $env:PYTHON_BIN } else { "python" }
   $artifactRoot = if ($env:ARTIFACT_ROOT) { $env:ARTIFACT_ROOT } else { "train_and_eval_data_model" }
   $expName = if ($env:EXP_NAME) { $env:EXP_NAME } else { "4b" }
@@ -70,13 +87,16 @@ try {
     Write-Host "[3/3] No staged changes to commit. Skipped."
   }
   else {
-    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-    $commitMessage = "chore: auto commit training and full eval artifacts $timestamp"
+    $commitTimestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    $commitMessage = "chore: auto commit training and full eval artifacts $commitTimestamp"
     git commit -m $commitMessage
     git push
     Write-Host "[3/3] Commit created and pushed: $commitMessage"
   }
 }
 finally {
+  if ($transcriptStarted) {
+    Stop-Transcript | Out-Null
+  }
   Pop-Location
 }
