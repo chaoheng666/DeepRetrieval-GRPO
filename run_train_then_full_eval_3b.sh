@@ -15,12 +15,12 @@ echo "[1/2] Training 3B experiment..."
   --max-new-tokens 20 \
   --temperature 0.7 \
   --top-p 0.9 \
-  --save-dir artifacts_3b/checkpoints \
-  --log-path artifacts_3b/train_log.jsonl \
-  --group-trace-log-path artifacts_3b/group_trace_log.jsonl
+  --save-dir artifacts_3b_train/checkpoints \
+  --log-path artifacts_3b_train/train_log.jsonl \
+  --group-trace-log-path artifacts_3b_train/group_trace_log.jsonl
 
-BEST_ADAPTER="artifacts_3b/checkpoints/best"
-LATEST_ADAPTER="artifacts_3b/checkpoints/latest"
+BEST_ADAPTER="artifacts_3b_train/checkpoints/best"
+LATEST_ADAPTER="artifacts_3b_train/checkpoints/latest"
 
 if [[ -d "$BEST_ADAPTER" ]]; then
   ADAPTER_PATH="$BEST_ADAPTER"
@@ -39,9 +39,9 @@ echo "[2/2] Running full evaluation for the 3B experiment..."
   --strict-tokenizer-model-match \
   --max-eval-queries 1000000 \
   --sample-print 20 \
-  --report-path artifacts_3b/eval_compare_report_full.json
+  --report-path artifacts_3b_eval/eval_compare_report_full.json
 
-echo "Done. Report: artifacts_3b/eval_compare_report_full.json"
+echo "Done. Report: artifacts_3b_eval/eval_compare_report_full.json"
 
 echo "[3/3] Auto-committing all changes to git repository..."
 if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then

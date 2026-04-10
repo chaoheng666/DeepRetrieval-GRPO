@@ -14,12 +14,12 @@ try {
     --max-new-tokens 20 `
     --temperature 0.7 `
     --top-p 0.9 `
-    --save-dir artifacts_3b/checkpoints `
-    --log-path artifacts_3b/train_log.jsonl `
-    --group-trace-log-path artifacts_3b/group_trace_log.jsonl
+    --save-dir artifacts_3b_train/checkpoints `
+    --log-path artifacts_3b_train/train_log.jsonl `
+    --group-trace-log-path artifacts_3b_train/group_trace_log.jsonl
 
-  $bestAdapter = "artifacts_3b/checkpoints/best"
-  $latestAdapter = "artifacts_3b/checkpoints/latest"
+  $bestAdapter = "artifacts_3b_train/checkpoints/best"
+  $latestAdapter = "artifacts_3b_train/checkpoints/latest"
   $adapterPath = $null
 
   if (Test-Path -LiteralPath $bestAdapter) {
@@ -30,7 +30,7 @@ try {
     Write-Warning "best adapter not found, fallback to latest adapter."
   }
   else {
-    throw "No adapter found under artifacts_3b/checkpoints (expected best or latest)."
+    throw "No adapter found under artifacts_3b_train/checkpoints (expected best or latest)."
   }
 
   Write-Host "[2/2] Running full evaluation for the 3B experiment..."
@@ -40,9 +40,9 @@ try {
     --strict-tokenizer-model-match `
     --max-eval-queries 1000000 `
     --sample-print 20 `
-    --report-path artifacts_3b/eval_compare_report_full.json
+    --report-path artifacts_3b_eval/eval_compare_report_full.json
 
-  Write-Host "Done. Report: artifacts_3b/eval_compare_report_full.json"
+  Write-Host "Done. Report: artifacts_3b_eval/eval_compare_report_full.json"
 
   Write-Host "[3/3] Auto-committing all changes to git repository..."
   git rev-parse --is-inside-work-tree *> $null
