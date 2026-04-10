@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from contextlib import nullcontext
 from dataclasses import dataclass
+import gc
 import json
 from pathlib import Path
 from typing import Any, Literal
@@ -73,6 +74,10 @@ class ModelWrapper:
         self.ref_precision_used: str | None = None
         self.ref_dtype_used: torch.dtype | None = None
 
+        if model_cfg.load_in_4bit and not torch.cuda.is_available():
+            print("[warn] CUDA is unavailable; disabling 4-bit quantization and loading full precision on CPU.")
+            model_cfg.load_in_4bit = False
+
         # 4bit + bf16 在部分运行环境不稳定，这里做安全回退。
         if model_cfg.load_in_4bit and model_cfg.bnb_4bit_compute_dtype.lower() == "bfloat16":
             bf16_supported = bool(torch.cuda.is_available() and torch.cuda.is_bf16_supported())
@@ -90,7 +95,11 @@ class ModelWrapper:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
         self.quantization_config = self._build_4bit_config(enabled=model_cfg.load_in_4bit)
-        actor_dtype = _str_to_dtype(model_cfg.bnb_4bit_compute_dtype)
+        actor_dtype = (
+            _str_to_dtype(model_cfg.bnb_4bit_compute_dtype)
+            if model_cfg.load_in_4bit
+            else self._preferred_full_precision_dtype()
+        )
         # CPU 环境下统一用 float32，避免无意义的半精度设置。
         if not torch.cuda.is_available():
             actor_dtype = torch.float32
@@ -99,8 +108,7 @@ class ModelWrapper:
             trust_remote_code=model_cfg.trust_remote_code,
             quantization_config=self.quantization_config,
             device_map=model_cfg.actor_device_map,
-            dtype=actor_dtype,
-            cache_dir="D:/hf_cache",  
+            torch_dtype=actor_dtype,
         )
         self._validate_tokenizer_model_match(
             tokenizer=self.tokenizer,
@@ -255,7 +263,7 @@ class ModelWrapper:
             return auto_model_cls.from_pretrained(
                 self.model_cfg.model_name,
                 quantization_config=quant_cfg,
-                dtype=dtype,
+                torch_dtype=dtype,
                 **load_kwargs,
             )
 
@@ -276,6 +284,8 @@ class ModelWrapper:
                 if torch.cuda.is_available() and self._is_cuda_oom_error(exc):
                     # 仅在 CUDA OOM 时回退，其他错误继续抛出便于定位。
                     print("[warn] ref full-precision load hit CUDA OOM; fallback to 4-bit on GPU path.")
+                    gc.collect()
+                    torch.cuda.empty_cache()
                     ref_model = _load(use_4bit=True, dtype=quant_dtype)
                     self.ref_precision_used = "4bit"
                     self.ref_dtype_used = quant_dtype

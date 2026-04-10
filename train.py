@@ -107,9 +107,9 @@ def apply_low_mem_mode(config: AppConfig) -> AppConfig:
     config.reward.overlap_weight = 0.3
 
     # 将低显存实验输出隔离到单独目录。
-    config.train.save_dir = "artifacts_lowmem/checkpoints"
-    config.train.log_path = "artifacts_lowmem/train_log.jsonl"
-    config.train.group_trace_log_path = "artifacts_lowmem/group_trace_log.jsonl"
+    config.train.save_dir = "train_and_eval_data_model/artifacts_lowmem_train/checkpoints"
+    config.train.log_path = "train_and_eval_data_model/artifacts_lowmem_train/train_log.jsonl"
+    config.train.group_trace_log_path = "train_and_eval_data_model/artifacts_lowmem_train/group_trace_log.jsonl"
     return config
 
 

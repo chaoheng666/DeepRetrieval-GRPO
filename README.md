@@ -139,7 +139,7 @@ python train.py `
 ## 5.2 评测对比
 
 ```bash
-python eval_compare.py --rl-adapter-path artifacts/checkpoints/best
+python eval_compare.py --rl-adapter-path train_and_eval_data_model/artifacts_default_train/checkpoints/best
 ```
 
 ---
@@ -180,7 +180,7 @@ python train.py \
 ## 6.3 从已有 Adapter 热启动
 
 ```bash
-python train.py --adapter-path artifacts/checkpoints/best
+python train.py --adapter-path train_and_eval_data_model/artifacts_default_train/checkpoints/best
 ```
 
 ## 6.4 自定义输出路径
@@ -213,29 +213,29 @@ python train.py \
 ## 7.1 基本用法
 
 ```bash
-python eval_compare.py --rl-adapter-path artifacts/checkpoints/best
+python eval_compare.py --rl-adapter-path train_and_eval_data_model/artifacts_default_train/checkpoints/best
 ```
 
 低显存训练产物推荐这样评估（更快）：
 
 ```bash
-python eval_compare.py --rl-adapter-path artifacts_lowmem/checkpoints/best --low-mem-mode
+python eval_compare.py --rl-adapter-path train_and_eval_data_model/artifacts_lowmem_train/checkpoints/best --low-mem-mode
 ```
 
 ## 7.2 输出更多样例 + 自定义报告路径
 
 ```bash
 python eval_compare.py \
-  --rl-adapter-path artifacts/checkpoints/best \
+  --rl-adapter-path train_and_eval_data_model/artifacts_default_train/checkpoints/best \
   --sample-print 20 \
-  --report-path artifacts/eval_compare_report_exp1.json
+  --report-path train_and_eval_data_model/artifacts_default_eval/eval_compare_report_exp1.json
 ```
 
 ## 7.3 限制评估样本数（快速）
 
 ```bash
 python eval_compare.py \
-  --rl-adapter-path artifacts/checkpoints/best \
+  --rl-adapter-path train_and_eval_data_model/artifacts_default_train/checkpoints/best \
   --max-eval-queries 100
 ```
 
@@ -254,10 +254,10 @@ python eval_compare.py \
 
 默认输出如下：
 
-- `artifacts/checkpoints/best/`：验证集 MRR 最优 adapter
-- `artifacts/checkpoints/latest/`：最近一次保存 adapter
-- `artifacts/train_log.jsonl`：训练与评估过程日志
-- `artifacts/eval_compare_report.json`：三路对比评测报告
+- `train_and_eval_data_model/artifacts_default_train/checkpoints/best/`：验证集 MRR 最优 adapter
+- `train_and_eval_data_model/artifacts_default_train/checkpoints/latest/`：最近一次保存 adapter
+- `train_and_eval_data_model/artifacts_default_train/train_log.jsonl`：训练与评估过程日志
+- `train_and_eval_data_model/artifacts_default_eval/eval_compare_report.json`：三路对比评测报告
 
 `train_log.jsonl` 每行一条 JSON，可用于后续画图分析（loss、mrr、reward 等）。
 
@@ -387,9 +387,9 @@ python train.py --max-train-queries 64 --max-val-queries 32 --max-steps 20
 python train.py --max-train-queries 2000 --max-val-queries 400
 
 # 4) 对比评测
-python eval_compare.py --rl-adapter-path artifacts/checkpoints/best
+python eval_compare.py --rl-adapter-path train_and_eval_data_model/artifacts_default_train/checkpoints/best
 
-python eval_compare.py --rl-adapter-path artifacts_lowmem/checkpoints/best --low-mem-mode --strict-tokenizer-model-match
+python eval_compare.py --rl-adapter-path train_and_eval_data_model/artifacts_lowmem_train/checkpoints/best --low-mem-mode --strict-tokenizer-model-match
 
 ```
 
@@ -415,7 +415,7 @@ python train.py --low-mem-mode
 8. 奖励计算切换到 `MRR@20`（`topk=20`）
 9. 启用词面重叠奖励（`overlap_weight=0.3`）避免纯 MRR 稀疏导致无学习信号
 10. 检索索引切换为 `msmarco-v1-passage-slim`（下载体积更小）
-11. 输出目录改为 `artifacts_lowmem/`
+11. 输出目录改为 `train_and_eval_data_model/artifacts_lowmem_train/`
 
 另外：
 - 若检测到 CUDA 不可用，会自动切换为 CPU 兼容加载（很慢，但可用于排障和链路验证）。
@@ -447,7 +447,7 @@ python train.py `
   --reward-overlap-weight 0.3 `
   --reward-mrr-weight 1.0 `
   --eval-every-steps 100 `
-  --save-dir artifacts_3b_heavy/checkpoints `
-  --log-path artifacts_3b_heavy/train_log.jsonl
+  --save-dir train_and_eval_data_model/artifacts_3b_heavy_train/checkpoints `
+  --log-path train_and_eval_data_model/artifacts_3b_heavy_train/train_log.jsonl
 
 默认就是Qwen/Qwen2.5-3B-Instruct

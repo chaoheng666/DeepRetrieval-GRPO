@@ -13,6 +13,10 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+DEFAULT_ARTIFACT_ROOT = "train_and_eval_data_model"
+DEFAULT_EXP_NAME = "default"
+DEFAULT_TRAIN_DIR = f"{DEFAULT_ARTIFACT_ROOT}/artifacts_{DEFAULT_EXP_NAME}_train"
+
 
 @dataclass(slots=True)
 class DataConfig:
@@ -98,10 +102,10 @@ class TrainConfig:
     # 可选总步数上限（用于快速调试）。
     max_steps: int | None = None
     # checkpoint 与训练日志输出位置。
-    save_dir: str = "artifacts/checkpoints"
-    log_path: str = "artifacts/train_log.jsonl"
+    save_dir: str = f"{DEFAULT_TRAIN_DIR}/checkpoints"
+    log_path: str = f"{DEFAULT_TRAIN_DIR}/train_log.jsonl"
     # 每个 query 一条 group 采样明细日志（每个训练 step 追加多行）。
-    group_trace_log_path: str = "artifacts/group_trace_log.jsonl"
+    group_trace_log_path: str = f"{DEFAULT_TRAIN_DIR}/group_trace_log.jsonl"
 
 
 @dataclass(slots=True)

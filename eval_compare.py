@@ -45,7 +45,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-eval-queries", type=int, default=None)
     parser.add_argument("--sample-print", type=int, default=5)
     parser.add_argument("--progress-every", type=int, default=20, help="Print progress every N queries per stage.")
-    parser.add_argument("--report-path", type=str, default="artifacts/eval_compare_report.json")
+    parser.add_argument(
+        "--report-path",
+        type=str,
+        default="train_and_eval_data_model/artifacts_default_eval/eval_compare_report.json",
+    )
     parser.add_argument("--max-new-tokens", type=int, default=None)
     parser.add_argument(
         "--low-mem-mode",
@@ -91,7 +95,7 @@ def validate_adapter_path(adapter_path: str) -> dict:
     if not adapter_dir.exists():
         raise FileNotFoundError(
             f"Adapter path does not exist: {adapter_dir}. "
-            "Use the correct folder like artifacts_lowmem/checkpoints/best."
+            "Use the correct folder like train_and_eval_data_model/artifacts_lowmem_train/checkpoints/best."
         )
     if not adapter_dir.is_dir():
         raise NotADirectoryError(f"Adapter path is not a directory: {adapter_dir}")
