@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""GRPO 训练核心模块（纯 PyTorch 实现）。"""
+"""Core GRPO training loop implemented with plain PyTorch."""
 
 from dataclasses import dataclass
 from statistics import fmean
@@ -16,7 +16,7 @@ from .reward_func import compute_unreadable_ratio
 
 @dataclass(slots=True)
 class Sample:
-    """单条采样样本，承载 loss 计算与日志所需字段。"""
+    """One sampled candidate used for PPO/GRPO loss computation."""
 
     qid: str
     prompt: str
@@ -34,7 +34,7 @@ class Sample:
 
 
 def normalize_advantages(rewards: Sequence[float], eps: float = 1e-8) -> torch.Tensor:
-    """组内奖励标准化，得到相对优势。"""
+    """Normalize rewards within each group to get relative advantages."""
 
     rewards_tensor = torch.tensor(list(rewards), dtype=torch.float32)
     if rewards_tensor.numel() == 0:
@@ -53,7 +53,7 @@ def ppo_clipped_objective(
     advantage: float,
     clip_range: float,
 ) -> torch.Tensor:
-    """计算 token 级 PPO clipped surrogate objective。"""
+    """Token-level PPO clipped surrogate objective."""
 
     advantage_tensor = torch.full_like(logprob_new, float(advantage))
     ratios = torch.exp(logprob_new - logprob_old)
@@ -77,11 +77,6 @@ class GRPOEngine:
         temperature: float,
         top_p: float,
     ) -> None:
-        """初始化训练引擎。
-
-        这里不负责解析配置，仅接收 train.py 注入的超参数。
-        """
-
         self.model_wrapper = model_wrapper
         self.rewarder = rewarder
         self.optimizer = optimizer
@@ -99,15 +94,17 @@ class GRPOEngine:
         *,
         collect_best_queries: bool = False,
     ) -> dict[str, object]:
-        """执行一个 batch 的 GRPO 更新。"""
+        """Run one GRPO update on a mini-batch."""
 
         previous_mode = self.model_wrapper.actor_model.training
-        # rollout 与重算 logprob 阶段关闭 dropout，降低采样噪声。
+        # Keep rollout/logprob passes deterministic by disabling dropout.
         self.model_wrapper.actor_model.eval()
         try:
             self.optimizer.zero_grad(set_to_none=True)
 
-            loss_terms: list[torch.Tensor] = []
+            # We accumulate gradients per sample immediately to avoid keeping
+            # all computation graphs in memory until the end of the batch.
+            loss_values: list[float] = []
             loss_pg_terms: list[float] = []
             loss_kl_terms: list[float] = []
 
@@ -129,7 +126,6 @@ class GRPOEngine:
                 group_samples: list[Sample] = []
 
                 for _ in range(self.group_size):
-                    # Step 1) 组内采样，记录 old-policy logprob。
                     generated = self.model_wrapper.generate_with_logprob(
                         prompt,
                         max_new_tokens=self.max_new_tokens,
@@ -157,7 +153,6 @@ class GRPOEngine:
 
                 group_query_summaries.append(
                     {
-                        # 每个 query 一条汇总日志，便于排查 4bit 乱码样本。
                         "qid": str(query.qid),
                         "input_query": query.text,
                         "group_raw_responses": [sample.response_text for sample in group_samples],
@@ -170,7 +165,6 @@ class GRPOEngine:
                 )
 
                 if collect_best_queries and group_samples:
-                    # ties 时 max 保留先出现的候选。
                     best_sample = max(group_samples, key=lambda sample: sample.reward)
                     best_query_pairs.append(
                         {
@@ -181,7 +175,6 @@ class GRPOEngine:
                         }
                     )
 
-                # Step 2) 组内优势标准化（GRPO 核心）。
                 advantages = normalize_advantages([sample.reward for sample in group_samples]).tolist()
                 for sample, advantage in zip(group_samples, advantages):
                     sample.advantage = float(advantage)
@@ -196,7 +189,6 @@ class GRPOEngine:
                     if not sample.response_token_ids or sample.logprob_old.numel() == 0:
                         continue
 
-                    # Step 3) 新策略与参考策略的 token 级 logprob。
                     logprob_new = self.model_wrapper.compute_logprob(
                         sample.prompt,
                         sample.response_token_ids,
@@ -218,7 +210,6 @@ class GRPOEngine:
                     logprob_old = sample.logprob_old[:t].to(logprob_new.device)
                     logprob_ref = logprob_ref[:t].to(logprob_new.device)
 
-                    # Step 4) PPO clipped loss + KL 正则。
                     clipped_obj = ppo_clipped_objective(
                         logprob_new=logprob_new,
                         logprob_old=logprob_old,
@@ -231,7 +222,9 @@ class GRPOEngine:
                     if not torch.isfinite(loss):
                         continue
 
-                    loss_terms.append(loss)
+                    # Immediate backward prevents retaining many graphs at once.
+                    loss.backward()
+                    loss_values.append(float(loss.detach().cpu()))
                     loss_pg_terms.append(float(loss_pg.detach().cpu()))
                     loss_kl_terms.append(float(loss_kl.detach().cpu()))
                     valid_samples += 1
@@ -252,8 +245,7 @@ class GRPOEngine:
                 "group_query_summaries": group_query_summaries,
             }
 
-            if not loss_terms:
-                # 没有可训练 token 样本时返回指标但不更新参数。
+            if valid_samples == 0:
                 metrics.update(
                     {
                         "loss": 0.0,
@@ -266,29 +258,18 @@ class GRPOEngine:
                     metrics["best_query_pairs"] = best_query_pairs
                 return metrics
 
-            loss_batch = torch.stack(loss_terms).mean()
-            if not torch.isfinite(loss_batch):
-                # 聚合后再次做 NaN/Inf 保护。
-                metrics.update(
-                    {
-                        "loss": float("nan"),
-                        "loss_pg": float("nan"),
-                        "loss_kl": float("nan"),
-                        "updated": 0.0,
-                    }
-                )
-                if collect_best_queries:
-                    metrics["best_query_pairs"] = best_query_pairs
-                return metrics
+            # Convert accumulated sum-gradients into mean-gradients.
+            grad_scale = 1.0 / float(valid_samples)
+            for param in self.model_wrapper.trainable_parameters():
+                if param.grad is not None:
+                    param.grad.mul_(grad_scale)
 
-            # Step 5) 反传 + 梯度裁剪 + 更新参数。
-            loss_batch.backward()
             clip_grad_norm_(self.model_wrapper.trainable_parameters(), self.grad_clip_norm)
             self.optimizer.step()
 
             metrics.update(
                 {
-                    "loss": float(loss_batch.detach().cpu()),
+                    "loss": fmean(loss_values) if loss_values else 0.0,
                     "loss_pg": fmean(loss_pg_terms) if loss_pg_terms else 0.0,
                     "loss_kl": fmean(loss_kl_terms) if loss_kl_terms else 0.0,
                     "updated": 1.0,

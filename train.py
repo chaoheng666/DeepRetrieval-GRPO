@@ -83,7 +83,7 @@ def apply_low_mem_mode(config: AppConfig) -> AppConfig:
     """应用低显存预设（以 0.5B 快速跑通链路为目标）。"""
 
     # 低显存模式默认切到更小模型。
-    config.model.model_name = "Qwen/Qwen2.5-0.5B-Instruct"
+    config.model.model_name = "Qwen/Qwen3.5-0.8B"
     config.model.load_in_4bit = True
     config.model.lora_r = 8
     config.model.lora_alpha = 16

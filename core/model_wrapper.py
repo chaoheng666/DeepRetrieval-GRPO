@@ -100,6 +100,7 @@ class ModelWrapper:
             quantization_config=self.quantization_config,
             device_map=model_cfg.actor_device_map,
             dtype=actor_dtype,
+            cache_dir="D:/hf_cache",  
         )
         self._validate_tokenizer_model_match(
             tokenizer=self.tokenizer,
@@ -132,12 +133,16 @@ class ModelWrapper:
             self.actor_model = base_actor
 
         self.actor_model.train(train_mode)
+        if train_mode and hasattr(self.actor_model, "config"):
+            self.actor_model.config.use_cache = False
 
         self.ref_model = None
         if load_ref_model:
             # ref 模型始终冻结，只作为 KL anchor。
             self.ref_model = self._load_ref_model(AutoModelForCausalLM)
             self.ref_model.eval()
+            if hasattr(self.ref_model, "config"):
+                self.ref_model.config.use_cache = False
             for param in self.ref_model.parameters():
                 param.requires_grad = False
 
@@ -551,7 +556,11 @@ class ModelWrapper:
 
         grad_ctx = torch.no_grad() if no_grad else nullcontext()
         with grad_ctx:
-            logits = model(input_ids=full_input_ids, attention_mask=attention_mask).logits
+            logits = model(
+                input_ids=full_input_ids,
+                attention_mask=attention_mask,
+                use_cache=False,
+            ).logits
 
         # 因果 LM 对齐：token[t] 由位置 t-1 的 logits 预测。
         prompt_len = int(prompt_ids.shape[1])
