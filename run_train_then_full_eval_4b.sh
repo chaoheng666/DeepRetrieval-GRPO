@@ -4,11 +4,14 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-PYTHON_BIN="${PYTHON_BIN:-python}"
+PYTHON_BIN="${PYTHON_BIN:-/root/miniconda3/bin/python}"
 ARTIFACT_ROOT="${ARTIFACT_ROOT:-train_and_eval_data_model}"
 EXP_NAME="${EXP_NAME:-4b}"
 VENV_DIR="${VENV_DIR:-.venv}"
 LOG_DIR="${LOG_DIR:-log}"
+USE_VENV="${USE_VENV:-0}"
+INSTALL_DEPS="${INSTALL_DEPS:-1}"
+REQUIRE_CUDA="${REQUIRE_CUDA:-1}"
 
 TRAIN_DIR="${ARTIFACT_ROOT}/artifacts_${EXP_NAME}_train"
 EVAL_DIR="${ARTIFACT_ROOT}/artifacts_${EXP_NAME}_eval"
@@ -35,24 +38,41 @@ if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
   exit 1
 fi
 
-if [[ ! -d "$VENV_DIR" ]]; then
-  "$PYTHON_BIN" -m venv "$VENV_DIR"
+if [[ "$USE_VENV" == "1" ]]; then
+  if [[ ! -d "$VENV_DIR" ]]; then
+    "$PYTHON_BIN" -m venv "$VENV_DIR"
+  fi
+
+  # shellcheck disable=SC1090
+  source "${VENV_DIR}/bin/activate"
+  PYTHON_BIN="${VENV_DIR}/bin/python"
 fi
 
-# shellcheck disable=SC1090
-source "${VENV_DIR}/bin/activate"
-PYTHON_BIN="${VENV_DIR}/bin/python"
-
-"$PYTHON_BIN" -m pip install --upgrade pip
-"$PYTHON_BIN" -m pip install -r requirements.txt
+if [[ "$INSTALL_DEPS" == "1" ]]; then
+  "$PYTHON_BIN" -m pip install --upgrade pip
+  "$PYTHON_BIN" -m pip install -r requirements.txt
+fi
 
 echo "[env] python: $("$PYTHON_BIN" --version 2>&1)"
 echo "[env] pip: $("$PYTHON_BIN" -m pip --version)"
+echo "[env] executable: $("$PYTHON_BIN" -c 'import sys; print(sys.executable)')"
+echo "[env] torch cuda available: $("$PYTHON_BIN" -c 'import torch; print(torch.cuda.is_available())')"
 
 if command -v java >/dev/null 2>&1; then
   echo "[env] java: $(java -version 2>&1 | head -n 1)"
 else
   echo "[warn] java not found. pyserini may fail without Java 21+."
+fi
+
+if [[ "$REQUIRE_CUDA" == "1" ]]; then
+  "$PYTHON_BIN" - <<'PY'
+import sys
+import torch
+
+if not torch.cuda.is_available():
+    raise SystemExit("[error] CUDA is unavailable in selected python env. Set REQUIRE_CUDA=0 to bypass.")
+print(f"[env] cuda device count: {torch.cuda.device_count()}")
+PY
 fi
 
 echo "[2/4] Training 4B experiment..."
