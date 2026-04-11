@@ -172,6 +172,8 @@ class RewardConfig:
 
     # 检索截断深度：计算 MRR@topk。
     topk: int = 50
+    # Pyserini batch_search thread count for retrieval-side parallelism.
+    search_threads: int = 8
     # 奖励组合权重：
     # total = mrr_weight * mrr + overlap_weight * lexical_overlap - penalty
     mrr_weight: float = 1.0

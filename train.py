@@ -56,6 +56,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--temperature", type=float, default=None)
     parser.add_argument("--top-p", type=float, default=None)
     parser.add_argument("--reward-topk", type=int, default=None, help="MRR@k reward cutoff, e.g. 10/20/50.")
+    parser.add_argument("--search-threads", type=int, default=None, help="Pyserini batch_search thread count.")
     parser.add_argument("--reward-overlap-weight", type=float, default=None, help="Weight for lexical-overlap shaping reward.")
     parser.add_argument("--reward-mrr-weight", type=float, default=None, help="Weight for MRR reward term.")
     parser.add_argument("--eval-every-steps", type=int, default=None)
@@ -153,6 +154,8 @@ def apply_overrides(config: AppConfig, args: argparse.Namespace) -> AppConfig:
         config.train.top_p = args.top_p
     if args.reward_topk is not None:
         config.reward.topk = args.reward_topk
+    if args.search_threads is not None:
+        config.reward.search_threads = max(1, args.search_threads)
     if args.reward_overlap_weight is not None:
         config.reward.overlap_weight = args.reward_overlap_weight
     if args.reward_mrr_weight is not None:

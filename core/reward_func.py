@@ -14,6 +14,7 @@ from __future__ import annotations
 - 通过简单文本约束减少模型生成退化 query。
 """
 
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -278,6 +279,10 @@ class Rewarder:
         self.qrels = qrels
         self.cfg = reward_cfg
         self.topk = reward_cfg.topk
+        cpu_count = max(1, os.cpu_count() or 1)
+        self.search_threads = max(1, min(int(getattr(reward_cfg, "search_threads", 1)), cpu_count))
+        if self.search_threads > 1:
+            print(f"[reward] retrieval batch_search enabled: threads={self.search_threads}")
 
     @staticmethod
     def _extract_corrupted_index_path(error_text: str) -> Path | None:
@@ -317,6 +322,47 @@ class Rewarder:
                     continue
                 raise
 
+    def _search_docids(self, query: str) -> list[str]:
+        if not query:
+            return []
+        try:
+            hits = self.searcher.search(query, k=self.topk)
+            return [str(hit.docid) for hit in hits]
+        except Exception:
+            return []
+
+    def _search_docids_batch(self, queries: Sequence[str]) -> list[list[str]]:
+        results: list[list[str]] = [[] for _ in queries]
+        if not queries:
+            return results
+
+        non_empty_pairs = [(idx, q) for idx, q in enumerate(queries) if q]
+        if not non_empty_pairs:
+            return results
+
+        can_batch = hasattr(self.searcher, "batch_search")
+        should_batch = can_batch and len(non_empty_pairs) > 1 and self.search_threads > 1
+        if should_batch:
+            qids = [str(idx) for idx, _ in non_empty_pairs]
+            batch_queries = [q for _, q in non_empty_pairs]
+            try:
+                batch_hits = self.searcher.batch_search(
+                    batch_queries,
+                    qids,
+                    k=self.topk,
+                    threads=self.search_threads,
+                )
+                for (idx, _), qid in zip(non_empty_pairs, qids):
+                    hits = batch_hits.get(qid, [])
+                    results[idx] = [str(hit.docid) for hit in hits]
+                return results
+            except Exception:
+                pass
+
+        for idx, query in non_empty_pairs:
+            results[idx] = self._search_docids(query)
+        return results
+
     def score(self, qid: str, rewritten_query: str, source_query: str | None = None) -> RewardBreakdown:
         """为单条重写 query 打分。
 
@@ -329,16 +375,7 @@ class Rewarder:
 
         query = clean_rewritten_query(rewritten_query, source_query=source_query)
         relevant_docids = self.qrels.get(str(qid), set())
-
-        hits_docids: list[str] = []
-        if query:
-            try:
-                # 按需求直接调用 Pyserini 预编译索引检索接口。
-                hits = self.searcher.search(query, k=self.topk)
-                hits_docids = [str(hit.docid) for hit in hits]
-            except Exception:
-                # 检索异常时降级为“无命中”，保证训练流程不中断。
-                hits_docids = []
+        hits_docids = self._search_docids(query)
 
         mrr, hit_rank = compute_mrr_at_k(hits_docids, relevant_docids, topk=self.topk)
         overlap = compute_lexical_overlap(source_query or "", query) if source_query else 0.0
@@ -355,3 +392,34 @@ class Rewarder:
             unreadable_penalty=penalty.unreadable,
             rewritten_query=query,
         )
+
+    def score_batch(
+        self,
+        qid: str,
+        rewritten_queries: Sequence[str],
+        source_query: str | None = None,
+    ) -> list[RewardBreakdown]:
+        cleaned_queries = [clean_rewritten_query(text, source_query=source_query) for text in rewritten_queries]
+        hits_docids_batch = self._search_docids_batch(cleaned_queries)
+        relevant_docids = self.qrels.get(str(qid), set())
+
+        outputs: list[RewardBreakdown] = []
+        for query, hits_docids in zip(cleaned_queries, hits_docids_batch):
+            mrr, hit_rank = compute_mrr_at_k(hits_docids, relevant_docids, topk=self.topk)
+            overlap = compute_lexical_overlap(source_query or "", query) if source_query else 0.0
+            penalty = compute_text_penalty(query, self.cfg)
+            total = self.cfg.mrr_weight * mrr + self.cfg.overlap_weight * overlap - penalty.total
+            outputs.append(
+                RewardBreakdown(
+                    total=total,
+                    mrr=mrr,
+                    overlap=overlap,
+                    penalty=penalty.total,
+                    hit_rank=hit_rank,
+                    short_penalty=penalty.short,
+                    repeat_penalty=penalty.repeat,
+                    unreadable_penalty=penalty.unreadable,
+                    rewritten_query=query,
+                )
+            )
+        return outputs

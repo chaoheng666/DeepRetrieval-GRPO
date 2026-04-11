@@ -519,6 +519,120 @@ class ModelWrapper:
             with_logprob=True,
         )
 
+    def generate_group_with_logprob(
+        self,
+        prompt: str,
+        *,
+        num_return_sequences: int,
+        max_new_tokens: int,
+        temperature: float,
+        top_p: float,
+    ) -> list[GeneratedSample]:
+        """从 actor 一次采样返回一组样本，减少 group 内串行生成开销。"""
+
+        requested = max(1, int(num_return_sequences))
+        if requested == 1:
+            return [
+                self.generate_with_logprob(
+                    prompt,
+                    max_new_tokens=max_new_tokens,
+                    temperature=temperature,
+                    top_p=top_p,
+                )
+            ]
+
+        # 贪心时多样本意义不大且常需 beam 配置；保持与旧行为一致，逐条生成。
+        if temperature <= 0.0:
+            return [
+                self.generate_with_logprob(
+                    prompt,
+                    max_new_tokens=max_new_tokens,
+                    temperature=temperature,
+                    top_p=top_p,
+                )
+                for _ in range(requested)
+            ]
+
+        inputs = self.tokenizer(prompt, return_tensors="pt")
+        device = self._infer_model_device(self.actor_model)
+        inputs = {k: v.to(device) for k, v in inputs.items()}
+        prompt_len = int(inputs["input_ids"].shape[1])
+
+        kwargs = {
+            "max_new_tokens": max_new_tokens,
+            "do_sample": True,
+            "temperature": max(temperature, 1e-6),
+            "top_p": top_p,
+            "num_return_sequences": requested,
+            "pad_token_id": self.tokenizer.pad_token_id,
+            "eos_token_id": self.tokenizer.eos_token_id,
+            "return_dict_in_generate": True,
+            "output_scores": True,
+        }
+
+        with torch.no_grad():
+            output = self.actor_model.generate(**inputs, **kwargs)
+
+        sequences = output.sequences
+        scores = output.scores or []
+        sample_count = int(sequences.shape[0])
+
+        results: list[GeneratedSample] = []
+        for seq_idx in range(sample_count):
+            sequence = sequences[seq_idx]
+            response_ids = sequence[prompt_len:].tolist()
+            response_text = self.tokenizer.decode(response_ids, skip_special_tokens=True).strip()
+
+            if not response_ids:
+                results.append(
+                    GeneratedSample(
+                        response_text=response_text,
+                        response_token_ids=response_ids,
+                        logprob_old=torch.empty(0),
+                    )
+                )
+                continue
+
+            steps = min(len(scores), len(response_ids))
+            if steps == 0:
+                results.append(
+                    GeneratedSample(
+                        response_text=response_text,
+                        response_token_ids=response_ids,
+                        logprob_old=torch.empty(0),
+                    )
+                )
+                continue
+
+            token_logprobs: list[torch.Tensor] = []
+            for step_idx in range(steps):
+                logits_step = scores[step_idx][seq_idx].float()
+                token_id = response_ids[step_idx]
+                logprob_step = torch.log_softmax(logits_step, dim=-1)[token_id]
+                token_logprobs.append(logprob_step.detach().cpu())
+
+            results.append(
+                GeneratedSample(
+                    response_text=response_text,
+                    response_token_ids=response_ids[:steps],
+                    logprob_old=torch.stack(token_logprobs).to(torch.float32),
+                )
+            )
+
+        if len(results) < requested:
+            results.extend(
+                [
+                    self.generate_with_logprob(
+                        prompt,
+                        max_new_tokens=max_new_tokens,
+                        temperature=temperature,
+                        top_p=top_p,
+                    )
+                    for _ in range(requested - len(results))
+                ]
+            )
+        return results[:requested]
+
     def generate_rewrite(
         self,
         query: str,

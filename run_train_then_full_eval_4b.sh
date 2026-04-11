@@ -85,12 +85,13 @@ fi
 echo "[2/4] Training 4B experiment..."
 "$PYTHON_BIN" train.py \
   --model-name "$MODEL_NAME" \
-  --num-epochs 3 \
+  --num-epochs 1 \
   --batch-size 4 \
-  --group-size 8 \
-  --max-new-tokens 20 \
-  --temperature 0.7 \
-  --top-p 0.9 \
+  --group-size 4 \
+  --max-new-tokens 16 \
+  --eval-every-steps 200 \
+  --max-val-queries 200 \
+  --max-steps 800 \
   --save-dir "$TRAIN_CHECKPOINT_DIR" \
   --log-path "$TRAIN_LOG_PATH" \
   --group-trace-log-path "$TRAIN_TRACE_PATH"

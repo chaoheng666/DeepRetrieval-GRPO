@@ -43,6 +43,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--train-ratio", type=float, default=None)
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--max-eval-queries", type=int, default=None)
+    parser.add_argument("--search-threads", type=int, default=None, help="Pyserini batch_search thread count.")
     parser.add_argument("--sample-print", type=int, default=5)
     parser.add_argument("--progress-every", type=int, default=20, help="Print progress every N queries per stage.")
     parser.add_argument(
@@ -83,6 +84,8 @@ def apply_overrides(config: AppConfig, args: argparse.Namespace) -> AppConfig:
         config.data.seed = args.seed
     if args.max_eval_queries is not None:
         config.data.max_val_queries = args.max_eval_queries
+    if args.search_threads is not None:
+        config.reward.search_threads = max(1, args.search_threads)
     if args.max_new_tokens is not None:
         config.train.max_new_tokens = args.max_new_tokens
     return config

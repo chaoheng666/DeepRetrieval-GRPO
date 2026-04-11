@@ -125,14 +125,39 @@ class GRPOEngine:
                 prompt = self.model_wrapper.build_prompt(query.text)
                 group_samples: list[Sample] = []
 
-                for _ in range(self.group_size):
-                    generated = self.model_wrapper.generate_with_logprob(
+                if hasattr(self.model_wrapper, "generate_group_with_logprob"):
+                    generated_group = self.model_wrapper.generate_group_with_logprob(
                         prompt,
+                        num_return_sequences=self.group_size,
                         max_new_tokens=self.max_new_tokens,
                         temperature=self.temperature,
                         top_p=self.top_p,
                     )
-                    reward = self.rewarder.score(query.qid, generated.response_text, source_query=query.text)
+                else:
+                    generated_group = [
+                        self.model_wrapper.generate_with_logprob(
+                            prompt,
+                            max_new_tokens=self.max_new_tokens,
+                            temperature=self.temperature,
+                            top_p=self.top_p,
+                        )
+                        for _ in range(self.group_size)
+                    ]
+
+                rewritten_group = [sample.response_text for sample in generated_group]
+                if hasattr(self.rewarder, "score_batch"):
+                    rewards_group = self.rewarder.score_batch(
+                        query.qid,
+                        rewritten_group,
+                        source_query=query.text,
+                    )
+                else:
+                    rewards_group = [
+                        self.rewarder.score(query.qid, rewritten, source_query=query.text)
+                        for rewritten in rewritten_group
+                    ]
+
+                for generated, reward in zip(generated_group, rewards_group):
                     group_samples.append(
                         Sample(
                             qid=query.qid,
@@ -149,7 +174,7 @@ class GRPOEngine:
                             unreadable_ratio=compute_unreadable_ratio(generated.response_text),
                         )
                     )
-                    sampled += 1
+                sampled += len(group_samples)
 
                 group_query_summaries.append(
                     {
