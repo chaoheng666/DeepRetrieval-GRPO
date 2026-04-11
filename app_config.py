@@ -18,10 +18,14 @@ DEFAULT_ARTIFACT_ROOT = "train_and_eval_data_model"
 DEFAULT_EXP_NAME = "default"
 DEFAULT_TRAIN_DIR = f"{DEFAULT_ARTIFACT_ROOT}/artifacts_{DEFAULT_EXP_NAME}_train"
 DEFAULT_HF_ENDPOINT = "https://hf-mirror.com"
+DEFAULT_PYSERINI_CACHE = str((Path(__file__).resolve().parent.parent / "pyserini_cache"))
 _PYSERINI_MIRROR_PATCH_DONE = False
 
 # Keep user/exported HF_ENDPOINT untouched; only apply fallback when unset.
 os.environ.setdefault("HF_ENDPOINT", DEFAULT_HF_ENDPOINT)
+# Pin Pyserini cache to a stable path beside this project (project parent / pyserini_cache).
+os.environ["PYSERINI_CACHE"] = DEFAULT_PYSERINI_CACHE
+Path(os.environ["PYSERINI_CACHE"]).mkdir(parents=True, exist_ok=True)
 
 
 def _rewrite_hf_host(url: str, endpoint: str) -> str:
