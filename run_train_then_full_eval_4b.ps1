@@ -25,7 +25,9 @@ try {
   $pythonBin = if ($env:PYTHON_BIN) { $env:PYTHON_BIN } else { "python" }
   $artifactRoot = if ($env:ARTIFACT_ROOT) { $env:ARTIFACT_ROOT } else { "train_and_eval_data_model" }
   $expName = if ($env:EXP_NAME) { $env:EXP_NAME } else { "4b" }
-  $modelName = if ($env:MODEL_NAME) { $env:MODEL_NAME } else { "/root/autodl-tmp/hf_models/Qwen3-4B-Instruct-2507" }
+  $modelName = if ($env:MODEL_NAME) { $env:MODEL_NAME } else { "Qwen/Qwen3-4B-Instruct-2507" }
+  $autoGitCommit = if ($env:AUTO_GIT_COMMIT) { $env:AUTO_GIT_COMMIT } else { "1" }
+  $autoGitPush = if ($env:AUTO_GIT_PUSH) { $env:AUTO_GIT_PUSH } else { "1" }
 
   $trainDir = Join-Path $artifactRoot "artifacts_${expName}_train"
   $evalDir = Join-Path $artifactRoot "artifacts_${expName}_eval"
@@ -37,20 +39,38 @@ try {
   New-Item -ItemType Directory -Path $trainDir -Force | Out-Null
   New-Item -ItemType Directory -Path $evalDir -Force | Out-Null
 
-  if (-not (Test-Path -LiteralPath $modelName)) {
-    throw "MODEL_NAME directory not found: $modelName. Download model first, or set MODEL_NAME to an existing local directory."
+  $looksLikeLocalPath =
+    [System.IO.Path]::IsPathRooted($modelName) -or
+    $modelName.StartsWith(".\") -or
+    $modelName.StartsWith("./") -or
+    $modelName.StartsWith("..\") -or
+    $modelName.StartsWith("../")
+  $modelPathExists = Test-Path -LiteralPath $modelName
+  if ($looksLikeLocalPath -and -not $modelPathExists) {
+    throw "MODEL_NAME local directory not found: $modelName. Download model first, or set MODEL_NAME to an existing local directory/model id."
   }
-  Write-Host "[env] model source: $modelName"
+  if ($modelPathExists) {
+    $item = Get-Item -LiteralPath $modelName
+    if (-not $item.PSIsContainer) {
+      throw "MODEL_NAME exists but is not a directory: $modelName."
+    }
+    Write-Host "[env] model source (local dir): $modelName"
+  }
+  else {
+    Write-Host "[env] model source (model id): $modelName"
+  }
 
   Write-Host "[1/3] Training 4B experiment..."
   & $pythonBin train.py `
     --model-name $modelName `
-    --num-epochs 3 `
+    --num-epochs 1 `
     --batch-size 4 `
-    --group-size 8 `
-    --max-new-tokens 20 `
-    --temperature 0.7 `
-    --top-p 0.9 `
+    --group-size 4 `
+    --search-threads 8 `
+    --max-new-tokens 12 `
+    --eval-every-steps 200 `
+    --max-val-queries 200 `
+    --max-steps 800 `
     --save-dir $trainCheckpointDir `
     --log-path $trainLogPath `
     --group-trace-log-path $trainTracePath
@@ -82,22 +102,37 @@ try {
   Write-Host "Done. Report: $evalReportPath"
 
   Write-Host "[3/3] Auto-committing all changes to git repository..."
-  git rev-parse --is-inside-work-tree *> $null
-  if ($LASTEXITCODE -ne 0) {
-    throw "Current directory is not a git repository."
-  }
-
-  git add -A
-  git diff --cached --quiet
-  if ($LASTEXITCODE -eq 0) {
-    Write-Host "[3/3] No staged changes to commit. Skipped."
+  if ($autoGitCommit -ne "1") {
+    Write-Host "[3/3] AUTO_GIT_COMMIT=0, skipped."
   }
   else {
-    $commitTimestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-    $commitMessage = "chore: auto commit training and full eval artifacts $commitTimestamp"
-    git commit -m $commitMessage
-    git push
-    Write-Host "[3/3] Commit created and pushed: $commitMessage"
+    git rev-parse --is-inside-work-tree *> $null
+    if ($LASTEXITCODE -ne 0) {
+      throw "Current directory is not a git repository."
+    }
+
+    git add -A
+    git diff --cached --quiet
+    if ($LASTEXITCODE -eq 0) {
+      Write-Host "[3/3] No staged changes to commit. Skipped."
+    }
+    else {
+      $commitTimestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+      $commitMessage = "chore: auto commit training and full eval artifacts $commitTimestamp"
+      git commit -m $commitMessage
+      if ($autoGitPush -eq "1") {
+        git push
+        if ($LASTEXITCODE -eq 0) {
+          Write-Host "[3/3] Commit created and pushed: $commitMessage"
+        }
+        else {
+          Write-Warning "Commit created, but git push failed. Please push manually."
+        }
+      }
+      else {
+        Write-Host "[3/3] Commit created locally (AUTO_GIT_PUSH=0): $commitMessage"
+      }
+    }
   }
 }
 finally {

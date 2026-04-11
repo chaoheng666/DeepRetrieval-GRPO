@@ -25,7 +25,7 @@ from data.loader import QueryExample, load_topics_qrels, maybe_limit, split_quer
 def parse_args() -> argparse.Namespace:
     """解析评估命令行参数。"""
 
-    parser = argparse.ArgumentParser(description="Compare Original vs Zero-shot vs RL-rewritten query MRR@10.")
+    parser = argparse.ArgumentParser(description="Compare Original vs Zero-shot vs RL-rewritten query MRR@k.")
     parser.add_argument("--rl-adapter-path", type=str, required=True, help="Path to trained LoRA adapter.")
     parser.add_argument("--model-name", type=str, default=None, help="Override base model name for evaluation.")
     parser.add_argument(
@@ -127,9 +127,11 @@ def evaluate_original(
             print(f"[progress] stage=original {idx}/{total}")
 
     values = list(per_qid.values())
+    mrr_value = fmean(v.mrr for v in values) if values else 0.0
     return (
         {
-            "mrr@10": fmean(v.mrr for v in values) if values else 0.0,
+            "mrr": mrr_value,
+            f"mrr@{rewarder.topk}": mrr_value,
             "reward_mean": fmean(v.total for v in values) if values else 0.0,
         },
         per_qid,
@@ -163,9 +165,11 @@ def evaluate_with_model(
             print(f"[progress] stage={stage_name} {idx}/{total}")
 
     values = [item[1] for item in per_qid.values()]
+    mrr_value = fmean(v.mrr for v in values) if values else 0.0
     return (
         {
-            "mrr@10": fmean(v.mrr for v in values) if values else 0.0,
+            "mrr": mrr_value,
+            f"mrr@{rewarder.topk}": mrr_value,
             "reward_mean": fmean(v.total for v in values) if values else 0.0,
         },
         per_qid,
@@ -257,14 +261,15 @@ def main() -> int:
         progress_every=args.progress_every,
     )
 
-    delta_zero = zero_metrics["mrr@10"] - original_metrics["mrr@10"]
-    delta_rl = rl_metrics["mrr@10"] - original_metrics["mrr@10"]
-    delta_rl_vs_zero = rl_metrics["mrr@10"] - zero_metrics["mrr@10"]
+    mrr_label = f"mrr@{config.reward.topk}"
+    delta_zero = zero_metrics["mrr"] - original_metrics["mrr"]
+    delta_rl = rl_metrics["mrr"] - original_metrics["mrr"]
+    delta_rl_vs_zero = rl_metrics["mrr"] - zero_metrics["mrr"]
 
-    print("\n=== MRR@10 Comparison ===")
-    print(f"Original : {original_metrics['mrr@10']:.4f}")
-    print(f"Zero-shot: {zero_metrics['mrr@10']:.4f} (delta vs original {delta_zero:+.4f})")
-    print(f"RL       : {rl_metrics['mrr@10']:.4f} (delta vs original {delta_rl:+.4f})")
+    print(f"\n=== {mrr_label} Comparison ===")
+    print(f"Original : {original_metrics['mrr']:.4f}")
+    print(f"Zero-shot: {zero_metrics['mrr']:.4f} (delta vs original {delta_zero:+.4f})")
+    print(f"RL       : {rl_metrics['mrr']:.4f} (delta vs original {delta_rl:+.4f})")
     print(f"RL vs Zero-shot delta: {delta_rl_vs_zero:+.4f}")
 
     print("\n=== Sample Cases ===")

@@ -73,6 +73,8 @@ class ModelWrapper:
         self.adapter_path = adapter_path
         self.ref_precision_used: str | None = None
         self.ref_dtype_used: torch.dtype | None = None
+        self.actor_device_map = self._resolve_runtime_device_map(model_cfg.actor_device_map, model_role="actor")
+        self.ref_device_map = self._resolve_runtime_device_map(model_cfg.ref_device_map, model_role="ref")
         model_dir = Path(model_cfg.model_name).expanduser()
         self.local_model_only = model_dir.is_dir()
         self.model_source = str(model_dir) if self.local_model_only else model_cfg.model_name
@@ -113,7 +115,7 @@ class ModelWrapper:
             self.model_source,
             trust_remote_code=model_cfg.trust_remote_code,
             quantization_config=self.quantization_config,
-            device_map=model_cfg.actor_device_map,
+            device_map=self.actor_device_map,
             torch_dtype=actor_dtype,
             local_files_only=self.local_model_only,
         )
@@ -191,6 +193,19 @@ class ModelWrapper:
         return torch.float32
 
     @staticmethod
+    def _resolve_runtime_device_map(configured_map: Any, *, model_role: str) -> Any:
+        """Resolve runtime device_map; force GPU-only placement when using auto on CUDA."""
+
+        if torch.cuda.is_available() and isinstance(configured_map, str) and configured_map.strip().lower() == "auto":
+            resolved = {"": 0}
+            print(
+                f"[model] forcing {model_role} device_map to GPU-only {resolved} "
+                "(disable CPU offload from auto device map)."
+            )
+            return resolved
+        return configured_map
+
+    @staticmethod
     def _to_device_from_map_value(value: Any) -> torch.device | None:
         """将 hf_device_map 的值转换为 torch.device。"""
 
@@ -261,7 +276,7 @@ class ModelWrapper:
         quant_dtype = _str_to_dtype(self.model_cfg.bnb_4bit_compute_dtype)
         load_kwargs = {
             "trust_remote_code": self.model_cfg.trust_remote_code,
-            "device_map": self.model_cfg.ref_device_map,
+            "device_map": self.ref_device_map,
             "local_files_only": self.local_model_only,
         }
 

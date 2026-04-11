@@ -192,6 +192,50 @@ def apply_runtime_mode_adjustments(config: AppConfig, args: argparse.Namespace) 
     if args.disable_4bit:
         os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
+    if not 0.0 < config.data.train_ratio < 1.0:
+        raise ValueError(f"train_ratio must be in (0, 1), got {config.data.train_ratio}")
+
+    if config.train.num_epochs < 1:
+        print(f"[warn] num_epochs={config.train.num_epochs} is invalid; auto-adjusting to 1.")
+        config.train.num_epochs = 1
+
+    if config.train.batch_size < 1:
+        print(f"[warn] batch_size={config.train.batch_size} is invalid; auto-adjusting to 1.")
+        config.train.batch_size = 1
+
+    if config.train.eval_every_steps < 1:
+        print(
+            f"[warn] eval_every_steps={config.train.eval_every_steps} is invalid; "
+            "auto-adjusting to 1."
+        )
+        config.train.eval_every_steps = 1
+
+    if config.train.max_new_tokens < 1:
+        print(f"[warn] max_new_tokens={config.train.max_new_tokens} is invalid; auto-adjusting to 1.")
+        config.train.max_new_tokens = 1
+
+    if config.reward.topk < 1:
+        print(f"[warn] reward_topk={config.reward.topk} is invalid; auto-adjusting to 1.")
+        config.reward.topk = 1
+
+    if config.data.max_train_queries is not None and config.data.max_train_queries < 0:
+        print(
+            f"[warn] max_train_queries={config.data.max_train_queries} is invalid; "
+            "auto-adjusting to 0."
+        )
+        config.data.max_train_queries = 0
+
+    if config.data.max_val_queries is not None and config.data.max_val_queries < 0:
+        print(
+            f"[warn] max_val_queries={config.data.max_val_queries} is invalid; "
+            "auto-adjusting to 0."
+        )
+        config.data.max_val_queries = 0
+
+    if config.train.max_steps is not None and config.train.max_steps < 1:
+        print(f"[warn] max_steps={config.train.max_steps} is invalid; auto-adjusting to 1.")
+        config.train.max_steps = 1
+
     # GRPO 组内标准化至少需要 2 个样本。
     if config.train.group_size < 2:
         print(
@@ -305,6 +349,8 @@ def main() -> int:
     train_queries, val_queries = split_queries(queries, train_ratio=config.data.train_ratio, seed=config.data.seed)
     # train_queries = maybe_limit(train_queries, config.data.max_train_queries)
     # val_queries = maybe_limit(val_queries, config.data.max_val_queries)
+    train_queries = maybe_limit(train_queries, config.data.max_train_queries)
+    val_queries = maybe_limit(val_queries, config.data.max_val_queries)
 
     print(f"[data] train_queries={len(train_queries)}, val_queries={len(val_queries)}, qrels_qids={len(qrels)}")
 
@@ -314,10 +360,11 @@ def main() -> int:
         prebuilt_index=config.data.prebuilt_index,
         reward_cfg=config.reward,
     )
+    mrr_label = f"MRR@{config.reward.topk}"
 
     # 5) 基线评估（原始 query）。
     base_original_val = evaluate_original(rewarder, val_queries, max_queries=config.data.max_val_queries)
-    print(f"[baseline] original_val_mrr@10={base_original_val['mrr_mean']:.4f}")
+    print(f"[baseline] original_val_{mrr_label}={base_original_val['mrr_mean']:.4f}")
 
     # 6) 构建训练引擎。
     model = ModelWrapper(
@@ -452,8 +499,8 @@ def main() -> int:
         max_new_tokens=config.train.max_new_tokens,
     )
     print(
-        f"[done] final_val_mrr={final_eval['mrr_mean']:.4f} "
-        f"original_val_mrr={base_original_val['mrr_mean']:.4f} "
+        f"[done] final_val_{mrr_label}={final_eval['mrr_mean']:.4f} "
+        f"original_val_{mrr_label}={base_original_val['mrr_mean']:.4f} "
         f"delta={final_eval['mrr_mean'] - base_original_val['mrr_mean']:+.4f}"
     )
     print(f"[done] checkpoints: best={best_path}, latest={latest_path}")

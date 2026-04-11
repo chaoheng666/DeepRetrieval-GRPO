@@ -38,6 +38,41 @@ class RuntimeConfigTests(unittest.TestCase):
         self.assertEqual(adjusted.model.actor_device_map, "cpu")
         self.assertEqual(adjusted.model.ref_device_map, "cpu")
 
+    def test_runtime_adjustments_clamp_invalid_numeric_values(self):
+        cfg = get_default_config()
+        cfg.train.num_epochs = 0
+        cfg.train.batch_size = 0
+        cfg.train.eval_every_steps = 0
+        cfg.train.max_new_tokens = 0
+        cfg.train.group_size = 1
+        cfg.train.max_steps = 0
+        cfg.reward.topk = 0
+        cfg.data.max_train_queries = -1
+        cfg.data.max_val_queries = -2
+        args = argparse.Namespace(low_mem_mode=False, disable_4bit=False)
+
+        with patch("torch.cuda.is_available", return_value=True):
+            adjusted = apply_runtime_mode_adjustments(cfg, args)
+
+        self.assertEqual(adjusted.train.num_epochs, 1)
+        self.assertEqual(adjusted.train.batch_size, 1)
+        self.assertEqual(adjusted.train.eval_every_steps, 1)
+        self.assertEqual(adjusted.train.max_new_tokens, 1)
+        self.assertEqual(adjusted.train.group_size, 2)
+        self.assertEqual(adjusted.train.max_steps, 1)
+        self.assertEqual(adjusted.reward.topk, 1)
+        self.assertEqual(adjusted.data.max_train_queries, 0)
+        self.assertEqual(adjusted.data.max_val_queries, 0)
+
+    def test_runtime_adjustments_reject_invalid_train_ratio(self):
+        cfg = get_default_config()
+        cfg.data.train_ratio = 1.0
+        args = argparse.Namespace(low_mem_mode=False, disable_4bit=False)
+
+        with patch("torch.cuda.is_available", return_value=True):
+            with self.assertRaises(ValueError):
+                apply_runtime_mode_adjustments(cfg, args)
+
 
 class _ToyModelWrapper:
     def __init__(self):
@@ -191,6 +226,9 @@ class RefPrecisionFallbackTests(unittest.TestCase):
             )
 
         self.assertEqual(len(calls), 3)
+        self.assertEqual(calls[0]["device_map"], {"": 0})
+        self.assertEqual(calls[1]["device_map"], {"": 0})
+        self.assertEqual(calls[2]["device_map"], {"": 0})
         self.assertIsNone(calls[1]["quantization_config"])
         self.assertIsNotNone(calls[2]["quantization_config"])
         self.assertEqual(wrapper.ref_precision_used, "4bit")

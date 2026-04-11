@@ -13,6 +13,8 @@ USE_VENV="${USE_VENV:-0}"
 INSTALL_DEPS="${INSTALL_DEPS:-0}"
 REQUIRE_CUDA="${REQUIRE_CUDA:-1}"
 MODEL_NAME="${MODEL_NAME:-/root/autodl-tmp/hf_models/Qwen3-4B-Instruct-2507}"
+AUTO_GIT_COMMIT="${AUTO_GIT_COMMIT:-1}"
+AUTO_GIT_PUSH="${AUTO_GIT_PUSH:-1}"
 
 TRAIN_DIR="${ARTIFACT_ROOT}/artifacts_${EXP_NAME}_train"
 EVAL_DIR="${ARTIFACT_ROOT}/artifacts_${EXP_NAME}_eval"
@@ -58,12 +60,25 @@ echo "[env] python: $("$PYTHON_BIN" --version 2>&1)"
 echo "[env] pip: $("$PYTHON_BIN" -m pip --version)"
 echo "[env] executable: $("$PYTHON_BIN" -c 'import sys; print(sys.executable)')"
 echo "[env] torch cuda available: $("$PYTHON_BIN" -c 'import torch; print(torch.cuda.is_available())')"
-if [[ ! -d "$MODEL_NAME" ]]; then
-  echo "[error] MODEL_NAME directory not found: $MODEL_NAME" >&2
-  echo "[hint] Download model first, or set MODEL_NAME to an existing local directory." >&2
-  exit 1
+is_likely_local_path=0
+case "$MODEL_NAME" in
+  /*|./*|../*|~/*)
+    is_likely_local_path=1
+    ;;
+esac
+
+if [[ "$is_likely_local_path" == "1" ]]; then
+  if [[ ! -d "$MODEL_NAME" ]]; then
+    echo "[error] MODEL_NAME local directory not found: $MODEL_NAME" >&2
+    echo "[hint] Download model first, or set MODEL_NAME to an existing local directory/model id." >&2
+    exit 1
+  fi
+  echo "[env] model source (local dir): $MODEL_NAME"
+elif [[ -d "$MODEL_NAME" ]]; then
+  echo "[env] model source (local dir): $MODEL_NAME"
+else
+  echo "[env] model source (model id): $MODEL_NAME"
 fi
-echo "[env] model source: $MODEL_NAME"
 
 if command -v java >/dev/null 2>&1; then
   echo "[env] java: $(java -version 2>&1 | head -n 1)"
@@ -122,17 +137,28 @@ echo "[3/4] Running full evaluation for the 4B experiment..."
 echo "Done. Report: $EVAL_REPORT_PATH"
 
 echo "[4/4] Auto-committing all changes to git repository..."
-if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-  echo "[error] Current directory is not a git repository." >&2
-  exit 1
-fi
-
-git add -A
-if git diff --cached --quiet; then
-  echo "[4/4] No staged changes to commit. Skipped."
+if [[ "$AUTO_GIT_COMMIT" != "1" ]]; then
+  echo "[4/4] AUTO_GIT_COMMIT=0, skipped."
 else
-  COMMIT_MSG="chore: auto commit training and full eval artifacts $(date '+%Y-%m-%d %H:%M:%S')"
-  git commit -m "$COMMIT_MSG"
-  git push
-  echo "[4/4] Commit created and pushed: $COMMIT_MSG"
+  if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    echo "[error] Current directory is not a git repository." >&2
+    exit 1
+  fi
+
+  git add -A
+  if git diff --cached --quiet; then
+    echo "[4/4] No staged changes to commit. Skipped."
+  else
+    COMMIT_MSG="chore: auto commit training and full eval artifacts $(date '+%Y-%m-%d %H:%M:%S')"
+    git commit -m "$COMMIT_MSG"
+    if [[ "$AUTO_GIT_PUSH" == "1" ]]; then
+      if git push; then
+        echo "[4/4] Commit created and pushed: $COMMIT_MSG"
+      else
+        echo "[warn] Commit created, but git push failed. Please push manually."
+      fi
+    else
+      echo "[4/4] Commit created locally (AUTO_GIT_PUSH=0): $COMMIT_MSG"
+    fi
+  fi
 fi
