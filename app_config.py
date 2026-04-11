@@ -140,7 +140,7 @@ class TrainConfig:
     """GRPO 训练超参数。"""
 
     num_epochs: int = 1
-    batch_size: int = 2
+    batch_size: int = 8
     # GRPO 的 K：每条 query 采样的重写候选数。
     group_size: int = 4
     learning_rate: float = 2e-5

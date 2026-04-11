@@ -101,10 +101,10 @@ echo "[2/4] Training 4B experiment..."
 "$PYTHON_BIN" train.py \
   --model-name "$MODEL_NAME" \
   --num-epochs 1 \
-  --batch-size 4 \
+  --batch-size 8 \
   --group-size 4 \
   --search-threads 8 \
-  --max-new-tokens 12 \
+  --max-new-tokens 16 \
   --eval-every-steps 100 \
   --max-val-queries 200 \
   --max-steps 800 \
