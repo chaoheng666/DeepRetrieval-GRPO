@@ -12,6 +12,7 @@ LOG_DIR="${LOG_DIR:-log}"
 USE_VENV="${USE_VENV:-0}"
 INSTALL_DEPS="${INSTALL_DEPS:-0}"
 REQUIRE_CUDA="${REQUIRE_CUDA:-1}"
+MODEL_NAME="${MODEL_NAME:-/root/autodl-tmp/hf_models/Qwen3-4B-Instruct-2507}"
 
 TRAIN_DIR="${ARTIFACT_ROOT}/artifacts_${EXP_NAME}_train"
 EVAL_DIR="${ARTIFACT_ROOT}/artifacts_${EXP_NAME}_eval"
@@ -57,6 +58,12 @@ echo "[env] python: $("$PYTHON_BIN" --version 2>&1)"
 echo "[env] pip: $("$PYTHON_BIN" -m pip --version)"
 echo "[env] executable: $("$PYTHON_BIN" -c 'import sys; print(sys.executable)')"
 echo "[env] torch cuda available: $("$PYTHON_BIN" -c 'import torch; print(torch.cuda.is_available())')"
+if [[ ! -d "$MODEL_NAME" ]]; then
+  echo "[error] MODEL_NAME directory not found: $MODEL_NAME" >&2
+  echo "[hint] Download model first, or set MODEL_NAME to an existing local directory." >&2
+  exit 1
+fi
+echo "[env] model source: $MODEL_NAME"
 
 if command -v java >/dev/null 2>&1; then
   echo "[env] java: $(java -version 2>&1 | head -n 1)"
@@ -77,7 +84,7 @@ fi
 
 echo "[2/4] Training 4B experiment..."
 "$PYTHON_BIN" train.py \
-  --model-name Qwen/Qwen3-4B-Instruct-2507 \
+  --model-name "$MODEL_NAME" \
   --num-epochs 3 \
   --batch-size 4 \
   --group-size 8 \
@@ -104,7 +111,7 @@ fi
 echo "[3/4] Running full evaluation for the 4B experiment..."
 "$PYTHON_BIN" eval_compare.py \
   --rl-adapter-path "$ADAPTER_PATH" \
-  --model-name Qwen/Qwen3-4B-Instruct-2507 \
+  --model-name "$MODEL_NAME" \
   --strict-tokenizer-model-match \
   --max-eval-queries 1000000 \
   --sample-print 20 \

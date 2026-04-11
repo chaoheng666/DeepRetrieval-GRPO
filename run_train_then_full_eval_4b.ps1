@@ -25,6 +25,7 @@ try {
   $pythonBin = if ($env:PYTHON_BIN) { $env:PYTHON_BIN } else { "python" }
   $artifactRoot = if ($env:ARTIFACT_ROOT) { $env:ARTIFACT_ROOT } else { "train_and_eval_data_model" }
   $expName = if ($env:EXP_NAME) { $env:EXP_NAME } else { "4b" }
+  $modelName = if ($env:MODEL_NAME) { $env:MODEL_NAME } else { "/root/autodl-tmp/hf_models/Qwen3-4B-Instruct-2507" }
 
   $trainDir = Join-Path $artifactRoot "artifacts_${expName}_train"
   $evalDir = Join-Path $artifactRoot "artifacts_${expName}_eval"
@@ -36,9 +37,14 @@ try {
   New-Item -ItemType Directory -Path $trainDir -Force | Out-Null
   New-Item -ItemType Directory -Path $evalDir -Force | Out-Null
 
+  if (-not (Test-Path -LiteralPath $modelName)) {
+    throw "MODEL_NAME directory not found: $modelName. Download model first, or set MODEL_NAME to an existing local directory."
+  }
+  Write-Host "[env] model source: $modelName"
+
   Write-Host "[1/3] Training 4B experiment..."
   & $pythonBin train.py `
-    --model-name Qwen/Qwen3-4B-Instruct-2507 `
+    --model-name $modelName `
     --num-epochs 3 `
     --batch-size 4 `
     --group-size 8 `
@@ -67,7 +73,7 @@ try {
   Write-Host "[2/3] Running full evaluation for the 4B experiment..."
   & $pythonBin eval_compare.py `
     --rl-adapter-path $adapterPath `
-    --model-name Qwen/Qwen3-4B-Instruct-2507 `
+    --model-name $modelName `
     --strict-tokenizer-model-match `
     --max-eval-queries 1000000 `
     --sample-print 20 `

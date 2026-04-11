@@ -73,6 +73,11 @@ class ModelWrapper:
         self.adapter_path = adapter_path
         self.ref_precision_used: str | None = None
         self.ref_dtype_used: torch.dtype | None = None
+        model_dir = Path(model_cfg.model_name).expanduser()
+        self.local_model_only = model_dir.is_dir()
+        self.model_source = str(model_dir) if self.local_model_only else model_cfg.model_name
+        if self.local_model_only:
+            print(f"[model] using local model directory: {self.model_source}")
 
         if model_cfg.load_in_4bit and not torch.cuda.is_available():
             print("[warn] CUDA is unavailable; disabling 4-bit quantization and loading full precision on CPU.")
@@ -86,9 +91,10 @@ class ModelWrapper:
                 model_cfg.bnb_4bit_compute_dtype = "float16"
 
         self.tokenizer = AutoTokenizer.from_pretrained(
-            model_cfg.model_name,
+            self.model_source,
             trust_remote_code=model_cfg.trust_remote_code,
             use_fast=False,
+            local_files_only=self.local_model_only,
         )
         # 保证 decoder-only 模型有 pad_token，避免 batch/generate 报错。
         if self.tokenizer.pad_token is None:
@@ -104,16 +110,17 @@ class ModelWrapper:
         if not torch.cuda.is_available():
             actor_dtype = torch.float32
         base_actor = AutoModelForCausalLM.from_pretrained(
-            model_cfg.model_name,
+            self.model_source,
             trust_remote_code=model_cfg.trust_remote_code,
             quantization_config=self.quantization_config,
             device_map=model_cfg.actor_device_map,
             torch_dtype=actor_dtype,
+            local_files_only=self.local_model_only,
         )
         self._validate_tokenizer_model_match(
             tokenizer=self.tokenizer,
             model=base_actor,
-            model_name=model_cfg.model_name,
+            model_name=self.model_source,
             adapter_path=adapter_path,
             strict=strict_tokenizer_model_match,
         )
@@ -255,13 +262,14 @@ class ModelWrapper:
         load_kwargs = {
             "trust_remote_code": self.model_cfg.trust_remote_code,
             "device_map": self.model_cfg.ref_device_map,
+            "local_files_only": self.local_model_only,
         }
 
         def _load(*, use_4bit: bool, dtype: torch.dtype):
             # use_4bit=True 时传入 4bit 量化配置，否则走全精度加载。
             quant_cfg = self._build_4bit_config(enabled=use_4bit)
             return auto_model_cls.from_pretrained(
-                self.model_cfg.model_name,
+                self.model_source,
                 quantization_config=quant_cfg,
                 torch_dtype=dtype,
                 **load_kwargs,
