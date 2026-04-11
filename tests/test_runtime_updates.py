@@ -46,7 +46,8 @@ class RuntimeConfigTests(unittest.TestCase):
         cfg.train.max_new_tokens = 0
         cfg.train.group_size = 1
         cfg.train.max_steps = 0
-        cfg.reward.topk = 0
+        cfg.reward.mrr_k = 0
+        cfg.reward.recall_k = 0
         cfg.data.max_train_queries = -1
         cfg.data.max_val_queries = -2
         args = argparse.Namespace(low_mem_mode=False, disable_4bit=False)
@@ -60,7 +61,8 @@ class RuntimeConfigTests(unittest.TestCase):
         self.assertEqual(adjusted.train.max_new_tokens, 1)
         self.assertEqual(adjusted.train.group_size, 2)
         self.assertEqual(adjusted.train.max_steps, 1)
-        self.assertEqual(adjusted.reward.topk, 1)
+        self.assertEqual(adjusted.reward.mrr_k, 1)
+        self.assertEqual(adjusted.reward.recall_k, 1)
         self.assertEqual(adjusted.data.max_train_queries, 0)
         self.assertEqual(adjusted.data.max_val_queries, 0)
 
@@ -113,22 +115,23 @@ class _ToyModelWrapper:
 
 class _ToyRewarder:
     def score(self, qid: str, rewritten_query: str, source_query: str | None = None) -> RewardBreakdown:
-        unread_penalty = 0.3 if "¤" in rewritten_query else 0.0
+        format_penalty = 1.0 if "¤" in rewritten_query else 0.0
         return RewardBreakdown(
-            total=1.0 - unread_penalty,
+            total=1.0 - (0.2 * format_penalty),
             mrr=0.5,
+            recall=0.25,
             overlap=0.4,
-            penalty=unread_penalty,
+            copy_penalty=0.0,
+            format_penalty=format_penalty,
             hit_rank=1,
-            short_penalty=0.0,
-            repeat_penalty=0.0,
-            unreadable_penalty=unread_penalty,
+            retrieved_relevant_count=1,
+            relevant_total=4,
             rewritten_query=f"clean::{rewritten_query}",
         )
 
 
 class EngineTraceTests(unittest.TestCase):
-    def test_group_trace_and_unreadable_ratio_metrics(self):
+    def test_group_trace_metrics(self):
         wrapper = _ToyModelWrapper()
         rewarder = _ToyRewarder()
         optimizer = torch.optim.SGD(wrapper.trainable_parameters(), lr=1e-2)
@@ -153,8 +156,10 @@ class EngineTraceTests(unittest.TestCase):
         self.assertEqual(len(summaries[0]["group_raw_responses"]), 2)
         self.assertEqual(len(summaries[0]["group_cleaned_queries"]), 2)
         self.assertEqual(len(summaries[0]["group_rewards"]), 2)
-        self.assertEqual(len(summaries[0]["group_unreadable_penalties"]), 2)
-        self.assertGreater(metrics["unreadable_ratio_mean"], 0.0)
+        self.assertEqual(len(summaries[0]["group_recall"]), 2)
+        self.assertEqual(len(summaries[0]["group_copy_penalties"]), 2)
+        self.assertEqual(len(summaries[0]["group_format_penalties"]), 2)
+        self.assertGreaterEqual(metrics["format_penalty_mean"], 0.0)
         self.assertTrue(all(flag is False for flag in wrapper.training_flags))
         self.assertTrue(wrapper.actor_model.training)
 

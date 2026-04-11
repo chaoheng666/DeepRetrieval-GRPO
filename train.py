@@ -60,10 +60,27 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-new-tokens", type=int, default=None)
     parser.add_argument("--temperature", type=float, default=None)
     parser.add_argument("--top-p", type=float, default=None)
-    parser.add_argument("--reward-topk", type=int, default=None, help="MRR@k reward cutoff, e.g. 10/20/50.")
+    parser.add_argument("--reward-mrr-k", type=int, default=None, help="MRR@k reward cutoff, e.g. 10.")
+    parser.add_argument("--reward-recall-k", type=int, default=None, help="Recall@k reward cutoff, e.g. 50.")
     parser.add_argument("--search-threads", type=int, default=None, help="Pyserini batch_search thread count.")
-    parser.add_argument("--reward-overlap-weight", type=float, default=None, help="Weight for lexical-overlap shaping reward.")
-    parser.add_argument("--reward-mrr-weight", type=float, default=None, help="Weight for MRR reward term.")
+    parser.add_argument("--reward-w-mrr", type=float, default=None, help="Weight for MRR reward term.")
+    parser.add_argument("--reward-w-recall", type=float, default=None, help="Weight for Recall reward term.")
+    parser.add_argument("--reward-w-copy", type=float, default=None, help="Weight for CopyPenalty term.")
+    parser.add_argument("--reward-w-format", type=float, default=None, help="Weight for FormatPenalty term.")
+    parser.add_argument("--reward-copy-tau", type=float, default=None, help="Threshold tau for CopyPenalty=max(0, overlap-tau).")
+    parser.add_argument("--format-max-tokens", type=int, default=None, help="Hard cap for token count in strict format check.")
+    parser.add_argument(
+        "--format-min-english-ratio",
+        type=float,
+        default=None,
+        help="Minimum English-letter ratio in strict format check.",
+    )
+    parser.add_argument(
+        "--format-max-unreadable-ratio",
+        type=float,
+        default=None,
+        help="Maximum unreadable-char ratio in strict format check.",
+    )
     parser.add_argument("--eval-every-steps", type=int, default=None)
     parser.add_argument("--max-steps", type=int, default=None)
     parser.add_argument("--max-train-queries", type=int, default=None)
@@ -109,8 +126,7 @@ def apply_low_mem_mode(config: AppConfig) -> AppConfig:
     config.data.max_train_queries = 64
     config.data.max_val_queries = 32
     config.data.prebuilt_index = "msmarco-v1-passage-slim"
-    config.reward.topk = 50
-    config.reward.overlap_weight = 0.3
+    config.reward.recall_k = 50
 
     # 将低显存实验输出隔离到单独目录。
     config.train.save_dir = "train_and_eval_data_model/artifacts_lowmem_train/checkpoints"
@@ -157,14 +173,28 @@ def apply_overrides(config: AppConfig, args: argparse.Namespace) -> AppConfig:
         config.train.temperature = args.temperature
     if args.top_p is not None:
         config.train.top_p = args.top_p
-    if args.reward_topk is not None:
-        config.reward.topk = args.reward_topk
+    if args.reward_mrr_k is not None:
+        config.reward.mrr_k = args.reward_mrr_k
+    if args.reward_recall_k is not None:
+        config.reward.recall_k = args.reward_recall_k
     if args.search_threads is not None:
         config.reward.search_threads = max(1, args.search_threads)
-    if args.reward_overlap_weight is not None:
-        config.reward.overlap_weight = args.reward_overlap_weight
-    if args.reward_mrr_weight is not None:
-        config.reward.mrr_weight = args.reward_mrr_weight
+    if args.reward_w_mrr is not None:
+        config.reward.w_mrr = args.reward_w_mrr
+    if args.reward_w_recall is not None:
+        config.reward.w_recall = args.reward_w_recall
+    if args.reward_w_copy is not None:
+        config.reward.w_copy = args.reward_w_copy
+    if args.reward_w_format is not None:
+        config.reward.w_format = args.reward_w_format
+    if args.reward_copy_tau is not None:
+        config.reward.copy_tau = args.reward_copy_tau
+    if args.format_max_tokens is not None:
+        config.reward.format_max_tokens = args.format_max_tokens
+    if args.format_min_english_ratio is not None:
+        config.reward.format_min_english_ratio = args.format_min_english_ratio
+    if args.format_max_unreadable_ratio is not None:
+        config.reward.format_max_unreadable_ratio = args.format_max_unreadable_ratio
     if args.eval_every_steps is not None:
         config.train.eval_every_steps = args.eval_every_steps
     if args.max_steps is not None:
@@ -214,9 +244,12 @@ def apply_runtime_mode_adjustments(config: AppConfig, args: argparse.Namespace) 
         print(f"[warn] max_new_tokens={config.train.max_new_tokens} is invalid; auto-adjusting to 1.")
         config.train.max_new_tokens = 1
 
-    if config.reward.topk < 1:
-        print(f"[warn] reward_topk={config.reward.topk} is invalid; auto-adjusting to 1.")
-        config.reward.topk = 1
+    if config.reward.mrr_k < 1:
+        print(f"[warn] reward_mrr_k={config.reward.mrr_k} is invalid; auto-adjusting to 1.")
+        config.reward.mrr_k = 1
+    if config.reward.recall_k < 1:
+        print(f"[warn] reward_recall_k={config.reward.recall_k} is invalid; auto-adjusting to 1.")
+        config.reward.recall_k = 1
 
     if config.data.max_train_queries is not None and config.data.max_train_queries < 0:
         print(
@@ -283,7 +316,9 @@ def evaluate_policy(
     eval_queries = list(queries[:max_queries]) if max_queries is not None else list(queries)
     rewards: list[float] = []
     mrr_scores: list[float] = []
-    penalties: list[float] = []
+    recall_scores: list[float] = []
+    copy_penalties: list[float] = []
+    format_penalties: list[float] = []
 
     for query in eval_queries:
         rewritten = model.generate_rewrite(
@@ -296,12 +331,16 @@ def evaluate_policy(
         score = rewarder.score(query.qid, rewritten, source_query=query.text)
         rewards.append(score.total)
         mrr_scores.append(score.mrr)
-        penalties.append(score.penalty)
+        recall_scores.append(score.recall)
+        copy_penalties.append(score.copy_penalty)
+        format_penalties.append(score.format_penalty)
 
     return {
         "reward_mean": fmean(rewards) if rewards else 0.0,
         "mrr_mean": fmean(mrr_scores) if mrr_scores else 0.0,
-        "penalty_mean": fmean(penalties) if penalties else 0.0,
+        "recall_mean": fmean(recall_scores) if recall_scores else 0.0,
+        "copy_penalty_mean": fmean(copy_penalties) if copy_penalties else 0.0,
+        "format_penalty_mean": fmean(format_penalties) if format_penalties else 0.0,
         "count": float(len(eval_queries)),
     }
 
@@ -360,7 +399,7 @@ def main() -> int:
         prebuilt_index=config.data.prebuilt_index,
         reward_cfg=config.reward,
     )
-    mrr_label = f"MRR@{config.reward.topk}"
+    mrr_label = f"MRR@{config.reward.mrr_k}"
 
     # 5) 基线评估（原始 query）。
     base_original_val = evaluate_original(rewarder, val_queries, max_queries=config.data.max_val_queries)
@@ -443,8 +482,9 @@ def main() -> int:
                 f"[train] step={global_step} loss={metrics['loss']:.4f} "
                 f"pg={metrics['loss_pg']:.4f} kl={metrics['loss_kl']:.4f} "
                 f"reward={metrics['reward_mean']:.4f} mrr={metrics['mrr_mean']:.4f} "
-                f"overlap={metrics.get('overlap_mean', 0.0):.4f} "
-                f"unreadable={metrics.get('unreadable_ratio_mean', 0.0):.4f}"
+                f"recall={metrics.get('recall_mean', 0.0):.4f} "
+                f"copy_penalty={metrics.get('copy_penalty_mean', 0.0):.4f} "
+                f"format_penalty={metrics.get('format_penalty_mean', 0.0):.4f}"
             )
             if args.print_best_query and best_query_pairs:
                 for pair in best_query_pairs:

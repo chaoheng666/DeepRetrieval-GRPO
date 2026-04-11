@@ -11,9 +11,6 @@ from torch.nn.utils import clip_grad_norm_
 
 from data.loader import QueryExample
 
-from .reward_func import compute_unreadable_ratio
-
-
 @dataclass(slots=True)
 class Sample:
     """One sampled candidate used for PPO/GRPO loss computation."""
@@ -26,10 +23,9 @@ class Sample:
     logprob_old: torch.Tensor
     reward: float
     mrr: float
-    overlap: float
-    penalty: float
-    unreadable_penalty: float
-    unreadable_ratio: float
+    recall: float
+    copy_penalty: float
+    format_penalty: float
     advantage: float = 0.0
 
 
@@ -112,9 +108,9 @@ class GRPOEngine:
 
             rewards: list[float] = []
             mrr_scores: list[float] = []
-            penalties: list[float] = []
-            overlaps: list[float] = []
-            unreadable_ratios: list[float] = []
+            recall_scores: list[float] = []
+            copy_penalties: list[float] = []
+            format_penalties: list[float] = []
             all_advantages: list[float] = []
 
             best_query_pairs: list[dict[str, object]] = []
@@ -170,10 +166,9 @@ class GRPOEngine:
                             logprob_old=generated.logprob_old,
                             reward=reward.total,
                             mrr=reward.mrr,
-                            overlap=reward.overlap,
-                            penalty=reward.penalty,
-                            unreadable_penalty=reward.unreadable_penalty,
-                            unreadable_ratio=compute_unreadable_ratio(generated.response_text),
+                            recall=reward.recall,
+                            copy_penalty=reward.copy_penalty,
+                            format_penalty=reward.format_penalty,
                         )
                     )
                 sampled += len(group_samples)
@@ -186,8 +181,9 @@ class GRPOEngine:
                         "group_cleaned_queries": [sample.rewritten_query for sample in group_samples],
                         "group_rewards": [sample.reward for sample in group_samples],
                         "group_mrr": [sample.mrr for sample in group_samples],
-                        "group_penalties": [sample.penalty for sample in group_samples],
-                        "group_unreadable_penalties": [sample.unreadable_penalty for sample in group_samples],
+                        "group_recall": [sample.recall for sample in group_samples],
+                        "group_copy_penalties": [sample.copy_penalty for sample in group_samples],
+                        "group_format_penalties": [sample.format_penalty for sample in group_samples],
                     }
                 )
 
@@ -208,9 +204,9 @@ class GRPOEngine:
                     all_advantages.append(sample.advantage)
                     rewards.append(sample.reward)
                     mrr_scores.append(sample.mrr)
-                    penalties.append(sample.penalty)
-                    overlaps.append(sample.overlap)
-                    unreadable_ratios.append(sample.unreadable_ratio)
+                    recall_scores.append(sample.recall)
+                    copy_penalties.append(sample.copy_penalty)
+                    format_penalties.append(sample.format_penalty)
 
                 for sample in group_samples:
                     if not sample.response_token_ids or sample.logprob_old.numel() == 0:
@@ -261,9 +257,9 @@ class GRPOEngine:
             metrics: dict[str, object] = {
                 "reward_mean": fmean(rewards) if rewards else 0.0,
                 "mrr_mean": fmean(mrr_scores) if mrr_scores else 0.0,
-                "penalty_mean": fmean(penalties) if penalties else 0.0,
-                "overlap_mean": fmean(overlaps) if overlaps else 0.0,
-                "unreadable_ratio_mean": fmean(unreadable_ratios) if unreadable_ratios else 0.0,
+                "recall_mean": fmean(recall_scores) if recall_scores else 0.0,
+                "copy_penalty_mean": fmean(copy_penalties) if copy_penalties else 0.0,
+                "format_penalty_mean": fmean(format_penalties) if format_penalties else 0.0,
                 "nonzero_reward_ratio": nonzero_reward_ratio,
                 "adv_mean": fmean(all_advantages) if all_advantages else 0.0,
                 "adv_std": float(torch.tensor(all_advantages).std(unbiased=False)) if all_advantages else 0.0,

@@ -105,7 +105,7 @@ echo "[2/4] Training 4B experiment..."
   --group-size 4 \
   --search-threads 8 \
   --max-new-tokens 12 \
-  --eval-every-steps 200 \
+  --eval-every-steps 100 \
   --max-val-queries 200 \
   --max-steps 800 \
   --save-dir "$TRAIN_CHECKPOINT_DIR" \

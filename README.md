@@ -412,8 +412,8 @@ python train.py --low-mem-mode
 5. `max_train_queries=64`
 6. `max_val_queries=32`
 7. `max_steps=20`
-8. 奖励计算切换到 `MRR@20`（`topk=20`）
-9. 启用词面重叠奖励（`overlap_weight=0.3`）避免纯 MRR 稀疏导致无学习信号
+8. 奖励计算切换到 `MRR@10 + Recall@50`
+9. 启用 `CopyPenalty` 与 `FormatPenalty` 约束，避免纯 MRR 稀疏导致无学习信号
 10. 检索索引切换为 `msmarco-v1-passage-slim`（下载体积更小）
 11. 输出目录改为 `train_and_eval_data_model/artifacts_lowmem_train/`
 
@@ -423,13 +423,13 @@ python train.py --low-mem-mode
 你仍然可以在低显存模式下覆盖参数，例如：
 
 ```bash
-python train.py --low-mem-mode --max-steps 50 --max-train-queries 128 --reward-topk 20 --reward-overlap-weight 0.3
+python train.py --low-mem-mode --max-steps 50 --max-train-queries 128 --reward-mrr-k 10 --reward-recall-k 50
 ```
 
 Windows PowerShell 示例：
 
 ```powershell
-python train.py --low-mem-mode --max-steps 50 --max-train-queries 128 --reward-topk 20 --reward-overlap-weight 0.3
+python train.py --low-mem-mode --max-steps 50 --max-train-queries 128 --reward-mrr-k 10 --reward-recall-k 50
 ```
 
 
@@ -443,9 +443,12 @@ python train.py `
   --max-new-tokens 32 `
   --temperature 0.9 `
   --top-p 0.95 `
-  --reward-topk 20 `
-  --reward-overlap-weight 0.3 `
-  --reward-mrr-weight 1.0 `
+  --reward-mrr-k 10 `
+  --reward-recall-k 50 `
+  --reward-w-mrr 1.0 `
+  --reward-w-recall 0.3 `
+  --reward-w-copy 0.15 `
+  --reward-w-format 0.2 `
   --eval-every-steps 100 `
   --save-dir train_and_eval_data_model/artifacts_3b_heavy_train/checkpoints `
   --log-path train_and_eval_data_model/artifacts_3b_heavy_train/train_log.jsonl

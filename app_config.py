@@ -168,25 +168,25 @@ class TrainConfig:
 
 @dataclass(slots=True)
 class RewardConfig:
-    """奖励函数配置：检索奖励 + 文本惩罚。"""
+    """Reward V1 配置：MRR + Recall + CopyPenalty + FormatPenalty。"""
 
-    # 检索截断深度：计算 MRR@topk。
-    topk: int = 50
+    # 检索截断深度（可独立配置，检索时会取二者最大值）。
+    mrr_k: int = 50
+    recall_k: int = 50
     # Pyserini batch_search thread count for retrieval-side parallelism.
     search_threads: int = 8
     # 奖励组合权重：
-    # total = mrr_weight * mrr + overlap_weight * lexical_overlap - penalty
-    mrr_weight: float = 1.0
-    overlap_weight: float = 0.2
-    # 生成 query 过短时的阈值与惩罚。
-    min_query_chars: int = 3
-    # 重复比例与不可读字符比例阈值（用于轻量文本质量约束）。
-    max_repeat_ratio: float = 0.35
-    max_unreadable_char_ratio: float = 0.30
-    # 各项惩罚强度。
-    penalty_short: float = 0.20
-    penalty_repeat: float = 0.20
-    penalty_unreadable: float = 0.30
+    # total = w_mrr*mrr + w_recall*recall - w_copy*copy_penalty - w_format*format_penalty
+    w_mrr: float = 1.0
+    w_recall: float = 0.3
+    w_copy: float = 0.15
+    w_format: float = 0.2
+    # CopyPenalty = max(0, overlap - copy_tau), overlap 使用 Jaccard(set)。
+    copy_tau: float = 0.6
+    # FormatPenalty 严格阈值（基于 clean_rewritten_query 后文本）。
+    format_max_tokens: int = 16
+    format_min_english_ratio: float = 0.80
+    format_max_unreadable_ratio: float = 0.30
 
 
 @dataclass(slots=True)

@@ -44,6 +44,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--max-eval-queries", type=int, default=None)
     parser.add_argument("--search-threads", type=int, default=None, help="Pyserini batch_search thread count.")
+    parser.add_argument("--reward-mrr-k", type=int, default=None)
+    parser.add_argument("--reward-recall-k", type=int, default=None)
+    parser.add_argument("--reward-w-mrr", type=float, default=None)
+    parser.add_argument("--reward-w-recall", type=float, default=None)
+    parser.add_argument("--reward-w-copy", type=float, default=None)
+    parser.add_argument("--reward-w-format", type=float, default=None)
+    parser.add_argument("--reward-copy-tau", type=float, default=None)
+    parser.add_argument("--format-max-tokens", type=int, default=None)
+    parser.add_argument("--format-min-english-ratio", type=float, default=None)
+    parser.add_argument("--format-max-unreadable-ratio", type=float, default=None)
     parser.add_argument("--sample-print", type=int, default=5)
     parser.add_argument("--progress-every", type=int, default=20, help="Print progress every N queries per stage.")
     parser.add_argument(
@@ -68,7 +78,7 @@ def apply_overrides(config: AppConfig, args: argparse.Namespace) -> AppConfig:
         config.data.prebuilt_index = "msmarco-v1-passage-slim"
         config.data.max_val_queries = 100
         config.train.max_new_tokens = 24
-        config.reward.topk = 50
+        config.reward.recall_k = 50
 
     if args.model_name is not None:
         config.model.model_name = args.model_name
@@ -86,6 +96,26 @@ def apply_overrides(config: AppConfig, args: argparse.Namespace) -> AppConfig:
         config.data.max_val_queries = args.max_eval_queries
     if args.search_threads is not None:
         config.reward.search_threads = max(1, args.search_threads)
+    if args.reward_mrr_k is not None:
+        config.reward.mrr_k = max(1, args.reward_mrr_k)
+    if args.reward_recall_k is not None:
+        config.reward.recall_k = max(1, args.reward_recall_k)
+    if args.reward_w_mrr is not None:
+        config.reward.w_mrr = args.reward_w_mrr
+    if args.reward_w_recall is not None:
+        config.reward.w_recall = args.reward_w_recall
+    if args.reward_w_copy is not None:
+        config.reward.w_copy = args.reward_w_copy
+    if args.reward_w_format is not None:
+        config.reward.w_format = args.reward_w_format
+    if args.reward_copy_tau is not None:
+        config.reward.copy_tau = args.reward_copy_tau
+    if args.format_max_tokens is not None:
+        config.reward.format_max_tokens = max(1, args.format_max_tokens)
+    if args.format_min_english_ratio is not None:
+        config.reward.format_min_english_ratio = args.format_min_english_ratio
+    if args.format_max_unreadable_ratio is not None:
+        config.reward.format_max_unreadable_ratio = args.format_max_unreadable_ratio
     if args.max_new_tokens is not None:
         config.train.max_new_tokens = args.max_new_tokens
     return config
@@ -128,10 +158,13 @@ def evaluate_original(
 
     values = list(per_qid.values())
     mrr_value = fmean(v.mrr for v in values) if values else 0.0
+    recall_value = fmean(v.recall for v in values) if values else 0.0
     return (
         {
             "mrr": mrr_value,
-            f"mrr@{rewarder.topk}": mrr_value,
+            f"mrr@{rewarder.mrr_k}": mrr_value,
+            "recall": recall_value,
+            f"recall@{rewarder.recall_k}": recall_value,
             "reward_mean": fmean(v.total for v in values) if values else 0.0,
         },
         per_qid,
@@ -166,10 +199,13 @@ def evaluate_with_model(
 
     values = [item[1] for item in per_qid.values()]
     mrr_value = fmean(v.mrr for v in values) if values else 0.0
+    recall_value = fmean(v.recall for v in values) if values else 0.0
     return (
         {
             "mrr": mrr_value,
-            f"mrr@{rewarder.topk}": mrr_value,
+            f"mrr@{rewarder.mrr_k}": mrr_value,
+            "recall": recall_value,
+            f"recall@{rewarder.recall_k}": recall_value,
             "reward_mean": fmean(v.total for v in values) if values else 0.0,
         },
         per_qid,
@@ -194,7 +230,8 @@ def main() -> int:
         "[config] "
         f"model={config.model.model_name}, "
         f"index={config.data.prebuilt_index}, "
-        f"topk={config.reward.topk}, "
+        f"mrr_k={config.reward.mrr_k}, "
+        f"recall_k={config.reward.recall_k}, "
         f"load_in_4bit={config.model.load_in_4bit}, "
         f"adapter_base={adapter_base_model or '-'}"
     )
@@ -261,16 +298,21 @@ def main() -> int:
         progress_every=args.progress_every,
     )
 
-    mrr_label = f"mrr@{config.reward.topk}"
+    mrr_label = f"mrr@{config.reward.mrr_k}"
     delta_zero = zero_metrics["mrr"] - original_metrics["mrr"]
     delta_rl = rl_metrics["mrr"] - original_metrics["mrr"]
     delta_rl_vs_zero = rl_metrics["mrr"] - zero_metrics["mrr"]
+    recall_label = f"recall@{config.reward.recall_k}"
 
     print(f"\n=== {mrr_label} Comparison ===")
     print(f"Original : {original_metrics['mrr']:.4f}")
     print(f"Zero-shot: {zero_metrics['mrr']:.4f} (delta vs original {delta_zero:+.4f})")
     print(f"RL       : {rl_metrics['mrr']:.4f} (delta vs original {delta_rl:+.4f})")
     print(f"RL vs Zero-shot delta: {delta_rl_vs_zero:+.4f}")
+    print(f"\n=== {recall_label} Comparison ===")
+    print(f"Original : {original_metrics['recall']:.4f}")
+    print(f"Zero-shot: {zero_metrics['recall']:.4f}")
+    print(f"RL       : {rl_metrics['recall']:.4f}")
 
     print("\n=== Sample Cases ===")
     sample_count = max(0, args.sample_print)

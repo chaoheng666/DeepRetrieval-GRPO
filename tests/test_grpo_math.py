@@ -4,39 +4,37 @@ import torch
 
 from app_config import RewardConfig
 from core.grpo_engine import normalize_advantages, ppo_clipped_objective
-from core.reward_func import clean_rewritten_query, compute_mrr_at_k, compute_text_penalty
+from core.reward_func import (
+    clean_rewritten_query,
+    compose_reward,
+    compute_copy_penalty,
+    compute_format_penalty,
+    compute_mrr_at_k,
+    compute_recall_at_k,
+)
 
 
 class AdvantageTests(unittest.TestCase):
-    """优势归一化单元测试。"""
-
     def test_normalize_advantages_zero_std(self):
-        # 组内奖励全部相同，标准差为 0，优势应全部回落为 0。
         adv = normalize_advantages([1.0, 1.0, 1.0])
         self.assertTrue(torch.allclose(adv, torch.zeros_like(adv)))
 
     def test_normalize_advantages_centered(self):
-        # 标准化后，均值应接近 0，方差应接近 1。
         adv = normalize_advantages([0.0, 1.0, 2.0])
         self.assertAlmostEqual(float(adv.mean()), 0.0, places=5)
         self.assertAlmostEqual(float(adv.std(unbiased=False)), 1.0, places=5)
 
 
 class PpoClipTests(unittest.TestCase):
-    """PPO clip 公式单元测试。"""
-
     def test_clipped_objective_positive_advantage(self):
         logprob_old = torch.log(torch.tensor([0.5, 0.5], dtype=torch.float32))
         logprob_new = torch.log(torch.tensor([0.75, 0.25], dtype=torch.float32))
         objective = ppo_clipped_objective(logprob_new, logprob_old, advantage=1.0, clip_range=0.2)
         self.assertEqual(objective.shape[0], 2)
-        # ratio = [1.5, 0.5], clipped to [1.2, 0.8], min picks [1.2, 0.5]
         self.assertTrue(torch.allclose(objective, torch.tensor([1.2, 0.5]), atol=1e-5))
 
 
 class RewardMathTests(unittest.TestCase):
-    """MRR 与文本惩罚单元测试。"""
-
     def test_compute_mrr_at_k_hit(self):
         mrr, rank = compute_mrr_at_k(["D1", "D2", "D3"], {"D3"}, topk=10)
         self.assertAlmostEqual(mrr, 1.0 / 3.0)
@@ -47,11 +45,61 @@ class RewardMathTests(unittest.TestCase):
         self.assertEqual(mrr, 0.0)
         self.assertIsNone(rank)
 
-    def test_text_penalty_short_and_repeat(self):
-        cfg = RewardConfig(min_query_chars=3, max_repeat_ratio=0.2, penalty_short=0.5, penalty_repeat=0.3)
-        p = compute_text_penalty("aa aa aa", cfg)
-        self.assertGreaterEqual(p.repeat, 0.3)
-        self.assertEqual(p.short, 0.0)
+    def test_compute_recall_at_k_hit(self):
+        recall, hit_count, total = compute_recall_at_k(["D1", "D2", "D3"], {"D2", "D9"}, topk=3)
+        self.assertAlmostEqual(recall, 0.5)
+        self.assertEqual(hit_count, 1)
+        self.assertEqual(total, 2)
+
+    def test_compute_recall_at_k_miss(self):
+        recall, hit_count, total = compute_recall_at_k(["D1", "D2"], {"D9"}, topk=2)
+        self.assertEqual(recall, 0.0)
+        self.assertEqual(hit_count, 0)
+        self.assertEqual(total, 1)
+
+    def test_compute_recall_at_k_multiple_hits(self):
+        recall, hit_count, total = compute_recall_at_k(["D1", "D2", "D3", "D4"], {"D2", "D4"}, topk=4)
+        self.assertAlmostEqual(recall, 1.0)
+        self.assertEqual(hit_count, 2)
+        self.assertEqual(total, 2)
+
+    def test_copy_penalty_piecewise(self):
+        self.assertEqual(compute_copy_penalty(0.55, 0.6), 0.0)
+        self.assertAlmostEqual(compute_copy_penalty(0.8, 0.6), 0.2)
+
+    def test_format_penalty_empty(self):
+        cfg = RewardConfig()
+        self.assertEqual(compute_format_penalty("", cfg), 1.0)
+
+    def test_format_penalty_multiline(self):
+        cfg = RewardConfig()
+        self.assertEqual(compute_format_penalty("first line\nsecond line", cfg), 1.0)
+
+    def test_format_penalty_explanation(self):
+        cfg = RewardConfig()
+        self.assertEqual(compute_format_penalty("because this query is better", cfg), 1.0)
+
+    def test_format_penalty_non_english(self):
+        cfg = RewardConfig()
+        self.assertEqual(compute_format_penalty("天气 预报 北京 明天", cfg), 1.0)
+
+    def test_format_penalty_overlength(self):
+        cfg = RewardConfig(format_max_tokens=3)
+        self.assertEqual(compute_format_penalty("best budget gaming laptop 2024", cfg), 1.0)
+
+    def test_format_penalty_unreadable(self):
+        cfg = RewardConfig(format_max_unreadable_ratio=0.0)
+        self.assertEqual(compute_format_penalty("normal § query", cfg), 1.0)
+
+    def test_format_penalty_valid_query(self):
+        cfg = RewardConfig()
+        self.assertEqual(compute_format_penalty("best budget gaming laptop 2024", cfg), 0.0)
+
+    def test_total_reward_formula(self):
+        cfg = RewardConfig(w_mrr=1.0, w_recall=0.3, w_copy=0.15, w_format=0.2)
+        total = compose_reward(mrr=0.5, recall=0.4, copy_penalty=0.1, format_penalty=1.0, cfg=cfg)
+        expected = 1.0 * 0.5 + 0.3 * 0.4 - 0.15 * 0.1 - 0.2 * 1.0
+        self.assertAlmostEqual(total, expected)
 
 
 class QueryCleaningTests(unittest.TestCase):
