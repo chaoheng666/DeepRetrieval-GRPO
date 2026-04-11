@@ -91,7 +91,6 @@ echo "[2/4] Training 4B experiment..."
   --max-new-tokens 16 \
   --eval-every-steps 200 \
   --max-val-queries 200 \
-  --max-steps 800 \
   --save-dir "$TRAIN_CHECKPOINT_DIR" \
   --log-path "$TRAIN_LOG_PATH" \
   --group-trace-log-path "$TRAIN_TRACE_PATH"
