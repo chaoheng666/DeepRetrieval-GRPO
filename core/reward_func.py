@@ -367,7 +367,8 @@ class Rewarder:
         )
 
     def score(self, qid: str, rewritten_query: str, source_query: str | None = None) -> RewardBreakdown:
-        query = clean_rewritten_query(rewritten_query, source_query=source_query)
+        #query = clean_rewritten_query(rewritten_query, source_query=source_query)
+        query = rewritten_query
         hits_docids = self._search_docids(query)
         return self._score_one(qid, query, hits_docids, source_query)
 
