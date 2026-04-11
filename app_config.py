@@ -10,12 +10,17 @@ from __future__ import annotations
 3. CLI 覆盖逻辑简单明了：命令行仅覆盖非空字段，避免意外改动。
 """
 
+import os
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 DEFAULT_ARTIFACT_ROOT = "train_and_eval_data_model"
 DEFAULT_EXP_NAME = "default"
 DEFAULT_TRAIN_DIR = f"{DEFAULT_ARTIFACT_ROOT}/artifacts_{DEFAULT_EXP_NAME}_train"
+DEFAULT_HF_ENDPOINT = "https://hf-mirror.com"
+
+# Keep user/exported HF_ENDPOINT untouched; only apply fallback when unset.
+os.environ.setdefault("HF_ENDPOINT", DEFAULT_HF_ENDPOINT)
 
 
 @dataclass(slots=True)
