@@ -39,6 +39,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-epochs", type=int, default=None)
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--group-size", type=int, default=None)
+    parser.add_argument(
+        "--parallel-group-generate",
+        action="store_true",
+        help="Enable one-shot group sampling via num_return_sequences (may be unstable on some CUDA/transformers stacks).",
+    )
     parser.add_argument("--learning-rate", type=float, default=None)
     parser.add_argument("--clip-range", type=float, default=None)
     parser.add_argument("--kl-beta", type=float, default=None)
@@ -340,6 +345,7 @@ def main() -> int:
         max_new_tokens=config.train.max_new_tokens,
         temperature=config.train.temperature,
         top_p=config.train.top_p,
+        parallel_group_generate=args.parallel_group_generate,
     )
 
     # 7) 日志与 checkpoint 路径。

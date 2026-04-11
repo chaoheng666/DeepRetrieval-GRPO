@@ -88,9 +88,11 @@ echo "[2/4] Training 4B experiment..."
   --num-epochs 1 \
   --batch-size 4 \
   --group-size 4 \
-  --max-new-tokens 16 \
+  --search-threads 8 \
+  --max-new-tokens 12 \
   --eval-every-steps 200 \
   --max-val-queries 200 \
+  --max-steps 800 \
   --save-dir "$TRAIN_CHECKPOINT_DIR" \
   --log-path "$TRAIN_LOG_PATH" \
   --group-trace-log-path "$TRAIN_TRACE_PATH"

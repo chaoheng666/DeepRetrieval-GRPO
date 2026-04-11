@@ -76,6 +76,7 @@ class GRPOEngine:
         max_new_tokens: int,
         temperature: float,
         top_p: float,
+        parallel_group_generate: bool = False,
     ) -> None:
         self.model_wrapper = model_wrapper
         self.rewarder = rewarder
@@ -87,6 +88,7 @@ class GRPOEngine:
         self.max_new_tokens = max_new_tokens
         self.temperature = temperature
         self.top_p = top_p
+        self.parallel_group_generate = parallel_group_generate
 
     def train_step(
         self,
@@ -125,7 +127,7 @@ class GRPOEngine:
                 prompt = self.model_wrapper.build_prompt(query.text)
                 group_samples: list[Sample] = []
 
-                if hasattr(self.model_wrapper, "generate_group_with_logprob"):
+                if self.parallel_group_generate and hasattr(self.model_wrapper, "generate_group_with_logprob"):
                     generated_group = self.model_wrapper.generate_group_with_logprob(
                         prompt,
                         num_return_sequences=self.group_size,
