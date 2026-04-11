@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Sequence
 
-from app_config import RewardConfig
+from app_config import RewardConfig, patch_pyserini_prebuilt_index_urls
 
 TOKEN_RE = re.compile(r"\w+", flags=re.UNICODE)
 MARKER_LINE_RE = re.compile(r"^(?:rewritten\s+query|search\s+query)\s*:\s*(.*)$", flags=re.IGNORECASE)
@@ -268,6 +268,7 @@ class Rewarder:
         """
 
         from pyserini.search.lucene import LuceneSearcher
+        patch_pyserini_prebuilt_index_urls()
 
         searcher = self._build_searcher_with_recovery(LuceneSearcher, prebuilt_index)
         if searcher is None:

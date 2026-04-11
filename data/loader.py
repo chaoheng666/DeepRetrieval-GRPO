@@ -17,6 +17,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Mapping, Sequence
 
+from app_config import patch_pyserini_prebuilt_index_urls
+
 
 @dataclass(frozen=True, slots=True)
 class QueryExample:
@@ -213,6 +215,7 @@ def load_topics_qrels(topic_name: str) -> tuple[list[QueryExample], dict[str, se
 
     # 在导入 pyserini 前先确保 Java 版本与 JAVA_HOME 配置可用。
     ensure_java_runtime(min_major=21)
+    patch_pyserini_prebuilt_index_urls()
 
     from pyserini.search import get_qrels, get_topics
 

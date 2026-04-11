@@ -18,9 +18,58 @@ DEFAULT_ARTIFACT_ROOT = "train_and_eval_data_model"
 DEFAULT_EXP_NAME = "default"
 DEFAULT_TRAIN_DIR = f"{DEFAULT_ARTIFACT_ROOT}/artifacts_{DEFAULT_EXP_NAME}_train"
 DEFAULT_HF_ENDPOINT = "https://hf-mirror.com"
+_PYSERINI_MIRROR_PATCH_DONE = False
 
 # Keep user/exported HF_ENDPOINT untouched; only apply fallback when unset.
 os.environ.setdefault("HF_ENDPOINT", DEFAULT_HF_ENDPOINT)
+
+
+def _rewrite_hf_host(url: str, endpoint: str) -> str:
+    """Rewrite Hugging Face host to the configured mirror endpoint."""
+
+    if not isinstance(url, str):
+        return url
+    for host in ("https://huggingface.co", "http://huggingface.co"):
+        if url.startswith(host):
+            return endpoint.rstrip("/") + url[len(host) :]
+    return url
+
+
+def patch_pyserini_prebuilt_index_urls() -> None:
+    """Patch Pyserini prebuilt index URLs so mirror endpoint is respected."""
+
+    global _PYSERINI_MIRROR_PATCH_DONE
+    if _PYSERINI_MIRROR_PATCH_DONE:
+        return
+
+    endpoint = os.environ.get("HF_ENDPOINT", "").strip()
+    if not endpoint:
+        return
+
+    try:
+        from pyserini import prebuilt_index_info as pinfo
+    except Exception:
+        return
+
+    info_dict_names = (
+        "TF_INDEX_INFO",
+        "IMPACT_INDEX_INFO",
+        "LUCENE_HNSW_INDEX_INFO",
+        "LUCENE_FLAT_INDEX_INFO",
+        "FAISS_INDEX_INFO",
+    )
+    for name in info_dict_names:
+        info = getattr(pinfo, name, None)
+        if not isinstance(info, dict):
+            continue
+        for meta in info.values():
+            urls = meta.get("urls")
+            if not isinstance(urls, list):
+                continue
+            meta["urls"] = [_rewrite_hf_host(u, endpoint) for u in urls]
+
+    _PYSERINI_MIRROR_PATCH_DONE = True
+
 
 
 @dataclass(slots=True)
