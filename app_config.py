@@ -142,7 +142,7 @@ class TrainConfig:
     num_epochs: int = 1
     batch_size: int = 8
     # GRPO 的 K：每条 query 采样的重写候选数。
-    group_size: int = 4
+    group_size: int = 8
     learning_rate: float = 2e-5
     weight_decay: float = 0.0
     # PPO clip 参数 epsilon。

@@ -15,6 +15,23 @@ REQUIRE_CUDA="${REQUIRE_CUDA:-1}"
 MODEL_NAME="${MODEL_NAME:-/root/autodl-tmp/hf_models/Qwen3-4B-Instruct-2507}"
 AUTO_GIT_COMMIT="${AUTO_GIT_COMMIT:-1}"
 AUTO_GIT_PUSH="${AUTO_GIT_PUSH:-1}"
+TRAIN_BATCH_SIZE="${TRAIN_BATCH_SIZE:-8}"
+TRAIN_GROUP_SIZE="${TRAIN_GROUP_SIZE:-8}"
+TRAIN_MAX_NEW_TOKENS="${TRAIN_MAX_NEW_TOKENS:-16}"
+TRAIN_EVAL_EVERY_STEPS="${TRAIN_EVAL_EVERY_STEPS:-100}"
+TRAIN_MAX_STEPS="${TRAIN_MAX_STEPS:-400}"
+TRAIN_MAX_VAL_QUERIES="${TRAIN_MAX_VAL_QUERIES:-200}"
+
+REWARD_MRR_K="${REWARD_MRR_K:-50}"
+REWARD_RECALL_K="${REWARD_RECALL_K:-50}"
+REWARD_W_MRR="${REWARD_W_MRR:-1.0}"
+REWARD_W_RECALL="${REWARD_W_RECALL:-0.3}"
+REWARD_W_COPY="${REWARD_W_COPY:-0.15}"
+REWARD_W_FORMAT="${REWARD_W_FORMAT:-0.2}"
+REWARD_COPY_TAU="${REWARD_COPY_TAU:-0.6}"
+FORMAT_MAX_TOKENS="${FORMAT_MAX_TOKENS:-16}"
+FORMAT_MIN_ENGLISH_RATIO="${FORMAT_MIN_ENGLISH_RATIO:-0.8}"
+FORMAT_MAX_UNREADABLE_RATIO="${FORMAT_MAX_UNREADABLE_RATIO:-0.3}"
 
 TRAIN_DIR="${ARTIFACT_ROOT}/artifacts_${EXP_NAME}_train"
 EVAL_DIR="${ARTIFACT_ROOT}/artifacts_${EXP_NAME}_eval"
@@ -101,13 +118,23 @@ echo "[2/4] Training 4B experiment..."
 "$PYTHON_BIN" train.py \
   --model-name "$MODEL_NAME" \
   --num-epochs 1 \
-  --batch-size 8 \
-  --group-size 4 \
+  --batch-size "$TRAIN_BATCH_SIZE" \
+  --group-size "$TRAIN_GROUP_SIZE" \
   --search-threads 8 \
-  --max-new-tokens 16 \
-  --eval-every-steps 100 \
-  --max-val-queries 200 \
-  --max-steps 800 \
+  --max-new-tokens "$TRAIN_MAX_NEW_TOKENS" \
+  --eval-every-steps "$TRAIN_EVAL_EVERY_STEPS" \
+  --max-val-queries "$TRAIN_MAX_VAL_QUERIES" \
+  --max-steps "$TRAIN_MAX_STEPS" \
+  --reward-mrr-k "$REWARD_MRR_K" \
+  --reward-recall-k "$REWARD_RECALL_K" \
+  --reward-w-mrr "$REWARD_W_MRR" \
+  --reward-w-recall "$REWARD_W_RECALL" \
+  --reward-w-copy "$REWARD_W_COPY" \
+  --reward-w-format "$REWARD_W_FORMAT" \
+  --reward-copy-tau "$REWARD_COPY_TAU" \
+  --format-max-tokens "$FORMAT_MAX_TOKENS" \
+  --format-min-english-ratio "$FORMAT_MIN_ENGLISH_RATIO" \
+  --format-max-unreadable-ratio "$FORMAT_MAX_UNREADABLE_RATIO" \
   --save-dir "$TRAIN_CHECKPOINT_DIR" \
   --log-path "$TRAIN_LOG_PATH" \
   --group-trace-log-path "$TRAIN_TRACE_PATH"
@@ -131,6 +158,16 @@ echo "[3/4] Running full evaluation for the 4B experiment..."
   --model-name "$MODEL_NAME" \
   --strict-tokenizer-model-match \
   --max-eval-queries 1000000 \
+  --reward-mrr-k "$REWARD_MRR_K" \
+  --reward-recall-k "$REWARD_RECALL_K" \
+  --reward-w-mrr "$REWARD_W_MRR" \
+  --reward-w-recall "$REWARD_W_RECALL" \
+  --reward-w-copy "$REWARD_W_COPY" \
+  --reward-w-format "$REWARD_W_FORMAT" \
+  --reward-copy-tau "$REWARD_COPY_TAU" \
+  --format-max-tokens "$FORMAT_MAX_TOKENS" \
+  --format-min-english-ratio "$FORMAT_MIN_ENGLISH_RATIO" \
+  --format-max-unreadable-ratio "$FORMAT_MAX_UNREADABLE_RATIO" \
   --sample-print 20 \
   --report-path "$EVAL_REPORT_PATH"
 

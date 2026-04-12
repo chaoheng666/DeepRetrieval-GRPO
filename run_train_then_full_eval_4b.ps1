@@ -28,6 +28,23 @@ try {
   $modelName = if ($env:MODEL_NAME) { $env:MODEL_NAME } else { "Qwen/Qwen3-4B-Instruct-2507" }
   $autoGitCommit = if ($env:AUTO_GIT_COMMIT) { $env:AUTO_GIT_COMMIT } else { "1" }
   $autoGitPush = if ($env:AUTO_GIT_PUSH) { $env:AUTO_GIT_PUSH } else { "1" }
+  $trainBatchSize = if ($env:TRAIN_BATCH_SIZE) { $env:TRAIN_BATCH_SIZE } else { "8" }
+  $trainGroupSize = if ($env:TRAIN_GROUP_SIZE) { $env:TRAIN_GROUP_SIZE } else { "8" }
+  $trainMaxNewTokens = if ($env:TRAIN_MAX_NEW_TOKENS) { $env:TRAIN_MAX_NEW_TOKENS } else { "16" }
+  $trainEvalEverySteps = if ($env:TRAIN_EVAL_EVERY_STEPS) { $env:TRAIN_EVAL_EVERY_STEPS } else { "100" }
+  $trainMaxSteps = if ($env:TRAIN_MAX_STEPS) { $env:TRAIN_MAX_STEPS } else { "800" }
+  $trainMaxValQueries = if ($env:TRAIN_MAX_VAL_QUERIES) { $env:TRAIN_MAX_VAL_QUERIES } else { "200" }
+
+  $rewardMrrK = if ($env:REWARD_MRR_K) { $env:REWARD_MRR_K } else { "50" }
+  $rewardRecallK = if ($env:REWARD_RECALL_K) { $env:REWARD_RECALL_K } else { "50" }
+  $rewardWMrr = if ($env:REWARD_W_MRR) { $env:REWARD_W_MRR } else { "1.0" }
+  $rewardWRecall = if ($env:REWARD_W_RECALL) { $env:REWARD_W_RECALL } else { "0.3" }
+  $rewardWCopy = if ($env:REWARD_W_COPY) { $env:REWARD_W_COPY } else { "0.15" }
+  $rewardWFormat = if ($env:REWARD_W_FORMAT) { $env:REWARD_W_FORMAT } else { "0.2" }
+  $rewardCopyTau = if ($env:REWARD_COPY_TAU) { $env:REWARD_COPY_TAU } else { "0.6" }
+  $formatMaxTokens = if ($env:FORMAT_MAX_TOKENS) { $env:FORMAT_MAX_TOKENS } else { "16" }
+  $formatMinEnglishRatio = if ($env:FORMAT_MIN_ENGLISH_RATIO) { $env:FORMAT_MIN_ENGLISH_RATIO } else { "0.8" }
+  $formatMaxUnreadableRatio = if ($env:FORMAT_MAX_UNREADABLE_RATIO) { $env:FORMAT_MAX_UNREADABLE_RATIO } else { "0.3" }
 
   $trainDir = Join-Path $artifactRoot "artifacts_${expName}_train"
   $evalDir = Join-Path $artifactRoot "artifacts_${expName}_eval"
@@ -64,13 +81,23 @@ try {
   & $pythonBin train.py `
     --model-name $modelName `
     --num-epochs 1 `
-    --batch-size 4 `
-    --group-size 4 `
+    --batch-size $trainBatchSize `
+    --group-size $trainGroupSize `
     --search-threads 8 `
-    --max-new-tokens 12 `
-    --eval-every-steps 200 `
-    --max-val-queries 200 `
-    --max-steps 800 `
+    --max-new-tokens $trainMaxNewTokens `
+    --eval-every-steps $trainEvalEverySteps `
+    --max-val-queries $trainMaxValQueries `
+    --max-steps $trainMaxSteps `
+    --reward-mrr-k $rewardMrrK `
+    --reward-recall-k $rewardRecallK `
+    --reward-w-mrr $rewardWMrr `
+    --reward-w-recall $rewardWRecall `
+    --reward-w-copy $rewardWCopy `
+    --reward-w-format $rewardWFormat `
+    --reward-copy-tau $rewardCopyTau `
+    --format-max-tokens $formatMaxTokens `
+    --format-min-english-ratio $formatMinEnglishRatio `
+    --format-max-unreadable-ratio $formatMaxUnreadableRatio `
     --save-dir $trainCheckpointDir `
     --log-path $trainLogPath `
     --group-trace-log-path $trainTracePath
@@ -96,6 +123,16 @@ try {
     --model-name $modelName `
     --strict-tokenizer-model-match `
     --max-eval-queries 1000000 `
+    --reward-mrr-k $rewardMrrK `
+    --reward-recall-k $rewardRecallK `
+    --reward-w-mrr $rewardWMrr `
+    --reward-w-recall $rewardWRecall `
+    --reward-w-copy $rewardWCopy `
+    --reward-w-format $rewardWFormat `
+    --reward-copy-tau $rewardCopyTau `
+    --format-max-tokens $formatMaxTokens `
+    --format-min-english-ratio $formatMinEnglishRatio `
+    --format-max-unreadable-ratio $formatMaxUnreadableRatio `
     --sample-print 20 `
     --report-path $evalReportPath
 

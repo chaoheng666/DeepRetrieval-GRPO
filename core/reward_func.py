@@ -367,8 +367,7 @@ class Rewarder:
         )
 
     def score(self, qid: str, rewritten_query: str, source_query: str | None = None) -> RewardBreakdown:
-        #query = clean_rewritten_query(rewritten_query, source_query=source_query)
-        query = rewritten_query
+        query = (rewritten_query or "").strip()
         hits_docids = self._search_docids(query)
         return self._score_one(qid, query, hits_docids, source_query)
 
@@ -378,9 +377,9 @@ class Rewarder:
         rewritten_queries: Sequence[str],
         source_query: str | None = None,
     ) -> list[RewardBreakdown]:
-        cleaned_queries = [clean_rewritten_query(text, source_query=source_query) for text in rewritten_queries]
-        hits_docids_batch = self._search_docids_batch(cleaned_queries)
+        raw_queries = [(text or "").strip() for text in rewritten_queries]
+        hits_docids_batch = self._search_docids_batch(raw_queries)
         outputs: list[RewardBreakdown] = []
-        for query, hits_docids in zip(cleaned_queries, hits_docids_batch):
+        for query, hits_docids in zip(raw_queries, hits_docids_batch):
             outputs.append(self._score_one(qid, query, hits_docids, source_query))
         return outputs

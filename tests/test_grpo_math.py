@@ -5,6 +5,7 @@ import torch
 from app_config import RewardConfig
 from core.grpo_engine import normalize_advantages, ppo_clipped_objective
 from core.reward_func import (
+    Rewarder,
     clean_rewritten_query,
     compose_reward,
     compute_copy_penalty,
@@ -134,6 +135,36 @@ class QueryCleaningTests(unittest.TestCase):
         )
         cleaned = clean_rewritten_query(raw)
         self.assertEqual(cleaned, "travel insurance for japan")
+
+
+class RewarderConsistencyTests(unittest.TestCase):
+    def test_score_uses_raw_query_before_search(self):
+        rewarder = Rewarder.__new__(Rewarder)
+        seen: dict[str, object] = {}
+
+        def _search_docids(query: str):
+            seen["search_query"] = query
+            return ["D1"]
+
+        def _score_one(qid: str, cleaned_query: str, hits_docids: list[str], source_query: str | None):
+            seen["score_query"] = cleaned_query
+            seen["score_hits"] = list(hits_docids)
+            seen["score_qid"] = qid
+            seen["score_source"] = source_query
+            return cleaned_query
+
+        rewarder._search_docids = _search_docids  # type: ignore[attr-defined]
+        rewarder._score_one = _score_one  # type: ignore[attr-defined]
+
+        raw = "Search Query:\n  best budget gaming laptop 2024\nExplanation: keep concise"
+        scored = rewarder.score("q1", raw, source_query="best budget gaming laptop 2024")
+
+        self.assertEqual(scored, raw)
+        self.assertEqual(seen["search_query"], raw)
+        self.assertEqual(seen["score_query"], raw)
+        self.assertEqual(seen["score_hits"], ["D1"])
+        self.assertEqual(seen["score_qid"], "q1")
+        self.assertEqual(seen["score_source"], "best budget gaming laptop 2024")
 
 
 if __name__ == "__main__":
