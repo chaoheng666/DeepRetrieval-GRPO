@@ -148,7 +148,7 @@ class TrainConfig:
     # PPO clip 参数 epsilon。
     clip_range: float = 0.2
     # KL 惩罚系数 beta，用于约束新策略不要偏离参考策略过远。
-    kl_beta: float = 0.02
+    kl_beta: float = 0.005
     # 梯度裁剪阈值，避免梯度爆炸导致训练不稳定。
     grad_clip_norm: float = 1.0
     # 生成长度与采样策略。

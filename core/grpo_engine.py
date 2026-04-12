@@ -274,6 +274,7 @@ class GRPOEngine:
                         "loss": 0.0,
                         "loss_pg": 0.0,
                         "loss_kl": 0.0,
+                        "kl_dominance_ratio": 0.0,
                         "updated": 0.0,
                     }
                 )
@@ -290,11 +291,18 @@ class GRPOEngine:
             clip_grad_norm_(self.model_wrapper.trainable_parameters(), self.grad_clip_norm)
             self.optimizer.step()
 
+            loss_pg_mean = fmean(loss_pg_terms) if loss_pg_terms else 0.0
+            loss_kl_mean = fmean(loss_kl_terms) if loss_kl_terms else 0.0
+            loss_pg_abs_mean = fmean(abs(value) for value in loss_pg_terms) if loss_pg_terms else 0.0
+            loss_kl_abs_mean = fmean(abs(value) for value in loss_kl_terms) if loss_kl_terms else 0.0
+            kl_dominance_ratio = loss_kl_abs_mean / (loss_pg_abs_mean + loss_kl_abs_mean + 1e-12)
+
             metrics.update(
                 {
                     "loss": fmean(loss_values) if loss_values else 0.0,
-                    "loss_pg": fmean(loss_pg_terms) if loss_pg_terms else 0.0,
-                    "loss_kl": fmean(loss_kl_terms) if loss_kl_terms else 0.0,
+                    "loss_pg": loss_pg_mean,
+                    "loss_kl": loss_kl_mean,
+                    "kl_dominance_ratio": kl_dominance_ratio,
                     "updated": 1.0,
                 }
             )

@@ -30,6 +30,7 @@ try {
   $autoGitPush = if ($env:AUTO_GIT_PUSH) { $env:AUTO_GIT_PUSH } else { "1" }
   $trainBatchSize = if ($env:TRAIN_BATCH_SIZE) { $env:TRAIN_BATCH_SIZE } else { "8" }
   $trainGroupSize = if ($env:TRAIN_GROUP_SIZE) { $env:TRAIN_GROUP_SIZE } else { "8" }
+  $trainKlBeta = if ($env:TRAIN_KL_BETA) { $env:TRAIN_KL_BETA } else { "0.005" }
   $trainMaxNewTokens = if ($env:TRAIN_MAX_NEW_TOKENS) { $env:TRAIN_MAX_NEW_TOKENS } else { "16" }
   $trainEvalEverySteps = if ($env:TRAIN_EVAL_EVERY_STEPS) { $env:TRAIN_EVAL_EVERY_STEPS } else { "100" }
   $trainMaxSteps = if ($env:TRAIN_MAX_STEPS) { $env:TRAIN_MAX_STEPS } else { "800" }
@@ -83,6 +84,7 @@ try {
     --num-epochs 1 `
     --batch-size $trainBatchSize `
     --group-size $trainGroupSize `
+    --kl-beta $trainKlBeta `
     --search-threads 8 `
     --max-new-tokens $trainMaxNewTokens `
     --eval-every-steps $trainEvalEverySteps `

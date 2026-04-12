@@ -481,6 +481,7 @@ def main() -> int:
             print(
                 f"[train] step={global_step} loss={metrics['loss']:.4f} "
                 f"pg={metrics['loss_pg']:.4f} kl={metrics['loss_kl']:.4f} "
+                f"kl_dom={metrics.get('kl_dominance_ratio', 0.0):.3f} "
                 f"reward={metrics['reward_mean']:.4f} mrr={metrics['mrr_mean']:.4f} "
                 f"recall={metrics.get('recall_mean', 0.0):.4f} "
                 f"copy_penalty={metrics.get('copy_penalty_mean', 0.0):.4f} "

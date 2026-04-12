@@ -17,6 +17,7 @@ AUTO_GIT_COMMIT="${AUTO_GIT_COMMIT:-1}"
 AUTO_GIT_PUSH="${AUTO_GIT_PUSH:-1}"
 TRAIN_BATCH_SIZE="${TRAIN_BATCH_SIZE:-8}"
 TRAIN_GROUP_SIZE="${TRAIN_GROUP_SIZE:-8}"
+TRAIN_KL_BETA="${TRAIN_KL_BETA:-0.005}"
 TRAIN_MAX_NEW_TOKENS="${TRAIN_MAX_NEW_TOKENS:-16}"
 TRAIN_EVAL_EVERY_STEPS="${TRAIN_EVAL_EVERY_STEPS:-100}"
 TRAIN_MAX_STEPS="${TRAIN_MAX_STEPS:-400}"
@@ -120,6 +121,7 @@ echo "[2/4] Training 4B experiment..."
   --num-epochs 1 \
   --batch-size "$TRAIN_BATCH_SIZE" \
   --group-size "$TRAIN_GROUP_SIZE" \
+  --kl-beta "$TRAIN_KL_BETA" \
   --search-threads 8 \
   --max-new-tokens "$TRAIN_MAX_NEW_TOKENS" \
   --eval-every-steps "$TRAIN_EVAL_EVERY_STEPS" \

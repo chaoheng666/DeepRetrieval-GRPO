@@ -160,6 +160,9 @@ class EngineTraceTests(unittest.TestCase):
         self.assertEqual(len(summaries[0]["group_copy_penalties"]), 2)
         self.assertEqual(len(summaries[0]["group_format_penalties"]), 2)
         self.assertGreaterEqual(metrics["format_penalty_mean"], 0.0)
+        self.assertIn("kl_dominance_ratio", metrics)
+        self.assertGreaterEqual(metrics["kl_dominance_ratio"], 0.0)
+        self.assertLessEqual(metrics["kl_dominance_ratio"], 1.0)
         self.assertTrue(all(flag is False for flag in wrapper.training_flags))
         self.assertTrue(wrapper.actor_model.training)
 
