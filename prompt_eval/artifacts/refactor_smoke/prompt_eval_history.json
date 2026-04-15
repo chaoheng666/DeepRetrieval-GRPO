@@ -1,0 +1,20 @@
+{
+  "runs": [
+    {
+      "generated_at_utc": "2026-04-15T12:11:05.842250+00:00",
+      "report_path": "prompt_eval\\artifacts\\refactor_smoke\\prompt_eval_report.json",
+      "model_name": "Qwen/Qwen3.5-0.8B",
+      "topic_name": "msmarco-passage-dev-subset",
+      "sample_seed": 42,
+      "sample_size": 5,
+      "num_prompts_total": 2,
+      "num_prompts_completed": 2,
+      "baseline_mrr": 0.2,
+      "best_prompt_id": "p01_det",
+      "best_prompt_name": "P01 Preserve If Already Good [Direct]",
+      "best_mrr": 0.2,
+      "best_delta_mrr": 0.0,
+      "best_beats_baseline": false
+    }
+  ]
+}

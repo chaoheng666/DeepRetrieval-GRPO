@@ -13,7 +13,7 @@ from dataclasses import dataclass
 import gc
 import json
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Sequence
 
 import torch
 
@@ -194,15 +194,10 @@ class ModelWrapper:
 
     @staticmethod
     def _resolve_runtime_device_map(configured_map: Any, *, model_role: str) -> Any:
-        """Resolve runtime device_map; force GPU-only placement when using auto on CUDA."""
+        """Resolve runtime device_map without forcing a specific GPU index."""
 
         if torch.cuda.is_available() and isinstance(configured_map, str) and configured_map.strip().lower() == "auto":
-            resolved = {"": 0}
-            print(
-                f"[model] forcing {model_role} device_map to GPU-only {resolved} "
-                "(disable CPU offload from auto device map)."
-            )
-            return resolved
+            print(f"[model] using {model_role} device_map='auto' (no hard-coded GPU index).")
         return configured_map
 
     @staticmethod
@@ -670,6 +665,112 @@ class ModelWrapper:
             with_logprob=False,
         )
         return generated.response_text
+
+    def _generate_rewrite_batch_once(
+        self,
+        queries: Sequence[str],
+        *,
+        policy: PolicyName,
+        max_new_tokens: int,
+        temperature: float,
+        top_p: float,
+    ) -> list[str]:
+        """Generate rewrites for a batch of queries in a single forward pass."""
+
+        model = self._policy_model(policy)
+        prompts = [self.build_prompt(query) for query in queries]
+        if not prompts:
+            return []
+
+        original_padding_side = getattr(self.tokenizer, "padding_side", "right")
+        self.tokenizer.padding_side = "left"
+        try:
+            inputs = self.tokenizer(
+                prompts,
+                return_tensors="pt",
+                padding=True,
+            )
+        finally:
+            self.tokenizer.padding_side = original_padding_side
+
+        device = self._infer_model_device(model)
+        inputs = {k: v.to(device) for k, v in inputs.items()}
+        prompt_len = int(inputs["input_ids"].shape[1])
+
+        do_sample = temperature > 0.0
+        kwargs = {
+            "max_new_tokens": max_new_tokens,
+            "do_sample": do_sample,
+            "temperature": max(temperature, 1e-6) if do_sample else 1.0,
+            "top_p": top_p if do_sample else 1.0,
+            "pad_token_id": self.tokenizer.pad_token_id,
+            "eos_token_id": self.tokenizer.eos_token_id,
+            "return_dict_in_generate": True,
+        }
+
+        with torch.no_grad():
+            output = model.generate(**inputs, **kwargs)
+
+        sequences = output.sequences
+        response_ids = sequences[:, prompt_len:]
+        response_texts = self.tokenizer.batch_decode(response_ids, skip_special_tokens=True)
+        return [text.strip() for text in response_texts]
+
+    def generate_rewrite_batch(
+        self,
+        queries: Sequence[str],
+        *,
+        policy: PolicyName = "actor",
+        max_new_tokens: int,
+        temperature: float,
+        top_p: float,
+    ) -> list[str]:
+        """Generate rewrites for a query batch, with OOM-safe split fallback."""
+
+        query_list = list(queries)
+        if not query_list:
+            return []
+        if len(query_list) == 1:
+            return [
+                self.generate_rewrite(
+                    query_list[0],
+                    policy=policy,
+                    max_new_tokens=max_new_tokens,
+                    temperature=temperature,
+                    top_p=top_p,
+                )
+            ]
+
+        try:
+            return self._generate_rewrite_batch_once(
+                query_list,
+                policy=policy,
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+                top_p=top_p,
+            )
+        except RuntimeError as exc:
+            if not (torch.cuda.is_available() and self._is_cuda_oom_error(exc)):
+                raise
+            # Split-and-retry keeps evaluation running when a large batch hits VRAM limit.
+            gc.collect()
+            torch.cuda.empty_cache()
+            mid = max(1, len(query_list) // 2)
+            left = self.generate_rewrite_batch(
+                query_list[:mid],
+                policy=policy,
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+                top_p=top_p,
+            )
+            right = self.generate_rewrite_batch(
+                query_list[mid:],
+                policy=policy,
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+                top_p=top_p,
+            )
+            return left + right
 
     def compute_logprob(
         self,

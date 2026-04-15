@@ -454,3 +454,11 @@ python train.py `
   --log-path train_and_eval_data_model/artifacts_3b_heavy_train/train_log.jsonl
 
 默认就是Qwen/Qwen2.5-3B-Instruct
+
+
+目标
+类别	成功标准（建议值，可调整）
+主要效果	在确认阶段（≥1000 queries）MRR@50 相对 Original 提升 ≥ 0.005（绝对值）且 p<0.05
+次要效果	Recall@50 不下降（或下降 ≤ 0.01）；Zero-shot 基线必须显著低于最佳系统
+工程可用性	格式通过率 ≥ 98%；平均输出词项数 ≤ 12；平均延迟与 token 成本不超过预算
+鲁棒性	至少 3 个 seed 下结论一致；不同 query 类型切片上无明显劣化

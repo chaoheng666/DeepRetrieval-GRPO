@@ -130,6 +130,26 @@ class _ToyRewarder:
         )
 
 
+class _RecordingRewarder:
+    def __init__(self):
+        self.seen_queries: list[str] = []
+
+    def score(self, qid: str, rewritten_query: str, source_query: str | None = None) -> RewardBreakdown:
+        self.seen_queries.append(rewritten_query)
+        return RewardBreakdown(
+            total=1.0,
+            mrr=0.5,
+            recall=0.25,
+            overlap=0.4,
+            copy_penalty=0.0,
+            format_penalty=0.0,
+            hit_rank=1,
+            retrieved_relevant_count=1,
+            relevant_total=4,
+            rewritten_query=rewritten_query,
+        )
+
+
 class EngineTraceTests(unittest.TestCase):
     def test_group_trace_metrics(self):
         wrapper = _ToyModelWrapper()
@@ -165,6 +185,34 @@ class EngineTraceTests(unittest.TestCase):
         self.assertLessEqual(metrics["kl_dominance_ratio"], 1.0)
         self.assertTrue(all(flag is False for flag in wrapper.training_flags))
         self.assertTrue(wrapper.actor_model.training)
+
+    def test_train_step_postprocesses_rollout_queries_before_reward(self):
+        wrapper = _ToyModelWrapper()
+        wrapper.prompt_cfg = SimpleNamespace(stop_on="\n", enforce_single_line=True)
+        wrapper._responses = iter(
+            [
+                "finderscope\n\nUser query: what is a finderscope\nBetter BM25 query:",
+                "mastoidectomy\n\nUser query: what is the capital of the united states\nBetter BM25",
+            ]
+        )
+        rewarder = _RecordingRewarder()
+        optimizer = torch.optim.SGD(wrapper.trainable_parameters(), lr=1e-2)
+        engine = GRPOEngine(
+            model_wrapper=wrapper,
+            rewarder=rewarder,
+            optimizer=optimizer,
+            group_size=2,
+            clip_range=0.2,
+            kl_beta=0.01,
+            grad_clip_norm=1.0,
+            max_new_tokens=8,
+            temperature=0.8,
+            top_p=0.95,
+        )
+
+        engine.train_step([QueryExample(qid="q1", text="input query")], collect_best_queries=False)
+
+        self.assertEqual(rewarder.seen_queries, ["finderscope", "mastoidectomy"])
 
 
 class _FakeTokenizer:
@@ -234,9 +282,9 @@ class RefPrecisionFallbackTests(unittest.TestCase):
             )
 
         self.assertEqual(len(calls), 3)
-        self.assertEqual(calls[0]["device_map"], {"": 0})
-        self.assertEqual(calls[1]["device_map"], {"": 0})
-        self.assertEqual(calls[2]["device_map"], {"": 0})
+        self.assertEqual(calls[0]["device_map"], "auto")
+        self.assertEqual(calls[1]["device_map"], "auto")
+        self.assertEqual(calls[2]["device_map"], "auto")
         self.assertIsNone(calls[1]["quantization_config"])
         self.assertIsNotNone(calls[2]["quantization_config"])
         self.assertEqual(wrapper.ref_precision_used, "4bit")

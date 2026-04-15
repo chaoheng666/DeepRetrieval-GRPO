@@ -1,0 +1,20 @@
+{
+  "runs": [
+    {
+      "generated_at_utc": "2026-04-15T13:22:51.585660+00:00",
+      "report_path": "prompt_eval\\artifacts\\refactor_v6_seed42_n200_fast\\prompt_eval_report.json",
+      "model_name": "Qwen/Qwen3.5-0.8B",
+      "topic_name": "msmarco-passage-dev-subset",
+      "sample_seed": 42,
+      "sample_size": 200,
+      "num_prompts_total": 50,
+      "num_prompts_completed": 50,
+      "baseline_mrr": 0.2452255176866256,
+      "best_prompt_id": "p05_demo",
+      "best_prompt_name": "P05 Numeric Constraint Lock [FewShot]",
+      "best_mrr": 0.24266249247654156,
+      "best_delta_mrr": -0.00256302521008403,
+      "best_beats_baseline": false
+    }
+  ]
+}

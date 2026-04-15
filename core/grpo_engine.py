@@ -86,6 +86,26 @@ class GRPOEngine:
         self.top_p = top_p
         self.parallel_group_generate = parallel_group_generate
 
+    def _postprocess_rollout_query(self, text: str) -> str:
+        """Apply the same lightweight single-line guardrails used by eval-time decoding."""
+
+        cleaned = (text or "").strip()
+        prompt_cfg = getattr(self.model_wrapper, "prompt_cfg", None)
+        stop_on = getattr(prompt_cfg, "stop_on", None)
+        enforce_single_line = bool(getattr(prompt_cfg, "enforce_single_line", False))
+
+        if stop_on:
+            marker_idx = cleaned.find(stop_on)
+            if marker_idx >= 0:
+                cleaned = cleaned[:marker_idx].strip()
+
+        if enforce_single_line:
+            lines = [line.strip() for line in cleaned.replace("\r", "\n").split("\n") if line.strip()]
+            cleaned = lines[0] if lines else ""
+            cleaned = " ".join(cleaned.split())
+
+        return cleaned
+
     def train_step(
         self,
         batch_queries: Sequence[QueryExample],
@@ -142,7 +162,7 @@ class GRPOEngine:
                         for _ in range(self.group_size)
                     ]
 
-                rewritten_group = [sample.response_text for sample in generated_group]
+                rewritten_group = [self._postprocess_rollout_query(sample.response_text) for sample in generated_group]
                 if hasattr(self.rewarder, "score_batch"):
                     rewards_group = self.rewarder.score_batch(
                         query.qid,

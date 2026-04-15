@@ -11,8 +11,14 @@ from typing import Iterable, Sequence
 from app_config import RewardConfig, patch_pyserini_prebuilt_index_urls
 
 TOKEN_RE = re.compile(r"\w+", flags=re.UNICODE)
-MARKER_LINE_RE = re.compile(r"^(?:rewritten\s+query|search\s+query)\s*:\s*(.*)$", flags=re.IGNORECASE)
-MARKER_INLINE_RE = re.compile(r"(?:rewritten\s+query|search\s+query)\s*:\s*([^\n\r]+)", flags=re.IGNORECASE)
+MARKER_LINE_RE = re.compile(
+    r"^(?:rewritten\s+query|search\s+query|better\s+bm25\s+query)\s*:\s*(.*)$",
+    flags=re.IGNORECASE,
+)
+MARKER_INLINE_RE = re.compile(
+    r"(?:rewritten\s+query|search\s+query|better\s+bm25\s+query)\s*:\s*([^\n\r]+)",
+    flags=re.IGNORECASE,
+)
 EXPLANATION_RE = re.compile(
     r"\b("
     r"because|therefore|explanation|reasoning|step[- ]?by[- ]?step|"
@@ -20,6 +26,7 @@ EXPLANATION_RE = re.compile(
     r")\b",
     flags=re.IGNORECASE,
 )
+USER_QUERY_LINE_RE = re.compile(r"^user\s+query\s*:\s*.*$", flags=re.IGNORECASE)
 TRAILING_PARTIAL_TOKENS = {
     "a",
     "an",
@@ -176,6 +183,8 @@ def _extract_query_candidates(text: str) -> list[str]:
     candidates: list[str] = []
 
     for idx, line in enumerate(lines):
+        lowered = line.lower()
+
         marker_match = MARKER_LINE_RE.match(line)
         if marker_match:
             tail = marker_match.group(1).strip()
@@ -190,8 +199,23 @@ def _extract_query_candidates(text: str) -> list[str]:
             candidates.append(inline_match.group(1))
             continue
 
-        lowered = line.lower()
-        if lowered in {"assistant:", "search query:", "rewritten query:"}:
+        if USER_QUERY_LINE_RE.match(line):
+            continue
+        if lowered.startswith("example"):
+            continue
+        if lowered.startswith("bm25 rules"):
+            continue
+        if line[:1] in {"-", "*"}:
+            continue
+        if lowered in {
+            "assistant:",
+            "search query:",
+            "rewritten query:",
+            "better bm25 query:",
+            "better bm25 query",
+            "better bm25",
+            "better bm2",
+        }:
             continue
         if line.endswith(":") and len(line.split()) <= 4:
             continue
@@ -217,7 +241,12 @@ def _candidate_rank_key(candidate: str, source_query: str | None, index: int) ->
     tail = tokens[-1] if tokens else ""
     completeness = 0 if tail in TRAILING_PARTIAL_TOKENS else 1
     unique_count = len(set(tokens))
-    return (overlap, completeness, -index, unique_count, len(tokens))
+    lower = candidate.lower()
+    has_template_noise = int(
+        any(marker in lower for marker in ("user query", "better bm25", "example", "bm25 rules"))
+    )
+    cleanliness = 1 if (has_template_noise == 0 and not _looks_like_explanation(candidate)) else 0
+    return (cleanliness, overlap, completeness, -index, unique_count, len(tokens))
 
 
 def clean_rewritten_query(text: str, source_query: str | None = None) -> str:
@@ -367,7 +396,7 @@ class Rewarder:
         )
 
     def score(self, qid: str, rewritten_query: str, source_query: str | None = None) -> RewardBreakdown:
-        query = (rewritten_query or "").strip()
+        query = clean_rewritten_query((rewritten_query or "").strip(), source_query=source_query)
         hits_docids = self._search_docids(query)
         return self._score_one(qid, query, hits_docids, source_query)
 
@@ -377,9 +406,11 @@ class Rewarder:
         rewritten_queries: Sequence[str],
         source_query: str | None = None,
     ) -> list[RewardBreakdown]:
-        raw_queries = [(text or "").strip() for text in rewritten_queries]
-        hits_docids_batch = self._search_docids_batch(raw_queries)
+        cleaned_queries = [
+            clean_rewritten_query((text or "").strip(), source_query=source_query) for text in rewritten_queries
+        ]
+        hits_docids_batch = self._search_docids_batch(cleaned_queries)
         outputs: list[RewardBreakdown] = []
-        for query, hits_docids in zip(raw_queries, hits_docids_batch):
+        for query, hits_docids in zip(cleaned_queries, hits_docids_batch):
             outputs.append(self._score_one(qid, query, hits_docids, source_query))
         return outputs

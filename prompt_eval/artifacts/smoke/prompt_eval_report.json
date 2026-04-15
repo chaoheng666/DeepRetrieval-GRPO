@@ -1,0 +1,149 @@
+{
+  "run_config": {
+    "generated_at_utc": "2026-04-12T13:53:01.235621+00:00",
+    "model_name": "Qwen/Qwen3.5-0.8B",
+    "load_in_4bit": false,
+    "topic_name": "msmarco-passage-dev-subset",
+    "prebuilt_index": "msmarco-v1-passage",
+    "train_ratio": 0.8,
+    "split_seed": 42,
+    "sample_seed": 42,
+    "sample_size_requested": 5,
+    "max_new_tokens": 24,
+    "progress_every": 5,
+    "num_prompts_total": 1,
+    "num_prompts_completed": 1,
+    "prompt_ids_requested": null,
+    "max_prompts": 1,
+    "save_each_prompt": true,
+    "append_history": true,
+    "stage_status": "completed",
+    "reward": {
+      "mrr_k": 50,
+      "recall_k": 50,
+      "search_threads": 8,
+      "w_mrr": 1.0,
+      "w_recall": 0.3,
+      "w_copy": 0.15,
+      "w_format": 0.2
+    }
+  },
+  "sample_info": {
+    "available_val_queries": 1396,
+    "sample_size": 5,
+    "sampled_qids": [
+      "1100167",
+      "79891",
+      "1026768",
+      "1047599",
+      "326190"
+    ]
+  },
+  "baseline_original": {
+    "mrr": 0.2,
+    "mrr@50": 0.2,
+    "recall": 0.2,
+    "recall@50": 0.2,
+    "reward_mean": 0.2
+  },
+  "prompt_results": [
+    {
+      "prompt_id": "acronym_fullform_dual",
+      "prompt_name": "Acronym + Full Form v2",
+      "tags": [
+        "acronym",
+        "fullform",
+        "family-core"
+      ],
+      "prompt": {
+        "system_prompt": "You are a BM25 query rewriter for passage retrieval.\nReturn exactly one single-line English search query and nothing else.\nPreserve intent, constraints, negations, entities, and numeric conditions.\nFor key technical terms, include both acronym and full form when strongly implied.\nPrefer canonical terminology and high-frequency lexical forms found in documents.\nAvoid explanations, markdown, repeated words, and speculative additions.",
+        "template": "Question: {query}\nSearch Query:"
+      },
+      "metrics": {
+        "mrr": 0.0,
+        "mrr@50": 0.0,
+        "recall": 0.0,
+        "recall@50": 0.0,
+        "reward_mean": -0.2
+      },
+      "deltas": {
+        "delta_mrr": -0.2,
+        "delta_recall": -0.2,
+        "delta_reward_mean": -0.4
+      },
+      "win_tie_loss": {
+        "win": 0,
+        "tie": 4,
+        "loss": 1,
+        "total": 5,
+        "win_rate": 0.0
+      },
+      "sample_rewrites": [
+        {
+          "qid": "1100167",
+          "original_query": "guayana venezuela",
+          "rewritten_query": "<think>\nThinking Process:\n\n1.  **Analyze the Request:**\n    *   **Role:** BM",
+          "mrr": 0.0,
+          "recall": 0.0
+        }
+      ]
+    }
+  ],
+  "leaderboard": [
+    {
+      "rank": 1,
+      "prompt_id": "acronym_fullform_dual",
+      "prompt_name": "Acronym + Full Form v2",
+      "mrr": 0.0,
+      "recall": 0.0,
+      "reward_mean": -0.2,
+      "delta_mrr": -0.2,
+      "delta_recall": -0.2,
+      "delta_reward_mean": -0.4,
+      "win": 0,
+      "tie": 4,
+      "loss": 1
+    }
+  ],
+  "best_prompt": {
+    "prompt_id": "acronym_fullform_dual",
+    "prompt_name": "Acronym + Full Form v2",
+    "tags": [
+      "acronym",
+      "fullform",
+      "family-core"
+    ],
+    "prompt": {
+      "system_prompt": "You are a BM25 query rewriter for passage retrieval.\nReturn exactly one single-line English search query and nothing else.\nPreserve intent, constraints, negations, entities, and numeric conditions.\nFor key technical terms, include both acronym and full form when strongly implied.\nPrefer canonical terminology and high-frequency lexical forms found in documents.\nAvoid explanations, markdown, repeated words, and speculative additions.",
+      "template": "Question: {query}\nSearch Query:"
+    },
+    "metrics": {
+      "mrr": 0.0,
+      "mrr@50": 0.0,
+      "recall": 0.0,
+      "recall@50": 0.0,
+      "reward_mean": -0.2
+    },
+    "deltas": {
+      "delta_mrr": -0.2,
+      "delta_recall": -0.2,
+      "delta_reward_mean": -0.4
+    },
+    "win_tie_loss": {
+      "win": 0,
+      "tie": 4,
+      "loss": 1,
+      "total": 5,
+      "win_rate": 0.0
+    },
+    "sample_rewrites": [
+      {
+        "qid": "1100167",
+        "original_query": "guayana venezuela",
+        "rewritten_query": "<think>\nThinking Process:\n\n1.  **Analyze the Request:**\n    *   **Role:** BM",
+        "mrr": 0.0,
+        "recall": 0.0
+      }
+    ]
+  }
+}

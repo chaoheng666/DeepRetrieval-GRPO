@@ -136,9 +136,19 @@ class QueryCleaningTests(unittest.TestCase):
         cleaned = clean_rewritten_query(raw)
         self.assertEqual(cleaned, "travel insurance for japan")
 
+    def test_clean_rewritten_query_discards_prompt_template_leakage(self):
+        raw = (
+            "finderscope\n\n"
+            "Example\n"
+            "User query: what is a finderscope\n"
+            "Better BM25 query:"
+        )
+        cleaned = clean_rewritten_query(raw, source_query="what is a finderscope")
+        self.assertEqual(cleaned, "finderscope")
+
 
 class RewarderConsistencyTests(unittest.TestCase):
-    def test_score_uses_raw_query_before_search(self):
+    def test_score_cleans_query_before_search(self):
         rewarder = Rewarder.__new__(Rewarder)
         seen: dict[str, object] = {}
 
@@ -159,12 +169,44 @@ class RewarderConsistencyTests(unittest.TestCase):
         raw = "Search Query:\n  best budget gaming laptop 2024\nExplanation: keep concise"
         scored = rewarder.score("q1", raw, source_query="best budget gaming laptop 2024")
 
-        self.assertEqual(scored, raw)
-        self.assertEqual(seen["search_query"], raw)
-        self.assertEqual(seen["score_query"], raw)
+        self.assertEqual(scored, "best budget gaming laptop 2024")
+        self.assertEqual(seen["search_query"], "best budget gaming laptop 2024")
+        self.assertEqual(seen["score_query"], "best budget gaming laptop 2024")
         self.assertEqual(seen["score_hits"], ["D1"])
         self.assertEqual(seen["score_qid"], "q1")
         self.assertEqual(seen["score_source"], "best budget gaming laptop 2024")
+
+    def test_score_batch_cleans_queries_before_batch_search(self):
+        rewarder = Rewarder.__new__(Rewarder)
+        seen: dict[str, object] = {}
+
+        def _search_docids_batch(queries: list[str]):
+            seen["search_queries"] = list(queries)
+            return [["D1"], ["D2"]]
+
+        def _score_one(qid: str, cleaned_query: str, hits_docids: list[str], source_query: str | None):
+            return {
+                "qid": qid,
+                "query": cleaned_query,
+                "hits": list(hits_docids),
+                "source": source_query,
+            }
+
+        rewarder._search_docids_batch = _search_docids_batch  # type: ignore[attr-defined]
+        rewarder._score_one = _score_one  # type: ignore[attr-defined]
+
+        raw_queries = [
+            "Search Query:\n  best budget gaming laptop 2024\nExplanation: keep concise",
+            "mastoidectomy\n\nUser query: what is the capital of the united states\nBetter BM25",
+        ]
+        scored = rewarder.score_batch("q1", raw_queries, source_query="best budget gaming laptop 2024")
+
+        self.assertEqual(
+            seen["search_queries"],
+            ["best budget gaming laptop 2024", "mastoidectomy"],
+        )
+        self.assertEqual(scored[0]["query"], "best budget gaming laptop 2024")
+        self.assertEqual(scored[1]["query"], "mastoidectomy")
 
 
 if __name__ == "__main__":

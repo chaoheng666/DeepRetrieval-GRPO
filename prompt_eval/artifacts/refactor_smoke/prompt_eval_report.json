@@ -1,0 +1,379 @@
+{
+  "run_config": {
+    "generated_at_utc": "2026-04-15T12:11:05.842250+00:00",
+    "model_name": "Qwen/Qwen3.5-0.8B",
+    "load_in_4bit": false,
+    "topic_name": "msmarco-passage-dev-subset",
+    "prebuilt_index": "msmarco-v1-passage",
+    "train_ratio": 0.8,
+    "split_seed": 42,
+    "sample_seed": 42,
+    "sample_size_requested": 5,
+    "max_new_tokens": 24,
+    "default_max_new_tokens": 24,
+    "prompt_decoding_source": "per_prompt",
+    "progress_every": 5,
+    "query_batch_size": 1,
+    "prompt_model_parallel_requested": 1,
+    "prompt_model_parallel_active": 1,
+    "num_prompts_total": 2,
+    "num_prompts_completed": 2,
+    "prompt_ids_requested": "p01_det,p08_det",
+    "max_prompts": null,
+    "save_each_prompt": true,
+    "append_history": true,
+    "stage_status": "completed",
+    "rewrite_postprocess": {
+      "cleaner": "clean_rewritten_query",
+      "fallback_to_original_on_invalid": true,
+      "fallback_respects_locked_tokens": true
+    },
+    "reward": {
+      "mrr_k": 50,
+      "recall_k": 50,
+      "search_threads": 8,
+      "w_mrr": 1.0,
+      "w_recall": 0.3,
+      "w_copy": 0.15,
+      "w_format": 0.2
+    }
+  },
+  "sample_info": {
+    "available_val_queries": 1396,
+    "sample_size": 5,
+    "sampled_qids": [
+      "1100167",
+      "79891",
+      "1026768",
+      "1047599",
+      "326190"
+    ]
+  },
+  "baseline_original": {
+    "mrr": 0.2,
+    "mrr@50": 0.2,
+    "recall": 0.2,
+    "recall@50": 0.2,
+    "reward_mean": 0.2
+  },
+  "prompt_results": [
+    {
+      "prompt_id": "p01_det",
+      "prompt_name": "P01 Preserve If Already Good [Direct]",
+      "tags": [
+        "v6-retrieval-50",
+        "p01",
+        "minimal-edit",
+        "baseline-guard",
+        "high-fidelity",
+        "frame-direct",
+        "temp-0.00",
+        "maxnew-14"
+      ],
+      "prompt": {
+        "system_prompt": "You rewrite search queries for DeepRetrieval-GRPO.\nThe retriever is Lucene BM25 over MS MARCO passages.\nYour only goal is to improve sparse lexical retrieval MRR@50 over the original query.\n\nHard output contract:\n1) Output exactly one line of English query text.\n2) Output only the final query: no explanation, no answer, no labels, no XML, no markdown.\n3) Never emit <think>, multiple options, bullet points, or reasoning traces.\n\nStrategy ID: P01 [Direct]\nStrategy objective: Keep already-strong lexical queries unchanged and only trim obvious filler when there is a safe gain.\n\nBM25 rules:\n- Preferred length: 2-10 meaningful terms.\n- Preserve named entities, rare technical terms, acronyms, numbers, years, versions, units, and negations.\n- If the original query is already concise and retrieval-ready, keep it unchanged or improve it only minimally.\n- Prefer exact terms likely to appear verbatim in relevant passages.\n- Remove chatty wrappers and helper verbs when safe.\n- Avoid speculative synonyms, broadening, and answer-style prose.\n- When uncertain, prefer a cleaned near-copy of the source query over an aggressive rewrite.\n- Strategy-specific rules:\n  - Do not force a rewrite when the source is already a keyword query.\n  - Keep uncommon entity spelling exactly as written.",
+        "template": "User query: {query}\nBetter BM25 query:"
+      },
+      "decoding": {
+        "temperature": 0.0,
+        "max_new_tokens": 14,
+        "top_p": 1.0,
+        "stop_on": "\n",
+        "enforce_single_line": true
+      },
+      "guardrail": {
+        "min_terms": 2,
+        "max_terms": 10,
+        "fallback_mode": "conservative"
+      },
+      "metrics": {
+        "mrr": 0.2,
+        "mrr@50": 0.2,
+        "recall": 0.2,
+        "recall@50": 0.2,
+        "reward_mean": 0.2
+      },
+      "deltas": {
+        "delta_mrr": 0.0,
+        "delta_recall": 0.0,
+        "delta_reward_mean": 0.0
+      },
+      "win_tie_loss": {
+        "win": 0,
+        "tie": 5,
+        "loss": 0,
+        "total": 5,
+        "win_rate": 0.0
+      },
+      "diagnostics": {
+        "changed_rate": 0.2,
+        "effective_rewrite_rate": 0.2,
+        "fallback_rate": 0.0,
+        "raw_format_fail_rate": 0.8,
+        "raw_multiline_rate": 0.8,
+        "raw_think_rate": 0.0,
+        "raw_label_rate": 0.0,
+        "mean_final_overlap": 1.0,
+        "mean_final_terms": 6.6,
+        "fallback_reason_counts": {}
+      },
+      "sample_rewrites": [
+        {
+          "qid": "1100167",
+          "original_query": "guayana venezuela",
+          "raw_generation": "guayana venezuela\n\nFinal query: guayana venezuela",
+          "cleaned_rewrite": "guayana venezuela",
+          "rewritten_query": "guayana venezuela",
+          "fallback_to_original": false,
+          "fallback_reasons": [],
+          "mrr": 1.0,
+          "recall": 1.0
+        },
+        {
+          "qid": "79891",
+          "original_query": "can you substitute chocolate chips for semi-sweet",
+          "raw_generation": "can you substitute chocolate chips for semi-sweet\n\nFinal query: can",
+          "cleaned_rewrite": "can you substitute chocolate chips for semi-sweet",
+          "rewritten_query": "can you substitute chocolate chips for semi-sweet",
+          "fallback_to_original": false,
+          "fallback_reasons": [],
+          "mrr": 0.0,
+          "recall": 0.0
+        },
+        {
+          "qid": "1026768",
+          "original_query": "what kind of oil is good for dry hair",
+          "raw_generation": "what kind of oil is good for dry hair\n\nFinal query: what",
+          "cleaned_rewrite": "what kind of oil is good for dry hair",
+          "rewritten_query": "what kind of oil is good for dry hair",
+          "fallback_to_original": false,
+          "fallback_reasons": [],
+          "mrr": 0.0,
+          "recall": 0.0
+        }
+      ]
+    },
+    {
+      "prompt_id": "p08_det",
+      "prompt_name": "P08 Keyword Compression [Direct]",
+      "tags": [
+        "v6-retrieval-50",
+        "p08",
+        "compression",
+        "keywords",
+        "compact",
+        "frame-direct",
+        "temp-0.00",
+        "maxnew-14"
+      ],
+      "prompt": {
+        "system_prompt": "You rewrite search queries for DeepRetrieval-GRPO.\nThe retriever is Lucene BM25 over MS MARCO passages.\nYour only goal is to improve sparse lexical retrieval MRR@50 over the original query.\n\nHard output contract:\n1) Output exactly one line of English query text.\n2) Output only the final query: no explanation, no answer, no labels, no XML, no markdown.\n3) Never emit <think>, multiple options, bullet points, or reasoning traces.\n\nStrategy ID: P08 [Direct]\nStrategy objective: Compress conversational wording into a compact lexical query with only meaning-bearing terms.\n\nBM25 rules:\n- Preferred length: 3-10 meaningful terms.\n- Preserve named entities, rare technical terms, acronyms, numbers, years, versions, units, and negations.\n- If the original query is already concise and retrieval-ready, keep it unchanged or improve it only minimally.\n- Prefer exact terms likely to appear verbatim in relevant passages.\n- Remove chatty wrappers and helper verbs when safe.\n- Avoid speculative synonyms, broadening, and answer-style prose.\n- Strategy-specific rules:\n  - Prefer noun phrases and concise lexical chunks over sentence grammar.\n  - Drop helper verbs and filler first, not content nouns.",
+        "template": "User query: {query}\nBetter BM25 query:"
+      },
+      "decoding": {
+        "temperature": 0.0,
+        "max_new_tokens": 14,
+        "top_p": 1.0,
+        "stop_on": "\n",
+        "enforce_single_line": true
+      },
+      "guardrail": {
+        "min_terms": 3,
+        "max_terms": 10,
+        "fallback_mode": "balanced"
+      },
+      "metrics": {
+        "mrr": 0.03397683397683397,
+        "mrr@50": 0.03397683397683397,
+        "recall": 0.4,
+        "recall@50": 0.4,
+        "reward_mean": 0.14197683397683397
+      },
+      "deltas": {
+        "delta_mrr": -0.16602316602316602,
+        "delta_recall": 0.2,
+        "delta_reward_mean": -0.05802316602316604
+      },
+      "win_tie_loss": {
+        "win": 1,
+        "tie": 3,
+        "loss": 1,
+        "total": 5,
+        "win_rate": 0.2
+      },
+      "diagnostics": {
+        "changed_rate": 1.0,
+        "effective_rewrite_rate": 1.0,
+        "fallback_rate": 0.0,
+        "raw_format_fail_rate": 0.8,
+        "raw_multiline_rate": 0.8,
+        "raw_think_rate": 0.0,
+        "raw_label_rate": 0.0,
+        "mean_final_overlap": 0.5366666666666666,
+        "mean_final_terms": 3.6,
+        "fallback_reason_counts": {}
+      },
+      "sample_rewrites": [
+        {
+          "qid": "1100167",
+          "original_query": "guayana venezuela",
+          "raw_generation": "- guayana\n- venezuela\n- mexico\n-",
+          "cleaned_rewrite": "guayana",
+          "rewritten_query": "guayana",
+          "fallback_to_original": false,
+          "fallback_reasons": [],
+          "mrr": 0.14285714285714285,
+          "recall": 1.0
+        },
+        {
+          "qid": "79891",
+          "original_query": "can you substitute chocolate chips for semi-sweet",
+          "raw_generation": "- \"chocolate chips\"\n- \"semi-sweet\"",
+          "cleaned_rewrite": "\"chocolate chips",
+          "rewritten_query": "\"chocolate chips",
+          "fallback_to_original": false,
+          "fallback_reasons": [],
+          "mrr": 0.02702702702702703,
+          "recall": 1.0
+        },
+        {
+          "qid": "1026768",
+          "original_query": "what kind of oil is good for dry hair",
+          "raw_generation": "- \"dry hair oil\"\n- \"best oil for dry",
+          "cleaned_rewrite": "\"dry hair oil",
+          "rewritten_query": "\"dry hair oil",
+          "fallback_to_original": false,
+          "fallback_reasons": [],
+          "mrr": 0.0,
+          "recall": 0.0
+        }
+      ]
+    }
+  ],
+  "leaderboard": [
+    {
+      "rank": 1,
+      "prompt_id": "p01_det",
+      "prompt_name": "P01 Preserve If Already Good [Direct]",
+      "mrr": 0.2,
+      "recall": 0.2,
+      "reward_mean": 0.2,
+      "delta_mrr": 0.0,
+      "delta_recall": 0.0,
+      "delta_reward_mean": 0.0,
+      "win": 0,
+      "tie": 5,
+      "loss": 0
+    },
+    {
+      "rank": 2,
+      "prompt_id": "p08_det",
+      "prompt_name": "P08 Keyword Compression [Direct]",
+      "mrr": 0.03397683397683397,
+      "recall": 0.4,
+      "reward_mean": 0.14197683397683397,
+      "delta_mrr": -0.16602316602316602,
+      "delta_recall": 0.2,
+      "delta_reward_mean": -0.05802316602316604,
+      "win": 1,
+      "tie": 3,
+      "loss": 1
+    }
+  ],
+  "best_prompt": {
+    "prompt_id": "p01_det",
+    "prompt_name": "P01 Preserve If Already Good [Direct]",
+    "tags": [
+      "v6-retrieval-50",
+      "p01",
+      "minimal-edit",
+      "baseline-guard",
+      "high-fidelity",
+      "frame-direct",
+      "temp-0.00",
+      "maxnew-14"
+    ],
+    "prompt": {
+      "system_prompt": "You rewrite search queries for DeepRetrieval-GRPO.\nThe retriever is Lucene BM25 over MS MARCO passages.\nYour only goal is to improve sparse lexical retrieval MRR@50 over the original query.\n\nHard output contract:\n1) Output exactly one line of English query text.\n2) Output only the final query: no explanation, no answer, no labels, no XML, no markdown.\n3) Never emit <think>, multiple options, bullet points, or reasoning traces.\n\nStrategy ID: P01 [Direct]\nStrategy objective: Keep already-strong lexical queries unchanged and only trim obvious filler when there is a safe gain.\n\nBM25 rules:\n- Preferred length: 2-10 meaningful terms.\n- Preserve named entities, rare technical terms, acronyms, numbers, years, versions, units, and negations.\n- If the original query is already concise and retrieval-ready, keep it unchanged or improve it only minimally.\n- Prefer exact terms likely to appear verbatim in relevant passages.\n- Remove chatty wrappers and helper verbs when safe.\n- Avoid speculative synonyms, broadening, and answer-style prose.\n- When uncertain, prefer a cleaned near-copy of the source query over an aggressive rewrite.\n- Strategy-specific rules:\n  - Do not force a rewrite when the source is already a keyword query.\n  - Keep uncommon entity spelling exactly as written.",
+      "template": "User query: {query}\nBetter BM25 query:"
+    },
+    "decoding": {
+      "temperature": 0.0,
+      "max_new_tokens": 14,
+      "top_p": 1.0,
+      "stop_on": "\n",
+      "enforce_single_line": true
+    },
+    "guardrail": {
+      "min_terms": 2,
+      "max_terms": 10,
+      "fallback_mode": "conservative"
+    },
+    "metrics": {
+      "mrr": 0.2,
+      "mrr@50": 0.2,
+      "recall": 0.2,
+      "recall@50": 0.2,
+      "reward_mean": 0.2
+    },
+    "deltas": {
+      "delta_mrr": 0.0,
+      "delta_recall": 0.0,
+      "delta_reward_mean": 0.0
+    },
+    "win_tie_loss": {
+      "win": 0,
+      "tie": 5,
+      "loss": 0,
+      "total": 5,
+      "win_rate": 0.0
+    },
+    "diagnostics": {
+      "changed_rate": 0.2,
+      "effective_rewrite_rate": 0.2,
+      "fallback_rate": 0.0,
+      "raw_format_fail_rate": 0.8,
+      "raw_multiline_rate": 0.8,
+      "raw_think_rate": 0.0,
+      "raw_label_rate": 0.0,
+      "mean_final_overlap": 1.0,
+      "mean_final_terms": 6.6,
+      "fallback_reason_counts": {}
+    },
+    "sample_rewrites": [
+      {
+        "qid": "1100167",
+        "original_query": "guayana venezuela",
+        "raw_generation": "guayana venezuela\n\nFinal query: guayana venezuela",
+        "cleaned_rewrite": "guayana venezuela",
+        "rewritten_query": "guayana venezuela",
+        "fallback_to_original": false,
+        "fallback_reasons": [],
+        "mrr": 1.0,
+        "recall": 1.0
+      },
+      {
+        "qid": "79891",
+        "original_query": "can you substitute chocolate chips for semi-sweet",
+        "raw_generation": "can you substitute chocolate chips for semi-sweet\n\nFinal query: can",
+        "cleaned_rewrite": "can you substitute chocolate chips for semi-sweet",
+        "rewritten_query": "can you substitute chocolate chips for semi-sweet",
+        "fallback_to_original": false,
+        "fallback_reasons": [],
+        "mrr": 0.0,
+        "recall": 0.0
+      },
+      {
+        "qid": "1026768",
+        "original_query": "what kind of oil is good for dry hair",
+        "raw_generation": "what kind of oil is good for dry hair\n\nFinal query: what",
+        "cleaned_rewrite": "what kind of oil is good for dry hair",
+        "rewritten_query": "what kind of oil is good for dry hair",
+        "fallback_to_original": false,
+        "fallback_reasons": [],
+        "mrr": 0.0,
+        "recall": 0.0
+      }
+    ]
+  }
+}

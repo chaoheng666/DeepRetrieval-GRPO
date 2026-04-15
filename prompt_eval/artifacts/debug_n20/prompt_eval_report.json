@@ -1,0 +1,299 @@
+{
+  "run_config": {
+    "generated_at_utc": "2026-04-14T16:15:59.123037+00:00",
+    "model_name": "Qwen/Qwen3.5-0.8B",
+    "load_in_4bit": false,
+    "topic_name": "msmarco-passage-dev-subset",
+    "prebuilt_index": "msmarco-v1-passage",
+    "train_ratio": 0.8,
+    "split_seed": 42,
+    "sample_seed": 42,
+    "sample_size_requested": 20,
+    "max_new_tokens": 24,
+    "default_max_new_tokens": 24,
+    "prompt_decoding_source": "per_prompt",
+    "progress_every": 20,
+    "query_batch_size": 5,
+    "prompt_model_parallel_requested": 1,
+    "prompt_model_parallel_active": 1,
+    "num_prompts_total": 3,
+    "num_prompts_completed": 2,
+    "prompt_ids_requested": "p01_det,p03_std,p21_tight",
+    "max_prompts": null,
+    "save_each_prompt": true,
+    "append_history": true,
+    "stage_status": "running",
+    "reward": {
+      "mrr_k": 50,
+      "recall_k": 50,
+      "search_threads": 8,
+      "w_mrr": 1.0,
+      "w_recall": 0.3,
+      "w_copy": 0.15,
+      "w_format": 0.2
+    }
+  },
+  "sample_info": {
+    "available_val_queries": 1396,
+    "sample_size": 20,
+    "sampled_qids": [
+      "1100167",
+      "79891",
+      "1026768",
+      "1047599",
+      "326190",
+      "1099178",
+      "256192",
+      "987978",
+      "1081946",
+      "511417",
+      "610132",
+      "335711",
+      "1089143",
+      "1092470",
+      "406525",
+      "643359",
+      "1086468",
+      "1097027",
+      "1087126",
+      "1033927"
+    ]
+  },
+  "baseline_original": {
+    "mrr": 0.23241127243395848,
+    "mrr@50": 0.23241127243395848,
+    "recall": 0.55,
+    "recall@50": 0.55,
+    "reward_mean": 0.33741127243395846
+  },
+  "prompt_results": [
+    {
+      "prompt_id": "p01_det",
+      "prompt_name": "P01 Conservative Copy [Deterministic]",
+      "tags": [
+        "v5-robust-50",
+        "p01",
+        "group-single",
+        "conservative",
+        "high-fidelity",
+        "temp-0.00",
+        "maxnew-48"
+      ],
+      "prompt": {
+        "system_prompt": "You are a BM25 lexical query rewriter.\nRewrite the user input into a single-line English search query.\n\nHard output constraints:\n1) Output exactly one line of plain text.\n2) No explanation, no reasoning, no labels, no quotes, no markdown.\n3) Never output XML tags, <think>, or extra lines.\n\nStrategy ID: P01\nStrategy objective: Keep the query close to original and only trim obvious filler words.\n\nQuality constraints:\n- Target length: 4-24 terms\n- Preserve entities, technical terms, numbers, years, versions, units, and negations.\n- If uncertain, prefer conservative edits and avoid introducing unrelated terms.\n- Additional rules:\n  - If the query is already concise, keep it unchanged.\n  - Do not remove domain nouns or intent-critical modifiers.\n- Optimize for retrieval gain, not surface-level similarity.",
+        "template": "Query: {query}\nRewrite:"
+      },
+      "decoding": {
+        "temperature": 0.0,
+        "max_new_tokens": 48,
+        "top_p": 1.0,
+        "stop_on": "\n",
+        "enforce_single_line": true
+      },
+      "metrics": {
+        "mrr": 0.18241127243395844,
+        "mrr@50": 0.18241127243395844,
+        "recall": 0.5,
+        "recall@50": 0.5,
+        "reward_mean": 0.27541127243395847
+      },
+      "deltas": {
+        "delta_mrr": -0.050000000000000044,
+        "delta_recall": -0.050000000000000044,
+        "delta_reward_mean": -0.062
+      },
+      "win_tie_loss": {
+        "win": 0,
+        "tie": 19,
+        "loss": 1,
+        "total": 20,
+        "win_rate": 0.0
+      },
+      "sample_rewrites": [
+        {
+          "qid": "1100167",
+          "original_query": "guayana venezuela",
+          "rewritten_query": "guayana venezuela",
+          "mrr": 1.0,
+          "recall": 1.0
+        },
+        {
+          "qid": "79891",
+          "original_query": "can you substitute chocolate chips for semi-sweet",
+          "rewritten_query": "can you substitute chocolate chips for semi-sweet",
+          "mrr": 0.0,
+          "recall": 0.0
+        },
+        {
+          "qid": "1026768",
+          "original_query": "what kind of oil is good for dry hair",
+          "rewritten_query": "what kind of oil is good for dry hair",
+          "mrr": 0.0,
+          "recall": 0.0
+        }
+      ]
+    },
+    {
+      "prompt_id": "p03_std",
+      "prompt_name": "P03 Content Word Focus [Standard]",
+      "tags": [
+        "v5-robust-50",
+        "p03",
+        "group-single",
+        "content-word",
+        "retrieval",
+        "temp-0.00",
+        "maxnew-48"
+      ],
+      "prompt": {
+        "system_prompt": "You are a BM25 lexical query rewriter.\nRewrite the user input into a single-line English search query.\n\nHard output constraints:\n1) Output exactly one line of plain text.\n2) No explanation, no reasoning, no labels, no quotes, no markdown.\n3) Never output XML tags, <think>, or extra lines.\n\nStrategy ID: P03\nStrategy objective: Convert to BM25-friendly content terms with nouns, entities, and key modifiers.\n\nQuality constraints:\n- Target length: 5-22 terms\n- Preserve entities, technical terms, numbers, years, versions, units, and negations.\n- If uncertain, prefer conservative edits and avoid introducing unrelated terms.\n- Additional rules:\n  - Prioritize terms likely to appear verbatim in documents.\n  - Do not output full-sentence prose if keyword form is possible.\n- Optimize for retrieval gain, not surface-level similarity.",
+        "template": "User query: {query}\nLexical search query:"
+      },
+      "decoding": {
+        "temperature": 0.0,
+        "max_new_tokens": 48,
+        "top_p": 1.0,
+        "stop_on": "\n",
+        "enforce_single_line": true
+      },
+      "metrics": {
+        "mrr": 0.1833511220580186,
+        "mrr@50": 0.1833511220580186,
+        "recall": 0.4,
+        "recall@50": 0.4,
+        "reward_mean": 0.24960112205801863
+      },
+      "deltas": {
+        "delta_mrr": -0.04906015037593989,
+        "delta_recall": -0.15000000000000002,
+        "delta_reward_mean": -0.08781015037593984
+      },
+      "win_tie_loss": {
+        "win": 1,
+        "tie": 16,
+        "loss": 3,
+        "total": 20,
+        "win_rate": 0.05
+      },
+      "sample_rewrites": [
+        {
+          "qid": "1100167",
+          "original_query": "guayana venezuela",
+          "rewritten_query": "guayana venezuela",
+          "mrr": 1.0,
+          "recall": 1.0
+        },
+        {
+          "qid": "79891",
+          "original_query": "can you substitute chocolate chips for semi-sweet",
+          "rewritten_query": "can you substitute chocolate chips for semi-sweet",
+          "mrr": 0.0,
+          "recall": 0.0
+        },
+        {
+          "qid": "1026768",
+          "original_query": "what kind of oil is good for dry hair",
+          "rewritten_query": "what kind of oil is good for dry hair",
+          "mrr": 0.0,
+          "recall": 0.0
+        }
+      ]
+    }
+  ],
+  "leaderboard": [
+    {
+      "rank": 1,
+      "prompt_id": "p03_std",
+      "prompt_name": "P03 Content Word Focus [Standard]",
+      "mrr": 0.1833511220580186,
+      "recall": 0.4,
+      "reward_mean": 0.24960112205801863,
+      "delta_mrr": -0.04906015037593989,
+      "delta_recall": -0.15000000000000002,
+      "delta_reward_mean": -0.08781015037593984,
+      "win": 1,
+      "tie": 16,
+      "loss": 3
+    },
+    {
+      "rank": 2,
+      "prompt_id": "p01_det",
+      "prompt_name": "P01 Conservative Copy [Deterministic]",
+      "mrr": 0.18241127243395844,
+      "recall": 0.5,
+      "reward_mean": 0.27541127243395847,
+      "delta_mrr": -0.050000000000000044,
+      "delta_recall": -0.050000000000000044,
+      "delta_reward_mean": -0.062,
+      "win": 0,
+      "tie": 19,
+      "loss": 1
+    }
+  ],
+  "best_prompt": {
+    "prompt_id": "p03_std",
+    "prompt_name": "P03 Content Word Focus [Standard]",
+    "tags": [
+      "v5-robust-50",
+      "p03",
+      "group-single",
+      "content-word",
+      "retrieval",
+      "temp-0.00",
+      "maxnew-48"
+    ],
+    "prompt": {
+      "system_prompt": "You are a BM25 lexical query rewriter.\nRewrite the user input into a single-line English search query.\n\nHard output constraints:\n1) Output exactly one line of plain text.\n2) No explanation, no reasoning, no labels, no quotes, no markdown.\n3) Never output XML tags, <think>, or extra lines.\n\nStrategy ID: P03\nStrategy objective: Convert to BM25-friendly content terms with nouns, entities, and key modifiers.\n\nQuality constraints:\n- Target length: 5-22 terms\n- Preserve entities, technical terms, numbers, years, versions, units, and negations.\n- If uncertain, prefer conservative edits and avoid introducing unrelated terms.\n- Additional rules:\n  - Prioritize terms likely to appear verbatim in documents.\n  - Do not output full-sentence prose if keyword form is possible.\n- Optimize for retrieval gain, not surface-level similarity.",
+      "template": "User query: {query}\nLexical search query:"
+    },
+    "decoding": {
+      "temperature": 0.0,
+      "max_new_tokens": 48,
+      "top_p": 1.0,
+      "stop_on": "\n",
+      "enforce_single_line": true
+    },
+    "metrics": {
+      "mrr": 0.1833511220580186,
+      "mrr@50": 0.1833511220580186,
+      "recall": 0.4,
+      "recall@50": 0.4,
+      "reward_mean": 0.24960112205801863
+    },
+    "deltas": {
+      "delta_mrr": -0.04906015037593989,
+      "delta_recall": -0.15000000000000002,
+      "delta_reward_mean": -0.08781015037593984
+    },
+    "win_tie_loss": {
+      "win": 1,
+      "tie": 16,
+      "loss": 3,
+      "total": 20,
+      "win_rate": 0.05
+    },
+    "sample_rewrites": [
+      {
+        "qid": "1100167",
+        "original_query": "guayana venezuela",
+        "rewritten_query": "guayana venezuela",
+        "mrr": 1.0,
+        "recall": 1.0
+      },
+      {
+        "qid": "79891",
+        "original_query": "can you substitute chocolate chips for semi-sweet",
+        "rewritten_query": "can you substitute chocolate chips for semi-sweet",
+        "mrr": 0.0,
+        "recall": 0.0
+      },
+      {
+        "qid": "1026768",
+        "original_query": "what kind of oil is good for dry hair",
+        "rewritten_query": "what kind of oil is good for dry hair",
+        "mrr": 0.0,
+        "recall": 0.0
+      }
+    ]
+  }
+}

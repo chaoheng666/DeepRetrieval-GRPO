@@ -310,6 +310,8 @@ def evaluate_policy(
     *,
     max_queries: int | None,
     max_new_tokens: int,
+    temperature: float,
+    top_p: float,
 ) -> dict[str, float]:
     """评估当前 actor 策略在验证集上的效果。"""
 
@@ -325,8 +327,8 @@ def evaluate_policy(
             query.text,
             policy="actor",
             max_new_tokens=max_new_tokens,
-            temperature=0.0,
-            top_p=1.0,
+            temperature=temperature,
+            top_p=top_p,
         )
         score = rewarder.score(query.qid, rewritten, source_query=query.text)
         rewards.append(score.total)
@@ -502,7 +504,9 @@ def main() -> int:
                     rewarder,
                     val_queries,
                     max_queries=config.data.max_val_queries,
-                    max_new_tokens=config.train.max_new_tokens,
+                    max_new_tokens=config.prompt.max_new_tokens,
+                    temperature=config.prompt.temperature,
+                    top_p=config.prompt.top_p,
                 )
                 eval_metrics.update(
                     {
@@ -537,7 +541,9 @@ def main() -> int:
         rewarder,
         val_queries,
         max_queries=config.data.max_val_queries,
-        max_new_tokens=config.train.max_new_tokens,
+        max_new_tokens=config.prompt.max_new_tokens,
+        temperature=config.prompt.temperature,
+        top_p=config.prompt.top_p,
     )
     print(
         f"[done] final_val_{mrr_label}={final_eval['mrr_mean']:.4f} "

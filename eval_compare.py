@@ -57,11 +57,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sample-print", type=int, default=5)
     parser.add_argument("--progress-every", type=int, default=20, help="Print progress every N queries per stage.")
     parser.add_argument(
+        "--query-batch-size",
+        type=int,
+        default=5,
+        help="Batch size for model rewrite generation (increase to raise GPU utilization).",
+    )
+    parser.add_argument(
         "--report-path",
         type=str,
         default="train_and_eval_data_model/artifacts_default_eval/eval_compare_report.json",
     )
     parser.add_argument("--max-new-tokens", type=int, default=None)
+    parser.add_argument("--temperature", type=float, default=None)
+    parser.add_argument("--top-p", type=float, default=None)
     parser.add_argument(
         "--low-mem-mode",
         action="store_true",
@@ -77,7 +85,7 @@ def apply_overrides(config: AppConfig, args: argparse.Namespace) -> AppConfig:
         config.model.model_name = "Qwen/Qwen2.5-0.5B-Instruct"
         config.data.prebuilt_index = "msmarco-v1-passage-slim"
         config.data.max_val_queries = 100
-        config.train.max_new_tokens = 24
+        config.prompt.max_new_tokens = min(config.prompt.max_new_tokens, 16)
         config.reward.recall_k = 50
 
     if args.model_name is not None:
@@ -117,7 +125,11 @@ def apply_overrides(config: AppConfig, args: argparse.Namespace) -> AppConfig:
     if args.format_max_unreadable_ratio is not None:
         config.reward.format_max_unreadable_ratio = args.format_max_unreadable_ratio
     if args.max_new_tokens is not None:
-        config.train.max_new_tokens = args.max_new_tokens
+        config.prompt.max_new_tokens = args.max_new_tokens
+    if args.temperature is not None:
+        config.prompt.temperature = args.temperature
+    if args.top_p is not None:
+        config.prompt.top_p = args.top_p
     return config
 
 
@@ -177,25 +189,60 @@ def evaluate_with_model(
     rewarder: Rewarder,
     *,
     max_new_tokens: int,
+    temperature: float = 0.0,
+    top_p: float = 1.0,
+    stop_on: str | None = None,
+    enforce_single_line: bool = False,
+    query_batch_size: int = 1,
     stage_name: str,
     progress_every: int,
 ) -> tuple[dict[str, float], dict[str, tuple[str, RewardBreakdown]]]:
     """评估模型重写结果。"""
 
+    def _postprocess_generated_query(text: str) -> str:
+        cleaned = (text or "").strip()
+        if stop_on:
+            marker_idx = cleaned.find(stop_on)
+            if marker_idx >= 0:
+                cleaned = cleaned[:marker_idx].strip()
+        if enforce_single_line:
+            lines = [line.strip() for line in cleaned.replace("\r", "\n").split("\n") if line.strip()]
+            cleaned = lines[0] if lines else ""
+            cleaned = " ".join(cleaned.split())
+        return cleaned
+
     per_qid: dict[str, tuple[str, RewardBreakdown]] = {}
     total = len(queries)
     step = max(1, progress_every)
-    for idx, query in enumerate(queries, start=1):
-        rewritten = model.generate_rewrite(
-            query.text,
-            policy="actor",
-            max_new_tokens=max_new_tokens,
-            temperature=0.0,
-            top_p=1.0,
-        )
-        per_qid[query.qid] = (rewritten, rewarder.score(query.qid, rewritten, source_query=query.text))
-        if idx % step == 0 or idx == total:
-            print(f"[progress] stage={stage_name} {idx}/{total}")
+    batch_size = max(1, int(query_batch_size))
+    processed = 0
+    for start in range(0, total, batch_size):
+        batch = list(queries[start : start + batch_size])
+        if hasattr(model, "generate_rewrite_batch"):
+            batch_rewrites = model.generate_rewrite_batch(
+                [query.text for query in batch],
+                policy="actor",
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+                top_p=top_p,
+            )
+        else:
+            batch_rewrites = [
+                model.generate_rewrite(
+                    query.text,
+                    policy="actor",
+                    max_new_tokens=max_new_tokens,
+                    temperature=temperature,
+                    top_p=top_p,
+                )
+                for query in batch
+            ]
+        for query, raw_rewritten in zip(batch, batch_rewrites):
+            rewritten = _postprocess_generated_query(raw_rewritten)
+            per_qid[query.qid] = (rewritten, rewarder.score(query.qid, rewritten, source_query=query.text))
+            processed += 1
+        if processed % step == 0 or processed == total:
+            print(f"[progress] stage={stage_name} {processed}/{total}")
 
     values = [item[1] for item in per_qid.values()]
     mrr_value = fmean(v.mrr for v in values) if values else 0.0
@@ -232,6 +279,11 @@ def main() -> int:
         f"index={config.data.prebuilt_index}, "
         f"mrr_k={config.reward.mrr_k}, "
         f"recall_k={config.reward.recall_k}, "
+        f"query_batch_size={max(1, args.query_batch_size)}, "
+        f"prompt_id={config.prompt.prompt_id}, "
+        f"eval_max_new_tokens={config.prompt.max_new_tokens}, "
+        f"eval_temperature={config.prompt.temperature}, "
+        f"eval_top_p={config.prompt.top_p}, "
         f"load_in_4bit={config.model.load_in_4bit}, "
         f"adapter_base={adapter_base_model or '-'}"
     )
@@ -268,7 +320,12 @@ def main() -> int:
         zero_shot_model,
         val_queries,
         rewarder,
-        max_new_tokens=config.train.max_new_tokens,
+        max_new_tokens=config.prompt.max_new_tokens,
+        temperature=config.prompt.temperature,
+        top_p=config.prompt.top_p,
+        stop_on=config.prompt.stop_on,
+        enforce_single_line=config.prompt.enforce_single_line,
+        query_batch_size=args.query_batch_size,
         stage_name="zero-shot",
         progress_every=args.progress_every,
     )
@@ -293,7 +350,12 @@ def main() -> int:
         rl_model,
         val_queries,
         rewarder,
-        max_new_tokens=config.train.max_new_tokens,
+        max_new_tokens=config.prompt.max_new_tokens,
+        temperature=config.prompt.temperature,
+        top_p=config.prompt.top_p,
+        stop_on=config.prompt.stop_on,
+        enforce_single_line=config.prompt.enforce_single_line,
+        query_batch_size=args.query_batch_size,
         stage_name="rl",
         progress_every=args.progress_every,
     )

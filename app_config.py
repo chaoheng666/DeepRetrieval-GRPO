@@ -191,31 +191,47 @@ class RewardConfig:
 
 @dataclass(slots=True)
 class PromptConfig:
-    """BM25 查询重写（高稳定 / RL 友好版）"""
+    """Default prompt + deterministic decode config for inference/evaluation."""
 
+    prompt_id: str = "p23_demo"
     system_prompt: str = (
-        "Rewrite the user query for BM25 sparse retrieval.\n"
+        "You rewrite search queries for DeepRetrieval-GRPO.\n"
+        "The retriever is Lucene BM25 over MS MARCO passages.\n"
+        "Your only goal is to improve sparse lexical retrieval MRR@50 over the original query.\n"
         "\n"
-        "Output rules (strict):\n"
-        "- Output exactly ONE line of English text.\n"
-        "- Output ONLY the final search query.\n"
-        "- No newline characters.\n"
-        "- Do NOT output explanations, reasoning, or instructions.\n"
-        "- Do NOT output phrases like: User Query, Search Query, rewrite, reasoning, step-by-step.\n"
+        "Hard output contract:\n"
+        "1) Output exactly one line of English query text.\n"
+        "2) Output only the final query: no explanation, no answer, no labels, no XML, no markdown.\n"
+        "3) Never emit <think>, multiple options, bullet points, or reasoning traces.\n"
         "\n"
-        "Rewriting rules:\n"
-        "- Preserve the original intent exactly.\n"
-        "- Preserve key entities, names, numbers, dates, and constraints.\n"
-        "- Use concise keyword-focused phrasing for BM25 matching.\n"
-        "- Remove filler words, but keep important answer-type signals when needed (person, date, location).\n"
-        "- Add only high-confidence canonical terms or aliases if clearly implied.\n"
-        "- Avoid speculation, repetition, or keyword stuffing.\n"
+        "Strategy ID: P23 [FewShot]\n"
+        "Strategy objective: Favor lexical forms that are common in explanatory passages rather than conversational wording.\n"
         "\n"
-        "Length:\n"
-        "- Prefer 3 to 10 meaningful words."
+        "BM25 rules:\n"
+        "- Preferred length: 3-11 meaningful terms.\n"
+        "- Preserve named entities, rare technical terms, acronyms, numbers, years, versions, units, and negations.\n"
+        "- If the original query is already concise and retrieval-ready, keep it unchanged or improve it only minimally.\n"
+        "- Prefer exact terms likely to appear verbatim in relevant passages.\n"
+        "- Remove chatty wrappers and helper verbs when safe.\n"
+        "- Avoid speculative synonyms, broadening, and answer-style prose.\n"
+        "- Match the demonstration style exactly and emit only the live rewrite.\n"
+        "- Strategy-specific rules:\n"
+        "  - Prefer content nouns and modifiers that are likely to appear in passage text.\n"
+        "  - Avoid answer-style sentences and keep the query keyword-like."
     )
-
-    template: str = "{query}"
+    template: str = (
+        "Example\n"
+        "User query: what are symptoms of anemia in women\n"
+        "Better BM25 query: anemia symptoms women\n"
+        "\n"
+        "User query: {query}\n"
+        "Better BM25 query:"
+    )
+    max_new_tokens: int = 16
+    temperature: float = 0.0
+    top_p: float = 1.0
+    stop_on: str | None = "\n"
+    enforce_single_line: bool = True
 
 
 @dataclass(slots=True)
