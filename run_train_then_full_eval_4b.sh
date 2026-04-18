@@ -97,7 +97,7 @@ print(f"[env] cuda device count: {torch.cuda.device_count()}")
 PY
 fi
 
-echo "[preset] 4B fast config: batch=4 group=8 max_group=12 max_new_tokens=14 parallel_group_generate=on"
+echo "[preset] 4B stable config: batch=8 group=8 max_group=16 max_new_tokens=14 parallel_group_generate=off temperature=1.0"
 
 echo "[2/4] Training 4B experiment..."
 "$PYTHON_BIN" train.py \
@@ -106,7 +106,6 @@ echo "[2/4] Training 4B experiment..."
   --batch-size 8 \
   --group-size 8 \
   --max-group-size 16 \
-  --parallel-group-generate \
   --learning-rate 2e-5 \
   --clip-range 0.2 \
   --kl-beta 0.005 \
