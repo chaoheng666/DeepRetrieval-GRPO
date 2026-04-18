@@ -90,6 +90,8 @@ class GRPOEngine:
         max_new_tokens: int,
         temperature: float,
         top_p: float,
+        group_temperature_stride: float = 0.0,
+        group_top_p_stride: float = 0.0,
         max_group_size: int = 24,
         min_unique_final_queries: int = 3,
         max_regen_rounds: int = 2,
@@ -109,6 +111,8 @@ class GRPOEngine:
         self.max_new_tokens = max_new_tokens
         self.temperature = temperature
         self.top_p = top_p
+        self.group_temperature_stride = max(0.0, float(group_temperature_stride))
+        self.group_top_p_stride = max(0.0, float(group_top_p_stride))
         self.min_unique_final_queries = max(1, int(min_unique_final_queries))
         self.max_regen_rounds = max(0, int(max_regen_rounds))
         self.regen_temperature_delta = max(0.0, float(regen_temperature_delta))
@@ -147,15 +151,42 @@ class GRPOEngine:
                 temperature=temperature,
                 top_p=self.top_p,
             )
+        rollout_schedule = self._build_group_sampling_schedule(
+            requested,
+            base_temperature=temperature,
+            base_top_p=self.top_p,
+        )
         return [
             self.model_wrapper.generate_with_logprob(
                 prompt,
                 max_new_tokens=self.max_new_tokens,
-                temperature=temperature,
-                top_p=self.top_p,
+                temperature=sample_temperature,
+                top_p=sample_top_p,
             )
-            for _ in range(requested)
+            for sample_temperature, sample_top_p in rollout_schedule
         ]
+
+    def _build_group_sampling_schedule(
+        self,
+        num_samples: int,
+        *,
+        base_temperature: float,
+        base_top_p: float,
+    ) -> list[tuple[float, float]]:
+        requested = max(1, int(num_samples))
+        if requested == 1:
+            return [(base_temperature, base_top_p)]
+
+        schedule: list[tuple[float, float]] = []
+        for idx in range(requested):
+            sample_temperature = base_temperature
+            sample_top_p = base_top_p
+            if base_temperature > 0.0 and self.group_temperature_stride > 0.0:
+                sample_temperature = min(1.35, base_temperature + self.group_temperature_stride * idx)
+            if base_temperature > 0.0 and self.group_top_p_stride > 0.0:
+                sample_top_p = min(0.995, base_top_p + self.group_top_p_stride * idx)
+            schedule.append((sample_temperature, sample_top_p))
+        return schedule
 
     def _generate_group_rollouts(self, prompt: str) -> list[object]:
         return self._generate_rollouts(
@@ -191,7 +222,8 @@ class GRPOEngine:
                 is_duplicate = record.final_query in seen_final_queries
                 seen_final_queries.add(record.final_query)
                 is_polluted = record.raw_contains_label or record.raw_multiline or record.raw_format_penalty > 0.0
-                if is_duplicate or is_polluted:
+                is_exact_copy = record.final_query.strip().lower() == source_query.strip().lower()
+                if is_duplicate or is_polluted or is_exact_copy:
                     candidate_indices.append(idx)
 
             if not candidate_indices:
@@ -215,7 +247,7 @@ class GRPOEngine:
                     prompt,
                     max_new_tokens=self.max_new_tokens,
                     temperature=regen_temperature,
-                    top_p=self.top_p,
+                    top_p=min(0.995, self.top_p + max(self.group_top_p_stride, 0.01) * (round_idx + 1)),
                 )
                 regenerated_record = self._stabilize_generated_sample(source_query, regenerated)
                 regenerated_is_polluted = (
@@ -223,11 +255,15 @@ class GRPOEngine:
                     or regenerated_record.raw_multiline
                     or regenerated_record.raw_format_penalty > 0.0
                 )
+                current_is_exact_copy = current_record.final_query.strip().lower() == source_query.strip().lower()
+                regenerated_is_exact_copy = regenerated_record.final_query.strip().lower() == source_query.strip().lower()
 
                 should_replace = False
                 if regenerated_record.final_query and regenerated_record.final_query not in other_queries:
                     should_replace = True
                 elif current_is_polluted and not regenerated_is_polluted:
+                    should_replace = True
+                elif current_is_exact_copy and not regenerated_is_exact_copy:
                     should_replace = True
                 elif current_record.fallback_to_original and not regenerated_record.fallback_to_original:
                     should_replace = True

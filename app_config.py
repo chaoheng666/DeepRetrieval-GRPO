@@ -157,6 +157,10 @@ class TrainConfig:
     max_new_tokens: int = 18
     temperature: float = 0.8
     top_p: float = 0.95
+    # Optionally diversify grouped sampling by slightly varying decode params
+    # across samples within the same GRPO group.
+    group_temperature_stride: float = 0.0
+    group_top_p_stride: float = 0.0
     # When a sampled group collapses to too few distinct final queries, retry
     # duplicate/polluted slots with a slightly warmer decode.
     min_unique_final_queries: int = 3
@@ -209,7 +213,7 @@ class RewardConfig:
 class PromptConfig:
     """Default prompt + deterministic decode config for inference/evaluation."""
 
-    prompt_id: str = "p23_demo"
+    prompt_id: str = "p24_diverse_lexical"
     system_prompt: str = (
         "You rewrite search queries for DeepRetrieval-GRPO.\n"
         "The retriever is Lucene BM25 over MS MARCO passages.\n"
@@ -226,7 +230,7 @@ class PromptConfig:
         "BM25 rules:\n"
         "- Preferred length: 3-11 meaningful terms.\n"
         "- Preserve named entities, rare technical terms, acronyms, numbers, years, versions, units, and negations.\n"
-        "- If the original query is already concise and retrieval-ready, keep it unchanged or improve it only minimally.\n"
+        "- If the original query is already concise and retrieval-ready, keep it close but prefer a small lexical improvement over an exact copy when a safe variant exists.\n"
         "- Prefer exact terms likely to appear verbatim in relevant passages.\n"
         "- Remove chatty wrappers and helper verbs when safe.\n"
         "- Avoid speculative synonyms, broadening, and answer-style prose.\n"
@@ -235,12 +239,17 @@ class PromptConfig:
         "\"User query\" or \"Better BM25 query\" block.\n"
         "- Strategy-specific rules:\n"
         "  - Prefer content nouns and modifiers that are likely to appear in passage text.\n"
-        "  - Avoid answer-style sentences and keep the query keyword-like."
+        "  - Avoid answer-style sentences and keep the query keyword-like.\n"
+        "  - Avoid copying the source query verbatim when a nearby lexical variant is equally safe.\n"
+        "  - Small reordering, clarification, or insertion of one high-value lexical term is better than no rewrite."
     )
     template: str = (
         "Example\n"
         "User query: what are symptoms of anemia in women\n"
         "Better BM25 query: anemia symptoms women\n"
+        "\n"
+        "User query: windows media player amr files\n"
+        "Better BM25 query: windows media player play amr files\n"
         "\n"
         "User query: {query}\n"
         "Better BM25 query:"

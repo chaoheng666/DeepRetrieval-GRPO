@@ -61,6 +61,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-new-tokens", type=int, default=None)
     parser.add_argument("--temperature", type=float, default=None)
     parser.add_argument("--top-p", type=float, default=None)
+    parser.add_argument("--group-temperature-stride", type=float, default=None)
+    parser.add_argument("--group-top-p-stride", type=float, default=None)
+    parser.add_argument("--min-unique-final-queries", type=int, default=None)
+    parser.add_argument("--max-regen-rounds", type=int, default=None)
     parser.add_argument("--reward-gap-threshold", type=float, default=None)
     parser.add_argument("--gap-sampling-temperature-delta", type=float, default=None)
     parser.add_argument("--reward-mrr-k", type=int, default=None, help="MRR@k reward cutoff, e.g. 10.")
@@ -181,6 +185,14 @@ def apply_overrides(config: AppConfig, args: argparse.Namespace) -> AppConfig:
         config.train.temperature = args.temperature
     if args.top_p is not None:
         config.train.top_p = args.top_p
+    if args.group_temperature_stride is not None:
+        config.train.group_temperature_stride = args.group_temperature_stride
+    if args.group_top_p_stride is not None:
+        config.train.group_top_p_stride = args.group_top_p_stride
+    if args.min_unique_final_queries is not None:
+        config.train.min_unique_final_queries = args.min_unique_final_queries
+    if args.max_regen_rounds is not None:
+        config.train.max_regen_rounds = args.max_regen_rounds
     if args.reward_gap_threshold is not None:
         config.train.reward_gap_threshold = args.reward_gap_threshold
     if args.gap_sampling_temperature_delta is not None:
@@ -309,6 +321,34 @@ def apply_runtime_mode_adjustments(config: AppConfig, args: argparse.Namespace) 
             "auto-adjusting to 0.0."
         )
         config.train.gap_sampling_temperature_delta = 0.0
+
+    if config.train.group_temperature_stride < 0.0:
+        print(
+            f"[warn] group_temperature_stride={config.train.group_temperature_stride} is invalid; "
+            "auto-adjusting to 0.0."
+        )
+        config.train.group_temperature_stride = 0.0
+
+    if config.train.group_top_p_stride < 0.0:
+        print(
+            f"[warn] group_top_p_stride={config.train.group_top_p_stride} is invalid; "
+            "auto-adjusting to 0.0."
+        )
+        config.train.group_top_p_stride = 0.0
+
+    if config.train.min_unique_final_queries < 1:
+        print(
+            f"[warn] min_unique_final_queries={config.train.min_unique_final_queries} is invalid; "
+            "auto-adjusting to 1."
+        )
+        config.train.min_unique_final_queries = 1
+
+    if config.train.max_regen_rounds < 0:
+        print(
+            f"[warn] max_regen_rounds={config.train.max_regen_rounds} is invalid; "
+            "auto-adjusting to 0."
+        )
+        config.train.max_regen_rounds = 0
 
     return config
 
@@ -485,6 +525,8 @@ def main() -> int:
         max_new_tokens=config.train.max_new_tokens,
         temperature=config.train.temperature,
         top_p=config.train.top_p,
+        group_temperature_stride=config.train.group_temperature_stride,
+        group_top_p_stride=config.train.group_top_p_stride,
         max_group_size=config.train.max_group_size,
         min_unique_final_queries=config.train.min_unique_final_queries,
         max_regen_rounds=config.train.max_regen_rounds,
