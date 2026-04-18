@@ -41,6 +41,29 @@ TRAILING_PARTIAL_TOKENS = {
     "to",
     "with",
 }
+ACRONYM_RE = re.compile(r"\b[A-Z]{2,}\b")
+NUMERIC_RE = re.compile(r"\b\d+(?:\.\d+)?(?:%|[a-z]+)?\b", flags=re.IGNORECASE)
+QUESTION_TOKENS = {
+    "what",
+    "when",
+    "where",
+    "which",
+    "who",
+    "whom",
+    "whose",
+    "why",
+    "how",
+    "can",
+    "could",
+    "would",
+    "should",
+    "please",
+}
+NEGATION_TOKENS = {"no", "not", "without", "except", "excluding", "exclude"}
+POLLUTION_RE = re.compile(
+    r"(?:<think|thinking process|analysis:|assistant:|search query:|rewritten query:)",
+    flags=re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,6 +78,21 @@ class RewardBreakdown:
     retrieved_relevant_count: int
     relevant_total: int
     rewritten_query: str
+
+
+@dataclass(frozen=True, slots=True)
+class StabilizedRewrite:
+    raw_query: str
+    cleaned_query: str
+    final_query: str
+    fallback_to_original: bool
+    fallback_reasons: tuple[str, ...]
+    raw_contains_think: bool
+    raw_contains_label: bool
+    raw_multiline: bool
+    raw_format_penalty: float
+    final_overlap: float
+    final_term_count: int
 
 
 def compute_mrr_at_k(result_docids: Sequence[str], relevant_docids: Iterable[str], topk: int = 10) -> tuple[float, int | None]:
@@ -168,6 +206,129 @@ def compose_reward(
         + cfg.w_recall * recall
         - cfg.w_copy * copy_penalty
         - cfg.w_format * format_penalty
+    )
+
+
+def _normalize_query_text(text: str) -> str:
+    return " ".join((text or "").strip().split())
+
+
+def _tokenize_terms(text: str) -> list[str]:
+    return TOKEN_RE.findall((text or "").lower())
+
+
+def _source_is_retrieval_ready(text: str) -> bool:
+    normalized = _normalize_query_text(text)
+    tokens = _tokenize_terms(normalized)
+    if not 2 <= len(tokens) <= 8:
+        return False
+    if "?" in normalized:
+        return False
+    return not any(token in QUESTION_TOKENS for token in tokens)
+
+
+def _extract_locked_numeric_tokens(text: str) -> set[str]:
+    return {match.group(0).lower() for match in NUMERIC_RE.finditer(text or "")}
+
+
+def _extract_locked_acronyms(text: str) -> set[str]:
+    return {match.group(0).lower() for match in ACRONYM_RE.finditer(text or "")}
+
+
+def _dedupe_keep_order(items: Sequence[str]) -> tuple[str, ...]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for item in items:
+        if item in seen:
+            continue
+        seen.add(item)
+        ordered.append(item)
+    return tuple(ordered)
+
+
+def stabilize_generated_rewrite(
+    raw_query: str,
+    *,
+    source_query: str,
+    guardrail_cfg: object,
+    reward_cfg: RewardConfig,
+) -> StabilizedRewrite:
+    """Clean model output and fall back to the source query when the rewrite is unsafe."""
+
+    source_clean = _normalize_query_text(source_query)
+    raw_clean = (raw_query or "").strip()
+
+    stop_marker = getattr(guardrail_cfg, "stop_on", None)
+    if stop_marker and stop_marker != "\n":
+        stop_idx = raw_clean.find(stop_marker)
+        if stop_idx >= 0:
+            raw_clean = raw_clean[:stop_idx].strip()
+
+    cleaned = clean_rewritten_query(raw_clean, source_query=source_clean)
+    cleaned = _normalize_query_text(cleaned)
+
+    min_terms = max(1, int(getattr(guardrail_cfg, "min_terms", 1)))
+    max_terms = max(1, int(getattr(guardrail_cfg, "max_terms", reward_cfg.format_max_tokens)))
+    fallback_mode = str(getattr(guardrail_cfg, "fallback_mode", "balanced")).strip().lower()
+
+    fallback_reasons: list[str] = []
+    if not cleaned:
+        fallback_reasons.append("empty_after_clean")
+    elif compute_format_penalty(cleaned, reward_cfg) > 0.0:
+        fallback_reasons.append("format_fail")
+
+    cleaned_terms = _tokenize_terms(cleaned)
+    cleaned_term_set = set(cleaned_terms)
+
+    for numeric_token in _extract_locked_numeric_tokens(source_clean):
+        if numeric_token not in cleaned_term_set:
+            fallback_reasons.append("lost_numeric")
+            break
+
+    for acronym_token in _extract_locked_acronyms(source_query):
+        if acronym_token not in cleaned_term_set:
+            fallback_reasons.append("lost_acronym")
+            break
+
+    source_terms = _tokenize_terms(source_clean)
+    for negation in NEGATION_TOKENS:
+        if negation in source_terms and negation not in cleaned_term_set:
+            fallback_reasons.append("lost_negation")
+            break
+
+    if cleaned_terms and max_terms > 0:
+        if len(cleaned_terms) > max(max_terms + 6, max_terms * 2):
+            fallback_reasons.append("too_verbose")
+
+    if cleaned_terms and min_terms > 1 and len(source_terms) >= min_terms:
+        if len(cleaned_terms) < max(1, min_terms - 1):
+            fallback_reasons.append("too_short")
+
+    if (
+        cleaned
+        and fallback_mode == "conservative"
+        and _source_is_retrieval_ready(source_clean)
+        and compute_lexical_overlap(source_clean, cleaned) < 0.30
+    ):
+        fallback_reasons.append("diverged_from_lexical_source")
+
+    fallback_reasons = list(_dedupe_keep_order(fallback_reasons))
+    final_query = source_clean if fallback_reasons else cleaned
+    final_query = _normalize_query_text(final_query or source_clean)
+    final_terms = _tokenize_terms(final_query)
+
+    return StabilizedRewrite(
+        raw_query=raw_clean,
+        cleaned_query=cleaned,
+        final_query=final_query,
+        fallback_to_original=bool(fallback_reasons),
+        fallback_reasons=tuple(fallback_reasons),
+        raw_contains_think=("<think" in raw_clean.lower()) or ("thinking process" in raw_clean.lower()),
+        raw_contains_label=bool(POLLUTION_RE.search(raw_clean)),
+        raw_multiline=("\n" in raw_clean) or ("\r" in raw_clean),
+        raw_format_penalty=float(compute_format_penalty(raw_clean, reward_cfg)),
+        final_overlap=float(compute_lexical_overlap(source_clean, final_query)) if source_clean else 0.0,
+        final_term_count=len(final_terms),
     )
 
 

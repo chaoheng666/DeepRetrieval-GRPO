@@ -5,8 +5,8 @@ from unittest.mock import patch
 
 import torch
 
-from app_config import ModelConfig, PromptConfig, get_default_config
-from core.grpo_engine import GRPOEngine
+from app_config import ModelConfig, PromptConfig, RewardConfig, get_default_config
+from core.grpo_engine import GRPOEngine, compute_group_duplicate_penalties
 from core.model_wrapper import GeneratedSample, ModelWrapper
 from core.reward_func import RewardBreakdown
 from data.loader import QueryExample
@@ -45,6 +45,9 @@ class RuntimeConfigTests(unittest.TestCase):
         cfg.train.eval_every_steps = 0
         cfg.train.max_new_tokens = 0
         cfg.train.group_size = 1
+        cfg.train.max_group_size = 1
+        cfg.train.reward_gap_threshold = -0.5
+        cfg.train.gap_sampling_temperature_delta = -0.25
         cfg.train.max_steps = 0
         cfg.reward.mrr_k = 0
         cfg.reward.recall_k = 0
@@ -60,6 +63,9 @@ class RuntimeConfigTests(unittest.TestCase):
         self.assertEqual(adjusted.train.eval_every_steps, 1)
         self.assertEqual(adjusted.train.max_new_tokens, 1)
         self.assertEqual(adjusted.train.group_size, 2)
+        self.assertEqual(adjusted.train.max_group_size, 2)
+        self.assertEqual(adjusted.train.reward_gap_threshold, 0.0)
+        self.assertEqual(adjusted.train.gap_sampling_temperature_delta, 0.0)
         self.assertEqual(adjusted.train.max_steps, 1)
         self.assertEqual(adjusted.reward.mrr_k, 1)
         self.assertEqual(adjusted.reward.recall_k, 1)
@@ -79,6 +85,7 @@ class RuntimeConfigTests(unittest.TestCase):
 class _ToyModelWrapper:
     def __init__(self):
         self.actor_model = torch.nn.Linear(1, 1, bias=False)
+        self.prompt_cfg = PromptConfig()
         self._responses = iter(["normal query", "乱码¤¤"])
         self.training_flags: list[bool] = []
 
@@ -114,6 +121,9 @@ class _ToyModelWrapper:
 
 
 class _ToyRewarder:
+    def __init__(self):
+        self.cfg = RewardConfig()
+
     def score(self, qid: str, rewritten_query: str, source_query: str | None = None) -> RewardBreakdown:
         format_penalty = 1.0 if "¤" in rewritten_query else 0.0
         return RewardBreakdown(
@@ -133,6 +143,7 @@ class _ToyRewarder:
 class _RecordingRewarder:
     def __init__(self):
         self.seen_queries: list[str] = []
+        self.cfg = RewardConfig()
 
     def score(self, qid: str, rewritten_query: str, source_query: str | None = None) -> RewardBreakdown:
         self.seen_queries.append(rewritten_query)
@@ -166,6 +177,7 @@ class EngineTraceTests(unittest.TestCase):
             max_new_tokens=8,
             temperature=0.8,
             top_p=0.95,
+            reward_gap_threshold=0.0,
         )
 
         metrics = engine.train_step([QueryExample(qid="q1", text="input query")], collect_best_queries=True)
@@ -174,12 +186,22 @@ class EngineTraceTests(unittest.TestCase):
         self.assertEqual(summaries[0]["qid"], "q1")
         self.assertEqual(summaries[0]["input_query"], "input query")
         self.assertEqual(len(summaries[0]["group_raw_responses"]), 2)
+        self.assertEqual(len(summaries[0]["group_rollout_responses"]), 2)
         self.assertEqual(len(summaries[0]["group_cleaned_queries"]), 2)
+        self.assertEqual(len(summaries[0]["group_final_queries"]), 2)
+        self.assertEqual(len(summaries[0]["group_fallback_to_original"]), 2)
+        self.assertEqual(len(summaries[0]["group_fallback_reasons"]), 2)
+        self.assertEqual(len(summaries[0]["group_duplicate_penalties"]), 2)
         self.assertEqual(len(summaries[0]["group_rewards"]), 2)
         self.assertEqual(len(summaries[0]["group_recall"]), 2)
         self.assertEqual(len(summaries[0]["group_copy_penalties"]), 2)
         self.assertEqual(len(summaries[0]["group_format_penalties"]), 2)
         self.assertGreaterEqual(metrics["format_penalty_mean"], 0.0)
+        self.assertIn("duplicate_penalty_mean", metrics)
+        self.assertIn("unique_final_query_mean", metrics)
+        self.assertIn("all_same_final_query_ratio", metrics)
+        self.assertIn("flat_reward_group_ratio", metrics)
+        self.assertIn("loss_pg_abs_mean", metrics)
         self.assertIn("kl_dominance_ratio", metrics)
         self.assertGreaterEqual(metrics["kl_dominance_ratio"], 0.0)
         self.assertLessEqual(metrics["kl_dominance_ratio"], 1.0)
@@ -208,11 +230,464 @@ class EngineTraceTests(unittest.TestCase):
             max_new_tokens=8,
             temperature=0.8,
             top_p=0.95,
+            reward_gap_threshold=0.0,
         )
 
         engine.train_step([QueryExample(qid="q1", text="input query")], collect_best_queries=False)
 
         self.assertEqual(rewarder.seen_queries, ["finderscope", "mastoidectomy"])
+
+
+class _CharTokenizer:
+    pad_token_id = 0
+    eos_token_id = 1
+
+    def decode(self, ids, skip_special_tokens=True):
+        del skip_special_tokens
+        return "".join(chr(i) for i in ids)
+
+    def encode(self, text: str, add_special_tokens: bool = False):
+        del add_special_tokens
+        return [ord(ch) for ch in text]
+
+
+class ModelWrapperCleanupTests(unittest.TestCase):
+    def test_finalize_generated_sample_truncates_template_continuation(self):
+        wrapper = ModelWrapper.__new__(ModelWrapper)
+        wrapper.prompt_cfg = PromptConfig(
+            stop_on="\n",
+            stop_strings=("\n", "\nUser query:", "\nBetter BM25 query:"),
+            enforce_single_line=True,
+        )
+        wrapper.tokenizer = _CharTokenizer()
+
+        polluted = "finderscope\n\nUser query: what is a finderscope\nBetter BM25 query:"
+        response_ids = [ord(ch) for ch in polluted]
+        sample = wrapper._finalize_generated_sample(
+            response_ids,
+            scores=None,
+            sequence_index=0,
+            with_logprob=False,
+        )
+
+        self.assertEqual(sample.raw_response_text, polluted)
+        self.assertEqual(sample.response_text, "finderscope")
+        self.assertEqual(sample.response_token_ids, [ord(ch) for ch in "finderscope"])
+
+
+class _DuplicateToyModelWrapper(_ToyModelWrapper):
+    def __init__(self):
+        super().__init__()
+        self.prompt_cfg = PromptConfig(stop_on="\n", enforce_single_line=True, min_terms=2, max_terms=8)
+        self._duplicate_old_logprobs = iter([0.0, -0.2, -0.4])
+        self._responses = iter(
+            [
+                "same query\n\nUser query: ignored\nBetter BM25 query:",
+                "same query\n\nUser query: ignored\nBetter BM25 query:",
+                "same query\n\nUser query: ignored\nBetter BM25 query:",
+            ]
+        )
+
+    def generate_with_logprob(self, prompt: str, *, max_new_tokens: int, temperature: float, top_p: float) -> GeneratedSample:
+        del prompt, max_new_tokens, temperature, top_p
+        self.training_flags.append(self.actor_model.training)
+        text = next(self._responses)
+        old_logprob = next(self._duplicate_old_logprobs)
+        return GeneratedSample(
+            response_text=text,
+            response_token_ids=[1, 2],
+            logprob_old=torch.tensor([old_logprob, old_logprob], dtype=torch.float32),
+        )
+
+
+class _ResamplingToyModelWrapper(_ToyModelWrapper):
+    def __init__(self):
+        super().__init__()
+        self.prompt_cfg = PromptConfig(stop_on="\n", enforce_single_line=True, min_terms=2, max_terms=8)
+        self._responses = iter(
+            [
+                "same query\n\nUser query: ignored\nBetter BM25 query:",
+                "same query\n\nUser query: ignored\nBetter BM25 query:",
+                "same query\n\nUser query: ignored\nBetter BM25 query:",
+                "novel query one\n\nUser query: ignored\nBetter BM25 query:",
+                "novel query two\n\nUser query: ignored\nBetter BM25 query:",
+                "novel query three\n\nUser query: ignored\nBetter BM25 query:",
+            ]
+        )
+        self._old_logprobs = iter([0.0, -0.2, -0.4, -0.1, -0.3, -0.5])
+
+    def generate_with_logprob(self, prompt: str, *, max_new_tokens: int, temperature: float, top_p: float) -> GeneratedSample:
+        del prompt, max_new_tokens, temperature, top_p
+        self.training_flags.append(self.actor_model.training)
+        text = next(self._responses)
+        old_logprob = next(self._old_logprobs)
+        return GeneratedSample(
+            response_text=text.split("\n", 1)[0],
+            response_token_ids=[1, 2],
+            logprob_old=torch.tensor([old_logprob, old_logprob], dtype=torch.float32),
+            raw_response_text=text,
+        )
+
+
+class _ConstantRewarder:
+    def __init__(self):
+        self.cfg = RewardConfig(group_duplicate_penalty=0.05)
+
+    def score(self, qid: str, rewritten_query: str, source_query: str | None = None) -> RewardBreakdown:
+        return RewardBreakdown(
+            total=1.0,
+            mrr=0.5,
+            recall=1.0,
+            overlap=0.2,
+            copy_penalty=0.0,
+            format_penalty=0.0,
+            hit_rank=1,
+            retrieved_relevant_count=1,
+            relevant_total=1,
+            rewritten_query=rewritten_query,
+        )
+
+
+class DuplicatePenaltyTests(unittest.TestCase):
+    def test_compute_group_duplicate_penalties_is_ordered(self):
+        penalties = compute_group_duplicate_penalties(["same", "same", "other", "same"], 0.05)
+        self.assertEqual(penalties, [0.0, 0.05, 0.0, 0.1])
+
+    def test_duplicate_penalty_breaks_flat_rewards_and_is_logged(self):
+        wrapper = _DuplicateToyModelWrapper()
+        rewarder = _ConstantRewarder()
+        optimizer = torch.optim.SGD(wrapper.trainable_parameters(), lr=1e-2)
+        engine = GRPOEngine(
+            model_wrapper=wrapper,
+            rewarder=rewarder,
+            optimizer=optimizer,
+            group_size=3,
+            clip_range=0.2,
+            kl_beta=0.01,
+            grad_clip_norm=1.0,
+            max_new_tokens=8,
+            temperature=0.8,
+            top_p=0.95,
+            reward_gap_threshold=0.0,
+            max_regen_rounds=0,
+        )
+
+        metrics = engine.train_step([QueryExample(qid="q1", text="same query")], collect_best_queries=False)
+        summary = metrics["group_query_summaries"][0]
+
+        self.assertEqual(summary["group_final_queries"], ["same query", "same query", "same query"])
+        self.assertEqual(summary["group_duplicate_penalties"], [0.0, 0.05, 0.1])
+        self.assertEqual(summary["group_rewards"], [1.0, 0.95, 0.9])
+        self.assertGreater(metrics["duplicate_penalty_mean"], 0.0)
+        self.assertEqual(metrics["unique_final_query_mean"], 1.0)
+        self.assertEqual(metrics["all_same_final_query_ratio"], 1.0)
+        self.assertEqual(metrics["flat_reward_group_ratio"], 0.0)
+        self.assertGreater(metrics["adv_std"], 0.0)
+        self.assertGreater(metrics["loss_pg_abs_mean"], 0.0)
+        self.assertNotEqual(metrics["loss_pg"], 0.0)
+
+    def test_regeneration_breaks_group_collapse_with_novel_queries(self):
+        wrapper = _ResamplingToyModelWrapper()
+        rewarder = _ConstantRewarder()
+        optimizer = torch.optim.SGD(wrapper.trainable_parameters(), lr=1e-2)
+        engine = GRPOEngine(
+            model_wrapper=wrapper,
+            rewarder=rewarder,
+            optimizer=optimizer,
+            group_size=3,
+            clip_range=0.2,
+            kl_beta=0.01,
+            grad_clip_norm=1.0,
+            max_new_tokens=8,
+            temperature=0.8,
+            top_p=0.95,
+            min_unique_final_queries=2,
+            max_regen_rounds=1,
+            regen_temperature_delta=0.15,
+            reward_gap_threshold=0.0,
+        )
+
+        metrics = engine.train_step([QueryExample(qid="q1", text="same query")], collect_best_queries=False)
+        summary = metrics["group_query_summaries"][0]
+
+        self.assertGreaterEqual(metrics["unique_final_query_mean"], 2.0)
+        self.assertEqual(metrics["all_same_final_query_ratio"], 0.0)
+        self.assertGreaterEqual(len(set(summary["group_final_queries"])), 2)
+        self.assertIn("novel query one", summary["group_final_queries"])
+
+
+class _AdaptiveSamplingToyModelWrapper(_ToyModelWrapper):
+    def __init__(self, responses: list[str]):
+        super().__init__()
+        self.prompt_cfg = PromptConfig(stop_on="\n", enforce_single_line=True, min_terms=1, max_terms=8)
+        self._responses = iter(responses)
+        self.temperatures: list[float] = []
+
+    def generate_with_logprob(self, prompt: str, *, max_new_tokens: int, temperature: float, top_p: float) -> GeneratedSample:
+        del prompt, max_new_tokens, top_p
+        self.training_flags.append(self.actor_model.training)
+        self.temperatures.append(float(temperature))
+        text = next(self._responses)
+        old_logprob = -0.1 * float(len(self.temperatures))
+        return GeneratedSample(
+            response_text=text.split("\n", 1)[0],
+            response_token_ids=[1, 2],
+            logprob_old=torch.tensor([old_logprob, old_logprob], dtype=torch.float32),
+            raw_response_text=text,
+        )
+
+
+class _ParallelAdaptiveSamplingToyModelWrapper(_AdaptiveSamplingToyModelWrapper):
+    def __init__(self, responses: list[str]):
+        super().__init__(responses)
+        self.parallel_calls: list[tuple[int, float]] = []
+
+    def generate_group_with_logprob(
+        self,
+        prompt: str,
+        *,
+        num_return_sequences: int,
+        max_new_tokens: int,
+        temperature: float,
+        top_p: float,
+    ) -> list[GeneratedSample]:
+        self.parallel_calls.append((num_return_sequences, float(temperature)))
+        return [
+            self.generate_with_logprob(
+                prompt,
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+                top_p=top_p,
+            )
+            for _ in range(num_return_sequences)
+        ]
+
+
+class _MappedRewarder:
+    def __init__(self, scores: dict[str, float], *, duplicate_penalty: float = 0.0):
+        self.cfg = RewardConfig(group_duplicate_penalty=duplicate_penalty)
+        self.scores = dict(scores)
+        self.score_calls: list[str] = []
+
+    def score(self, qid: str, rewritten_query: str, source_query: str | None = None) -> RewardBreakdown:
+        del qid, source_query
+        self.score_calls.append(rewritten_query)
+        total = float(self.scores.get(rewritten_query, 0.0))
+        return RewardBreakdown(
+            total=total,
+            mrr=total,
+            recall=0.0,
+            overlap=0.0,
+            copy_penalty=0.0,
+            format_penalty=0.0,
+            hit_rank=1 if total > 0.0 else None,
+            retrieved_relevant_count=0,
+            relevant_total=0,
+            rewritten_query=rewritten_query,
+        )
+
+
+class AdaptiveGapSamplingTests(unittest.TestCase):
+    def test_gap_sampling_stops_when_initial_gap_is_enough(self):
+        wrapper = _AdaptiveSamplingToyModelWrapper(["low query", "high query"])
+        rewarder = _MappedRewarder({"low query": 0.1, "high query": 0.5})
+        optimizer = torch.optim.SGD(wrapper.trainable_parameters(), lr=1e-2)
+        engine = GRPOEngine(
+            model_wrapper=wrapper,
+            rewarder=rewarder,
+            optimizer=optimizer,
+            group_size=2,
+            max_group_size=5,
+            clip_range=0.2,
+            kl_beta=0.01,
+            grad_clip_norm=1.0,
+            max_new_tokens=8,
+            temperature=0.8,
+            top_p=0.95,
+            reward_gap_threshold=0.3,
+            gap_sampling_temperature_delta=0.15,
+            max_regen_rounds=0,
+        )
+
+        metrics = engine.train_step([QueryExample(qid="q1", text="input query")], collect_best_queries=False)
+        summary = metrics["group_query_summaries"][0]
+
+        self.assertEqual(summary["initial_group_size"], 2)
+        self.assertEqual(summary["generated_sample_count"], 2)
+        self.assertEqual(summary["extra_sample_count"], 0)
+        self.assertAlmostEqual(summary["reward_gap_raw"], 0.4)
+        self.assertTrue(summary["reward_gap_met"])
+        self.assertEqual(summary["reward_gap_stop_reason"], "threshold_reached")
+        self.assertEqual(summary["gap_sampling_rounds"], 0)
+        self.assertEqual(summary["gap_sampling_temperatures"], [])
+        self.assertEqual(metrics["generated_sample_count_mean"], 2.0)
+        self.assertEqual(metrics["generated_sample_count_max"], 2.0)
+        self.assertEqual(metrics["extra_sample_ratio"], 0.0)
+        self.assertEqual(metrics["reward_gap_met_ratio"], 1.0)
+        self.assertEqual(metrics["max_group_size_hit_ratio"], 0.0)
+
+    def test_gap_sampling_adds_samples_until_threshold_is_met(self):
+        wrapper = _AdaptiveSamplingToyModelWrapper(["flat query", "flat query", "high query"])
+        rewarder = _MappedRewarder({"flat query": 0.1, "high query": 0.4})
+        optimizer = torch.optim.SGD(wrapper.trainable_parameters(), lr=1e-2)
+        engine = GRPOEngine(
+            model_wrapper=wrapper,
+            rewarder=rewarder,
+            optimizer=optimizer,
+            group_size=2,
+            max_group_size=5,
+            clip_range=0.2,
+            kl_beta=0.01,
+            grad_clip_norm=1.0,
+            max_new_tokens=8,
+            temperature=0.8,
+            top_p=0.95,
+            reward_gap_threshold=0.2,
+            gap_sampling_temperature_delta=0.15,
+            max_regen_rounds=0,
+        )
+
+        metrics = engine.train_step([QueryExample(qid="q1", text="input query")], collect_best_queries=False)
+        summary = metrics["group_query_summaries"][0]
+
+        self.assertEqual(summary["generated_sample_count"], 3)
+        self.assertEqual(summary["extra_sample_count"], 1)
+        self.assertTrue(summary["reward_gap_met"])
+        self.assertEqual(summary["reward_gap_stop_reason"], "threshold_reached")
+        self.assertEqual(summary["gap_sampling_rounds"], 1)
+        self.assertEqual(summary["gap_sampling_temperatures"], [0.95])
+        self.assertEqual(wrapper.temperatures, [0.8, 0.8, 0.95])
+        self.assertEqual(summary["generated_sample_count"], len(summary["group_rewards"]))
+        self.assertEqual(summary["generated_sample_count"], len(summary["group_final_queries"]))
+        self.assertAlmostEqual(metrics["extra_sample_ratio"], 1.0 / 3.0)
+
+    def test_gap_sampling_stops_at_max_group_size_when_gap_never_met(self):
+        wrapper = _AdaptiveSamplingToyModelWrapper(
+            ["flat query", "flat query", "flat query", "flat query"]
+        )
+        rewarder = _MappedRewarder({"flat query": 0.1})
+        optimizer = torch.optim.SGD(wrapper.trainable_parameters(), lr=1e-2)
+        engine = GRPOEngine(
+            model_wrapper=wrapper,
+            rewarder=rewarder,
+            optimizer=optimizer,
+            group_size=2,
+            max_group_size=4,
+            clip_range=0.2,
+            kl_beta=0.01,
+            grad_clip_norm=1.0,
+            max_new_tokens=8,
+            temperature=0.8,
+            top_p=0.95,
+            reward_gap_threshold=0.2,
+            gap_sampling_temperature_delta=0.15,
+            max_regen_rounds=0,
+        )
+
+        metrics = engine.train_step([QueryExample(qid="q1", text="input query")], collect_best_queries=False)
+        summary = metrics["group_query_summaries"][0]
+
+        self.assertEqual(summary["generated_sample_count"], 4)
+        self.assertEqual(summary["extra_sample_count"], 2)
+        self.assertFalse(summary["reward_gap_met"])
+        self.assertEqual(summary["reward_gap_stop_reason"], "max_group_size_reached")
+        self.assertEqual(summary["gap_sampling_rounds"], 2)
+        self.assertEqual(summary["gap_sampling_temperatures"], [0.95, 1.1])
+        self.assertEqual(wrapper.temperatures, [0.8, 0.8, 0.95, 1.1])
+        self.assertEqual(metrics["reward_gap_met_ratio"], 0.0)
+        self.assertEqual(metrics["max_group_size_hit_ratio"], 1.0)
+        self.assertEqual(metrics["generated_sample_count_max"], 4.0)
+
+    def test_gap_sampling_uses_raw_reward_gap_not_duplicate_penalized_reward(self):
+        wrapper = _AdaptiveSamplingToyModelWrapper(["same query", "same query", "same query"])
+        rewarder = _MappedRewarder({"same query": 1.0}, duplicate_penalty=0.05)
+        optimizer = torch.optim.SGD(wrapper.trainable_parameters(), lr=1e-2)
+        engine = GRPOEngine(
+            model_wrapper=wrapper,
+            rewarder=rewarder,
+            optimizer=optimizer,
+            group_size=3,
+            max_group_size=3,
+            clip_range=0.2,
+            kl_beta=0.01,
+            grad_clip_norm=1.0,
+            max_new_tokens=8,
+            temperature=0.8,
+            top_p=0.95,
+            reward_gap_threshold=0.02,
+            gap_sampling_temperature_delta=0.15,
+            max_regen_rounds=0,
+        )
+
+        metrics = engine.train_step([QueryExample(qid="q1", text="input query")], collect_best_queries=False)
+        summary = metrics["group_query_summaries"][0]
+
+        self.assertEqual(summary["group_rewards"], [1.0, 0.95, 0.9])
+        self.assertAlmostEqual(summary["reward_gap_raw"], 0.0)
+        self.assertFalse(summary["reward_gap_met"])
+        self.assertEqual(summary["reward_gap_stop_reason"], "max_group_size_reached")
+
+    def test_gap_sampling_reuses_reward_cache_for_repeated_queries(self):
+        wrapper = _AdaptiveSamplingToyModelWrapper(
+            ["same query", "same query", "same query", "high query"]
+        )
+        rewarder = _MappedRewarder({"same query": 0.1, "high query": 0.5})
+        optimizer = torch.optim.SGD(wrapper.trainable_parameters(), lr=1e-2)
+        engine = GRPOEngine(
+            model_wrapper=wrapper,
+            rewarder=rewarder,
+            optimizer=optimizer,
+            group_size=2,
+            max_group_size=4,
+            clip_range=0.2,
+            kl_beta=0.01,
+            grad_clip_norm=1.0,
+            max_new_tokens=8,
+            temperature=0.8,
+            top_p=0.95,
+            reward_gap_threshold=0.2,
+            gap_sampling_temperature_delta=0.15,
+            max_regen_rounds=0,
+        )
+
+        metrics = engine.train_step([QueryExample(qid="q1", text="input query")], collect_best_queries=False)
+        summary = metrics["group_query_summaries"][0]
+
+        self.assertEqual(rewarder.score_calls, ["same query", "high query"])
+        self.assertEqual(summary["generated_sample_count"], 4)
+        self.assertEqual(summary["gap_sampling_rounds"], 2)
+        self.assertTrue(summary["reward_gap_met"])
+
+    def test_parallel_initial_sampling_still_works_with_gap_resampling(self):
+        wrapper = _ParallelAdaptiveSamplingToyModelWrapper(
+            ["flat query", "flat query", "high query"]
+        )
+        rewarder = _MappedRewarder({"flat query": 0.1, "high query": 0.5})
+        optimizer = torch.optim.SGD(wrapper.trainable_parameters(), lr=1e-2)
+        engine = GRPOEngine(
+            model_wrapper=wrapper,
+            rewarder=rewarder,
+            optimizer=optimizer,
+            group_size=2,
+            max_group_size=3,
+            clip_range=0.2,
+            kl_beta=0.01,
+            grad_clip_norm=1.0,
+            max_new_tokens=8,
+            temperature=0.8,
+            top_p=0.95,
+            reward_gap_threshold=0.2,
+            gap_sampling_temperature_delta=0.15,
+            max_regen_rounds=0,
+            parallel_group_generate=True,
+        )
+
+        metrics = engine.train_step([QueryExample(qid="q1", text="input query")], collect_best_queries=False)
+        summary = metrics["group_query_summaries"][0]
+
+        self.assertEqual(wrapper.parallel_calls, [(2, 0.8)])
+        self.assertEqual(summary["generated_sample_count"], 3)
+        self.assertTrue(summary["reward_gap_met"])
 
 
 class _FakeTokenizer:

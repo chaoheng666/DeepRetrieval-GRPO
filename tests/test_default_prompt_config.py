@@ -1,7 +1,7 @@
 import unittest
 from types import SimpleNamespace
 
-from app_config import get_default_config
+from app_config import RewardConfig, get_default_config
 from data.loader import QueryExample
 from train import evaluate_policy
 
@@ -32,6 +32,9 @@ class _CaptureModel:
 
 
 class _DummyRewarder:
+    def __init__(self):
+        self.cfg = RewardConfig()
+
     def score(self, qid: str, rewritten_query: str, source_query: str | None = None):
         del qid, rewritten_query, source_query
         return SimpleNamespace(
@@ -41,6 +44,16 @@ class _DummyRewarder:
             copy_penalty=0.0,
             format_penalty=0.0,
         )
+
+
+class _CaptureRewarder(_DummyRewarder):
+    def __init__(self):
+        super().__init__()
+        self.seen_queries: list[str] = []
+
+    def score(self, qid: str, rewritten_query: str, source_query: str | None = None):
+        self.seen_queries.append(rewritten_query)
+        return super().score(qid, rewritten_query, source_query)
 
 
 class DefaultPromptConfigTests(unittest.TestCase):
@@ -59,21 +72,29 @@ class DefaultPromptConfigTests(unittest.TestCase):
     def test_training_defaults_remain_stochastic(self):
         config = get_default_config()
 
-        self.assertEqual(config.train.max_new_tokens, 24)
-        self.assertEqual(config.train.temperature, 1.0)
+        self.assertEqual(config.train.max_new_tokens, 18)
+        self.assertEqual(config.train.temperature, 0.8)
         self.assertEqual(config.train.top_p, 0.95)
+
+    def test_reward_defaults_penalize_copy_and_duplicates_more(self):
+        config = get_default_config()
+
+        self.assertEqual(config.reward.w_copy, 0.25)
+        self.assertEqual(config.reward.group_duplicate_penalty, 0.075)
 
 
 class TrainEvaluationDecodeTests(unittest.TestCase):
     def test_evaluate_policy_uses_passed_decode_settings(self):
         model = _CaptureModel()
         rewarder = _DummyRewarder()
+        config = get_default_config()
         queries = [QueryExample(qid="q1", text="what are symptoms of anemia in women")]
 
         metrics = evaluate_policy(
             model,
             rewarder,
             queries,
+            guardrail_cfg=config.prompt,
             max_queries=None,
             max_new_tokens=16,
             temperature=0.0,
@@ -86,6 +107,42 @@ class TrainEvaluationDecodeTests(unittest.TestCase):
         self.assertEqual(model.calls[0]["max_new_tokens"], 16)
         self.assertEqual(model.calls[0]["temperature"], 0.0)
         self.assertEqual(model.calls[0]["top_p"], 1.0)
+
+    def test_evaluate_policy_scores_stabilized_final_query(self):
+        class _PollutedModel(_CaptureModel):
+            def generate_rewrite(
+                self,
+                query: str,
+                *,
+                policy: str,
+                max_new_tokens: int,
+                temperature: float,
+                top_p: float,
+            ) -> str:
+                del policy, max_new_tokens, temperature, top_p
+                return (
+                    "anemia symptoms women\n\n"
+                    "User query: what are symptoms of anemia in women\n"
+                    "Better BM25 query:"
+                )
+
+        model = _PollutedModel()
+        rewarder = _CaptureRewarder()
+        config = get_default_config()
+        queries = [QueryExample(qid="q1", text="what are symptoms of anemia in women")]
+
+        evaluate_policy(
+            model,
+            rewarder,
+            queries,
+            guardrail_cfg=config.prompt,
+            max_queries=None,
+            max_new_tokens=16,
+            temperature=0.0,
+            top_p=1.0,
+        )
+
+        self.assertEqual(rewarder.seen_queries, ["anemia symptoms women"])
 
 
 if __name__ == "__main__":

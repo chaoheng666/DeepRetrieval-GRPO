@@ -141,8 +141,10 @@ class TrainConfig:
 
     num_epochs: int = 1
     batch_size: int = 8
-    # GRPO 的 K：每条 query 采样的重写候选数。
+    # Initial group size for each query before adaptive gap-driven resampling.
     group_size: int = 8
+    # Hard cap for adaptive gap-driven resampling.
+    max_group_size: int = 24
     learning_rate: float = 2e-5
     weight_decay: float = 0.0
     # PPO clip 参数 epsilon。
@@ -152,9 +154,19 @@ class TrainConfig:
     # 梯度裁剪阈值，避免梯度爆炸导致训练不稳定。
     grad_clip_norm: float = 1.0
     # 生成长度与采样策略。
-    max_new_tokens: int = 24
-    temperature: float = 1.0
+    max_new_tokens: int = 18
+    temperature: float = 0.8
     top_p: float = 0.95
+    # When a sampled group collapses to too few distinct final queries, retry
+    # duplicate/polluted slots with a slightly warmer decode.
+    min_unique_final_queries: int = 3
+    max_regen_rounds: int = 2
+    regen_temperature_delta: float = 0.15
+    # Keep sampling until best-minus-worst raw reward reaches this spread,
+    # or until max_group_size is reached.
+    reward_gap_threshold: float = 0.10
+    # Only adaptive extra samples use a higher temperature.
+    gap_sampling_temperature_delta: float = 0.15
     # 每隔多少个 step 在验证集上评估一次。
     eval_every_steps: int = 20
     # 可选总步数上限（用于快速调试）。
@@ -179,10 +191,12 @@ class RewardConfig:
     # total = w_mrr*mrr + w_recall*recall - w_copy*copy_penalty - w_format*format_penalty
     w_mrr: float = 1.0
     w_recall: float = 0.3
-    w_copy: float = 0.15
+    w_copy: float = 0.25
     w_format: float = 0.2
     # CopyPenalty = max(0, overlap - copy_tau), overlap 使用 Jaccard(set)。
     copy_tau: float = 0.6
+    # 组内重复 query 的确定性惩罚，按重复出现次数线性累计。
+    group_duplicate_penalty: float = 0.075
     # FormatPenalty 严格阈值（基于 clean_rewritten_query 后文本）。
     format_max_tokens: int = 16
     format_min_english_ratio: float = 0.80
@@ -215,6 +229,8 @@ class PromptConfig:
         "- Remove chatty wrappers and helper verbs when safe.\n"
         "- Avoid speculative synonyms, broadening, and answer-style prose.\n"
         "- Match the demonstration style exactly and emit only the live rewrite.\n"
+        "- Stop immediately after the rewrite; never continue with another "
+        "\"User query\" or \"Better BM25 query\" block.\n"
         "- Strategy-specific rules:\n"
         "  - Prefer content nouns and modifiers that are likely to appear in passage text.\n"
         "  - Avoid answer-style sentences and keep the query keyword-like."
@@ -231,7 +247,18 @@ class PromptConfig:
     temperature: float = 0.0
     top_p: float = 1.0
     stop_on: str | None = "\n"
+    stop_strings: tuple[str, ...] = (
+        "\n",
+        "\nUser query:",
+        "\nBetter BM25 query:",
+        "\nSearch query:",
+        "\nRewritten query:",
+        "\nExample",
+    )
     enforce_single_line: bool = True
+    min_terms: int = 3
+    max_terms: int = 11
+    fallback_mode: str = "balanced"
 
 
 @dataclass(slots=True)

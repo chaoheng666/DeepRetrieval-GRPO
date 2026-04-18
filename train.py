@@ -23,7 +23,7 @@ import torch
 from app_config import AppConfig, ensure_runtime_dirs, get_default_config
 from core.grpo_engine import GRPOEngine
 from core.model_wrapper import ModelWrapper
-from core.reward_func import Rewarder
+from core.reward_func import Rewarder, stabilize_generated_rewrite
 from data.loader import QueryExample, maybe_limit, load_topics_qrels, split_queries
 
 
@@ -39,6 +39,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-epochs", type=int, default=None)
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--group-size", type=int, default=None)
+    parser.add_argument("--max-group-size", type=int, default=None)
     parser.add_argument(
         "--parallel-group-generate",
         action="store_true",
@@ -60,6 +61,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-new-tokens", type=int, default=None)
     parser.add_argument("--temperature", type=float, default=None)
     parser.add_argument("--top-p", type=float, default=None)
+    parser.add_argument("--reward-gap-threshold", type=float, default=None)
+    parser.add_argument("--gap-sampling-temperature-delta", type=float, default=None)
     parser.add_argument("--reward-mrr-k", type=int, default=None, help="MRR@k reward cutoff, e.g. 10.")
     parser.add_argument("--reward-recall-k", type=int, default=None, help="Recall@k reward cutoff, e.g. 50.")
     parser.add_argument("--search-threads", type=int, default=None, help="Pyserini batch_search thread count.")
@@ -115,9 +118,12 @@ def apply_low_mem_mode(config: AppConfig) -> AppConfig:
     # 减少单步显存占用与训练时长。
     config.train.batch_size = 1
     config.train.group_size = 8
+    config.train.max_group_size = 24
     config.train.max_new_tokens = 20
     config.train.temperature = 0.1
     config.train.top_p = 0.95
+    config.train.reward_gap_threshold = 0.10
+    config.train.gap_sampling_temperature_delta = 0.15
     config.train.eval_every_steps = 10
     config.train.max_steps = 50
     config.train.num_epochs = 1
@@ -159,6 +165,8 @@ def apply_overrides(config: AppConfig, args: argparse.Namespace) -> AppConfig:
         config.train.batch_size = args.batch_size
     if args.group_size is not None:
         config.train.group_size = args.group_size
+    if args.max_group_size is not None:
+        config.train.max_group_size = args.max_group_size
     if args.learning_rate is not None:
         config.train.learning_rate = args.learning_rate
     if args.clip_range is not None:
@@ -173,6 +181,10 @@ def apply_overrides(config: AppConfig, args: argparse.Namespace) -> AppConfig:
         config.train.temperature = args.temperature
     if args.top_p is not None:
         config.train.top_p = args.top_p
+    if args.reward_gap_threshold is not None:
+        config.train.reward_gap_threshold = args.reward_gap_threshold
+    if args.gap_sampling_temperature_delta is not None:
+        config.train.gap_sampling_temperature_delta = args.gap_sampling_temperature_delta
     if args.reward_mrr_k is not None:
         config.reward.mrr_k = args.reward_mrr_k
     if args.reward_recall_k is not None:
@@ -277,6 +289,27 @@ def apply_runtime_mode_adjustments(config: AppConfig, args: argparse.Namespace) 
         )
         config.train.group_size = 2
 
+    if config.train.max_group_size < config.train.group_size:
+        print(
+            f"[warn] max_group_size={config.train.max_group_size} is smaller than "
+            f"group_size={config.train.group_size}; auto-adjusting to {config.train.group_size}."
+        )
+        config.train.max_group_size = config.train.group_size
+
+    if config.train.reward_gap_threshold < 0.0:
+        print(
+            f"[warn] reward_gap_threshold={config.train.reward_gap_threshold} is invalid; "
+            "auto-adjusting to 0.0."
+        )
+        config.train.reward_gap_threshold = 0.0
+
+    if config.train.gap_sampling_temperature_delta < 0.0:
+        print(
+            f"[warn] gap_sampling_temperature_delta={config.train.gap_sampling_temperature_delta} is invalid; "
+            "auto-adjusting to 0.0."
+        )
+        config.train.gap_sampling_temperature_delta = 0.0
+
     return config
 
 
@@ -308,6 +341,7 @@ def evaluate_policy(
     rewarder: Rewarder,
     queries: Sequence[QueryExample],
     *,
+    guardrail_cfg,
     max_queries: int | None,
     max_new_tokens: int,
     temperature: float,
@@ -330,7 +364,13 @@ def evaluate_policy(
             temperature=temperature,
             top_p=top_p,
         )
-        score = rewarder.score(query.qid, rewritten, source_query=query.text)
+        stabilized = stabilize_generated_rewrite(
+            rewritten,
+            source_query=query.text,
+            guardrail_cfg=guardrail_cfg,
+            reward_cfg=rewarder.cfg,
+        )
+        score = rewarder.score(query.qid, stabilized.final_query, source_query=query.text)
         rewards.append(score.total)
         mrr_scores.append(score.mrr)
         recall_scores.append(score.recall)
@@ -433,6 +473,12 @@ def main() -> int:
         max_new_tokens=config.train.max_new_tokens,
         temperature=config.train.temperature,
         top_p=config.train.top_p,
+        max_group_size=config.train.max_group_size,
+        min_unique_final_queries=config.train.min_unique_final_queries,
+        max_regen_rounds=config.train.max_regen_rounds,
+        regen_temperature_delta=config.train.regen_temperature_delta,
+        reward_gap_threshold=config.train.reward_gap_threshold,
+        gap_sampling_temperature_delta=config.train.gap_sampling_temperature_delta,
         parallel_group_generate=args.parallel_group_generate,
     )
 
@@ -482,12 +528,23 @@ def main() -> int:
 
             print(
                 f"[train] step={global_step} loss={metrics['loss']:.4f} "
-                f"pg={metrics['loss_pg']:.4f} kl={metrics['loss_kl']:.4f} "
+                f"pg={metrics['loss_pg']:.4f} pg_abs={metrics.get('loss_pg_abs_mean', 0.0):.4f} "
+                f"kl={metrics['loss_kl']:.4f} "
                 f"kl_dom={metrics.get('kl_dominance_ratio', 0.0):.3f} "
                 f"reward={metrics['reward_mean']:.4f} mrr={metrics['mrr_mean']:.4f} "
                 f"recall={metrics.get('recall_mean', 0.0):.4f} "
                 f"copy_penalty={metrics.get('copy_penalty_mean', 0.0):.4f} "
-                f"format_penalty={metrics.get('format_penalty_mean', 0.0):.4f}"
+                f"format_penalty={metrics.get('format_penalty_mean', 0.0):.4f} "
+                f"duplicate_penalty_mean={metrics.get('duplicate_penalty_mean', 0.0):.4f} "
+                f"unique_final_query_mean={metrics.get('unique_final_query_mean', 0.0):.4f} "
+                f"generated_sample_count_mean={metrics.get('generated_sample_count_mean', 0.0):.4f} "
+                f"generated_sample_count_max={metrics.get('generated_sample_count_max', 0.0):.0f} "
+                f"extra_sample_ratio={metrics.get('extra_sample_ratio', 0.0):.4f} "
+                f"reward_gap_raw_mean={metrics.get('reward_gap_raw_mean', 0.0):.4f} "
+                f"reward_gap_met_ratio={metrics.get('reward_gap_met_ratio', 0.0):.4f} "
+                f"max_group_size_hit_ratio={metrics.get('max_group_size_hit_ratio', 0.0):.4f} "
+                f"all_same_final_query_ratio={metrics.get('all_same_final_query_ratio', 0.0):.4f} "
+                f"flat_reward_group_ratio={metrics.get('flat_reward_group_ratio', 0.0):.4f}"
             )
             if args.print_best_query and best_query_pairs:
                 for pair in best_query_pairs:
@@ -503,6 +560,7 @@ def main() -> int:
                     model,
                     rewarder,
                     val_queries,
+                    guardrail_cfg=config.prompt,
                     max_queries=config.data.max_val_queries,
                     max_new_tokens=config.prompt.max_new_tokens,
                     temperature=config.prompt.temperature,
@@ -540,6 +598,7 @@ def main() -> int:
         model,
         rewarder,
         val_queries,
+        guardrail_cfg=config.prompt,
         max_queries=config.data.max_val_queries,
         max_new_tokens=config.prompt.max_new_tokens,
         temperature=config.prompt.temperature,

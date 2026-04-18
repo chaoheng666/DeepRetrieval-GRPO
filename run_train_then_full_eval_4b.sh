@@ -6,7 +6,7 @@ cd "$SCRIPT_DIR"
 
 PYTHON_BIN="${PYTHON_BIN:-/root/miniconda3/bin/python}"
 ARTIFACT_ROOT="${ARTIFACT_ROOT:-train_and_eval_data_model}"
-EXP_NAME="${EXP_NAME:-4b}"
+EXP_NAME="${EXP_NAME:-4b_gap_fast}"
 VENV_DIR="${VENV_DIR:-.venv}"
 LOG_DIR="${LOG_DIR:-log}"
 USE_VENV="${USE_VENV:-0}"
@@ -15,24 +15,6 @@ REQUIRE_CUDA="${REQUIRE_CUDA:-1}"
 MODEL_NAME="${MODEL_NAME:-/root/autodl-tmp/hf_models/Qwen3-4B-Instruct-2507}"
 AUTO_GIT_COMMIT="${AUTO_GIT_COMMIT:-1}"
 AUTO_GIT_PUSH="${AUTO_GIT_PUSH:-1}"
-TRAIN_BATCH_SIZE="${TRAIN_BATCH_SIZE:-8}"
-TRAIN_GROUP_SIZE="${TRAIN_GROUP_SIZE:-8}"
-TRAIN_KL_BETA="${TRAIN_KL_BETA:-0.005}"
-TRAIN_MAX_NEW_TOKENS="${TRAIN_MAX_NEW_TOKENS:-16}"
-TRAIN_EVAL_EVERY_STEPS="${TRAIN_EVAL_EVERY_STEPS:-100}"
-TRAIN_MAX_STEPS="${TRAIN_MAX_STEPS:-400}"
-TRAIN_MAX_VAL_QUERIES="${TRAIN_MAX_VAL_QUERIES:-200}"
-
-REWARD_MRR_K="${REWARD_MRR_K:-50}"
-REWARD_RECALL_K="${REWARD_RECALL_K:-50}"
-REWARD_W_MRR="${REWARD_W_MRR:-1.0}"
-REWARD_W_RECALL="${REWARD_W_RECALL:-0.3}"
-REWARD_W_COPY="${REWARD_W_COPY:-0.15}"
-REWARD_W_FORMAT="${REWARD_W_FORMAT:-0.2}"
-REWARD_COPY_TAU="${REWARD_COPY_TAU:-0.6}"
-FORMAT_MAX_TOKENS="${FORMAT_MAX_TOKENS:-16}"
-FORMAT_MIN_ENGLISH_RATIO="${FORMAT_MIN_ENGLISH_RATIO:-0.8}"
-FORMAT_MAX_UNREADABLE_RATIO="${FORMAT_MAX_UNREADABLE_RATIO:-0.3}"
 
 TRAIN_DIR="${ARTIFACT_ROOT}/artifacts_${EXP_NAME}_train"
 EVAL_DIR="${ARTIFACT_ROOT}/artifacts_${EXP_NAME}_eval"
@@ -115,28 +97,39 @@ print(f"[env] cuda device count: {torch.cuda.device_count()}")
 PY
 fi
 
+echo "[preset] 4B fast config: batch=4 group=8 max_group=12 max_new_tokens=14 parallel_group_generate=on"
+
 echo "[2/4] Training 4B experiment..."
 "$PYTHON_BIN" train.py \
   --model-name "$MODEL_NAME" \
   --num-epochs 1 \
-  --batch-size "$TRAIN_BATCH_SIZE" \
-  --group-size "$TRAIN_GROUP_SIZE" \
-  --kl-beta "$TRAIN_KL_BETA" \
-  --search-threads 8 \
-  --max-new-tokens "$TRAIN_MAX_NEW_TOKENS" \
-  --eval-every-steps "$TRAIN_EVAL_EVERY_STEPS" \
-  --max-val-queries "$TRAIN_MAX_VAL_QUERIES" \
-  --max-steps "$TRAIN_MAX_STEPS" \
-  --reward-mrr-k "$REWARD_MRR_K" \
-  --reward-recall-k "$REWARD_RECALL_K" \
-  --reward-w-mrr "$REWARD_W_MRR" \
-  --reward-w-recall "$REWARD_W_RECALL" \
-  --reward-w-copy "$REWARD_W_COPY" \
-  --reward-w-format "$REWARD_W_FORMAT" \
-  --reward-copy-tau "$REWARD_COPY_TAU" \
-  --format-max-tokens "$FORMAT_MAX_TOKENS" \
-  --format-min-english-ratio "$FORMAT_MIN_ENGLISH_RATIO" \
-  --format-max-unreadable-ratio "$FORMAT_MAX_UNREADABLE_RATIO" \
+  --batch-size 8 \
+  --group-size 8 \
+  --max-group-size 16 \
+  --parallel-group-generate \
+  --learning-rate 2e-5 \
+  --clip-range 0.2 \
+  --kl-beta 0.005 \
+  --search-threads 16 \
+  --max-new-tokens 14 \
+  --temperature 1 \
+  --top-p 0.95 \
+  --reward-gap-threshold 0.05 \
+  --gap-sampling-temperature-delta 0.15 \
+  --eval-every-steps 100 \
+  --max-train-queries 2000 \
+  --max-val-queries 200 \
+  --max-steps 400 \
+  --reward-mrr-k 50 \
+  --reward-recall-k 50 \
+  --reward-w-mrr 1.5 \
+  --reward-w-recall 0.3 \
+  --reward-w-copy 0.15 \
+  --reward-w-format 0.2 \
+  --reward-copy-tau 0.6 \
+  --format-max-tokens 16 \
+  --format-min-english-ratio 0.8 \
+  --format-max-unreadable-ratio 0.3 \
   --save-dir "$TRAIN_CHECKPOINT_DIR" \
   --log-path "$TRAIN_LOG_PATH" \
   --group-trace-log-path "$TRAIN_TRACE_PATH"
@@ -160,16 +153,16 @@ echo "[3/4] Running full evaluation for the 4B experiment..."
   --model-name "$MODEL_NAME" \
   --strict-tokenizer-model-match \
   --max-eval-queries 1000000 \
-  --reward-mrr-k "$REWARD_MRR_K" \
-  --reward-recall-k "$REWARD_RECALL_K" \
-  --reward-w-mrr "$REWARD_W_MRR" \
-  --reward-w-recall "$REWARD_W_RECALL" \
-  --reward-w-copy "$REWARD_W_COPY" \
-  --reward-w-format "$REWARD_W_FORMAT" \
-  --reward-copy-tau "$REWARD_COPY_TAU" \
-  --format-max-tokens "$FORMAT_MAX_TOKENS" \
-  --format-min-english-ratio "$FORMAT_MIN_ENGLISH_RATIO" \
-  --format-max-unreadable-ratio "$FORMAT_MAX_UNREADABLE_RATIO" \
+  --reward-mrr-k 50 \
+  --reward-recall-k 50 \
+  --reward-w-mrr 1.0 \
+  --reward-w-recall 0.3 \
+  --reward-w-copy 0.15 \
+  --reward-w-format 0.2 \
+  --reward-copy-tau 0.6 \
+  --format-max-tokens 16 \
+  --format-min-english-ratio 0.8 \
+  --format-max-unreadable-ratio 0.3 \
   --sample-print 20 \
   --report-path "$EVAL_REPORT_PATH"
 

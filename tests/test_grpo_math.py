@@ -2,7 +2,7 @@ import unittest
 
 import torch
 
-from app_config import RewardConfig
+from app_config import PromptConfig, RewardConfig
 from core.grpo_engine import normalize_advantages, ppo_clipped_objective
 from core.reward_func import (
     Rewarder,
@@ -12,6 +12,7 @@ from core.reward_func import (
     compute_format_penalty,
     compute_mrr_at_k,
     compute_recall_at_k,
+    stabilize_generated_rewrite,
 )
 
 
@@ -145,6 +146,69 @@ class QueryCleaningTests(unittest.TestCase):
         )
         cleaned = clean_rewritten_query(raw, source_query="what is a finderscope")
         self.assertEqual(cleaned, "finderscope")
+
+    def test_stabilize_generated_rewrite_falls_back_when_numeric_is_lost(self):
+        cfg = RewardConfig()
+        prompt_cfg = PromptConfig(min_terms=3, max_terms=12, fallback_mode="conservative")
+        record = stabilize_generated_rewrite(
+            "best laptop under 1000",
+            source_query="best laptop under 1000 2024",
+            guardrail_cfg=prompt_cfg,
+            reward_cfg=cfg,
+        )
+        self.assertTrue(record.fallback_to_original)
+        self.assertIn("lost_numeric", record.fallback_reasons)
+        self.assertEqual(record.final_query, "best laptop under 1000 2024")
+
+    def test_stabilize_generated_rewrite_falls_back_when_acronym_or_negation_is_lost(self):
+        cfg = RewardConfig()
+        prompt_cfg = PromptConfig(min_terms=3, max_terms=12, fallback_mode="balanced")
+
+        acronym_record = stabilize_generated_rewrite(
+            "chronic obstructive pulmonary disease treatment options",
+            source_query="COPD treatment options",
+            guardrail_cfg=prompt_cfg,
+            reward_cfg=cfg,
+        )
+        self.assertTrue(acronym_record.fallback_to_original)
+        self.assertIn("lost_acronym", acronym_record.fallback_reasons)
+        self.assertEqual(acronym_record.final_query, "COPD treatment options")
+
+        negation_record = stabilize_generated_rewrite(
+            "foods gluten",
+            source_query="foods without gluten",
+            guardrail_cfg=prompt_cfg,
+            reward_cfg=cfg,
+        )
+        self.assertTrue(negation_record.fallback_to_original)
+        self.assertIn("lost_negation", negation_record.fallback_reasons)
+        self.assertEqual(negation_record.final_query, "foods without gluten")
+
+    def test_stabilize_generated_rewrite_falls_back_on_format_fail(self):
+        cfg = RewardConfig()
+        prompt_cfg = PromptConfig(min_terms=3, max_terms=11, fallback_mode="balanced")
+        record = stabilize_generated_rewrite(
+            "because this query is better",
+            source_query="best budget gaming laptop 2024",
+            guardrail_cfg=prompt_cfg,
+            reward_cfg=cfg,
+        )
+        self.assertTrue(record.fallback_to_original)
+        self.assertIn("format_fail", record.fallback_reasons)
+        self.assertEqual(record.final_query, "best budget gaming laptop 2024")
+
+    def test_stabilize_generated_rewrite_falls_back_on_conservative_divergence(self):
+        cfg = RewardConfig()
+        prompt_cfg = PromptConfig(min_terms=2, max_terms=11, fallback_mode="conservative")
+        record = stabilize_generated_rewrite(
+            "south america regional dispute",
+            source_query="guayana venezuela",
+            guardrail_cfg=prompt_cfg,
+            reward_cfg=cfg,
+        )
+        self.assertTrue(record.fallback_to_original)
+        self.assertIn("diverged_from_lexical_source", record.fallback_reasons)
+        self.assertEqual(record.final_query, "guayana venezuela")
 
 
 class RewarderConsistencyTests(unittest.TestCase):

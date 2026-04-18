@@ -29,6 +29,7 @@ class GeneratedSample:
     response_text: str
     response_token_ids: list[int]
     logprob_old: torch.Tensor
+    raw_response_text: str = ""
 
 
 def _str_to_dtype(dtype_name: str) -> torch.dtype:
@@ -443,6 +444,166 @@ class ModelWrapper:
         query_clean = " ".join(query.strip().split())
         return f"{self.prompt_cfg.system_prompt}\n\n{self.prompt_cfg.template.format(query=query_clean)}"
 
+    @staticmethod
+    def _dedupe_keep_order(values: Sequence[str]) -> tuple[str, ...]:
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for value in values:
+            if not value or value in seen:
+                continue
+            seen.add(value)
+            ordered.append(value)
+        return tuple(ordered)
+
+    def _generation_stop_strings(self) -> tuple[str, ...]:
+        stop_strings: list[str] = []
+        stop_on = getattr(self.prompt_cfg, "stop_on", None)
+        if isinstance(stop_on, str) and stop_on:
+            stop_strings.append(stop_on)
+        configured = getattr(self.prompt_cfg, "stop_strings", ()) or ()
+        stop_strings.extend(str(value) for value in configured if value)
+        stop_strings.extend(
+            [
+                "\nUser query:",
+                "\nBetter BM25 query:",
+                "\nSearch query:",
+                "\nRewritten query:",
+                "\nExample",
+            ]
+        )
+        return self._dedupe_keep_order(stop_strings)
+
+    def _truncate_generated_text(self, text: str) -> str:
+        raw = text or ""
+        if not raw:
+            return ""
+
+        cut_positions: list[int] = []
+        if getattr(self.prompt_cfg, "enforce_single_line", False):
+            for marker in ("\n", "\r"):
+                idx = raw.find(marker)
+                if idx >= 0:
+                    cut_positions.append(idx)
+
+        for stop in self._generation_stop_strings():
+            idx = raw.find(stop)
+            if idx >= 0:
+                cut_positions.append(idx)
+
+        lowered = raw.lower()
+        for marker in (
+            "\nuser query:",
+            "\nbetter bm25 query:",
+            "\nsearch query:",
+            "\nrewritten query:",
+            "\nexample\n",
+        ):
+            idx = lowered.find(marker)
+            if idx >= 0:
+                cut_positions.append(idx)
+        for prefix in (
+            "user query:",
+            "better bm25 query:",
+            "search query:",
+            "rewritten query:",
+            "example\n",
+        ):
+            if lowered.startswith(prefix):
+                cut_positions.append(0)
+
+        cutoff = min(cut_positions) if cut_positions else len(raw)
+        return raw[:cutoff].strip()
+
+    def _aligned_prefix_length(self, response_ids: list[int], target_text: str) -> int:
+        target = (target_text or "").strip()
+        if not target:
+            return 0
+
+        encoded_target = self.tokenizer.encode(target, add_special_tokens=False)
+        if encoded_target and response_ids[: len(encoded_target)] == encoded_target:
+            return len(encoded_target)
+
+        for prefix_len in range(1, len(response_ids) + 1):
+            prefix_text = self.tokenizer.decode(response_ids[:prefix_len], skip_special_tokens=True).strip()
+            if self._truncate_generated_text(prefix_text) == target:
+                return prefix_len
+        return len(response_ids)
+
+    def _build_generate_kwargs(
+        self,
+        *,
+        max_new_tokens: int,
+        temperature: float,
+        top_p: float,
+        with_logprob: bool,
+        num_return_sequences: int | None = None,
+    ) -> dict[str, Any]:
+        do_sample = temperature > 0.0
+        kwargs: dict[str, Any] = {
+            "max_new_tokens": max_new_tokens,
+            "do_sample": do_sample,
+            "temperature": max(temperature, 1e-6) if do_sample else 1.0,
+            "top_p": top_p if do_sample else 1.0,
+            "pad_token_id": self.tokenizer.pad_token_id,
+            "eos_token_id": self.tokenizer.eos_token_id,
+            "return_dict_in_generate": True,
+        }
+        if with_logprob:
+            kwargs["output_scores"] = True
+        if num_return_sequences is not None:
+            kwargs["num_return_sequences"] = num_return_sequences
+
+        stop_strings = list(self._generation_stop_strings())
+        if stop_strings:
+            kwargs["stop_strings"] = stop_strings
+            kwargs["tokenizer"] = self.tokenizer
+        return kwargs
+
+    def _finalize_generated_sample(
+        self,
+        response_ids: list[int],
+        *,
+        scores: Sequence[torch.Tensor] | None,
+        sequence_index: int,
+        with_logprob: bool,
+    ) -> GeneratedSample:
+        raw_response_text = self.tokenizer.decode(response_ids, skip_special_tokens=True).strip()
+        response_text = self._truncate_generated_text(raw_response_text)
+        prefix_len = self._aligned_prefix_length(response_ids, response_text)
+        truncated_ids = response_ids[:prefix_len]
+
+        if not with_logprob or not truncated_ids:
+            return GeneratedSample(
+                response_text=response_text,
+                response_token_ids=truncated_ids,
+                logprob_old=torch.empty(0),
+                raw_response_text=raw_response_text,
+            )
+
+        score_steps = list(scores or [])
+        steps = min(len(score_steps), len(truncated_ids))
+        if steps == 0:
+            return GeneratedSample(
+                response_text=response_text,
+                response_token_ids=truncated_ids,
+                logprob_old=torch.empty(0),
+                raw_response_text=raw_response_text,
+            )
+
+        token_logprobs: list[torch.Tensor] = []
+        for step_idx in range(steps):
+            logits_step = score_steps[step_idx][sequence_index].float()
+            token_id = truncated_ids[step_idx]
+            logprob_step = torch.log_softmax(logits_step, dim=-1)[token_id]
+            token_logprobs.append(logprob_step.detach().cpu())
+
+        return GeneratedSample(
+            response_text=response_text,
+            response_token_ids=truncated_ids[:steps],
+            logprob_old=torch.stack(token_logprobs).to(torch.float32),
+            raw_response_text=raw_response_text,
+        )
+
     def _policy_model(self, policy: PolicyName) -> torch.nn.Module:
         """按策略名选择 actor 或 ref 模型。"""
 
@@ -467,20 +628,12 @@ class ModelWrapper:
         inputs = self.tokenizer(prompt, return_tensors="pt")
         device = self._infer_model_device(model)
         inputs = {k: v.to(device) for k, v in inputs.items()}
-
-        # 温度 <= 0 时按贪心解码处理。
-        do_sample = temperature > 0.0
-        kwargs = {
-            "max_new_tokens": max_new_tokens,
-            "do_sample": do_sample,
-            "temperature": max(temperature, 1e-6) if do_sample else 1.0,
-            "top_p": top_p if do_sample else 1.0,
-            "pad_token_id": self.tokenizer.pad_token_id,
-            "eos_token_id": self.tokenizer.eos_token_id,
-            "return_dict_in_generate": True,
-        }
-        if with_logprob:
-            kwargs["output_scores"] = True
+        kwargs = self._build_generate_kwargs(
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            with_logprob=with_logprob,
+        )
 
         with torch.no_grad():
             output = model.generate(**inputs, **kwargs)
@@ -488,26 +641,11 @@ class ModelWrapper:
         sequence = output.sequences[0]
         prompt_len = int(inputs["input_ids"].shape[1])
         response_ids = sequence[prompt_len:].tolist()
-        response_text = self.tokenizer.decode(response_ids, skip_special_tokens=True).strip()
-
-        if not with_logprob or not response_ids:
-            return GeneratedSample(response_text=response_text, response_token_ids=response_ids, logprob_old=torch.empty(0))
-
-        scores = output.scores or []
-        steps = min(len(scores), len(response_ids))
-        if steps == 0:
-            return GeneratedSample(response_text=response_text, response_token_ids=response_ids, logprob_old=torch.empty(0))
-
-        token_logprobs: list[torch.Tensor] = []
-        for i in range(steps):
-            logits_step = scores[i][0].float()
-            logprob_step = torch.log_softmax(logits_step, dim=-1)[response_ids[i]]
-            token_logprobs.append(logprob_step.detach().cpu())
-
-        return GeneratedSample(
-            response_text=response_text,
-            response_token_ids=response_ids[:steps],
-            logprob_old=torch.stack(token_logprobs).to(torch.float32),
+        return self._finalize_generated_sample(
+            response_ids,
+            scores=output.scores,
+            sequence_index=0,
+            with_logprob=with_logprob,
         )
 
     def generate_with_logprob(
@@ -567,18 +705,13 @@ class ModelWrapper:
         device = self._infer_model_device(self.actor_model)
         inputs = {k: v.to(device) for k, v in inputs.items()}
         prompt_len = int(inputs["input_ids"].shape[1])
-
-        kwargs = {
-            "max_new_tokens": max_new_tokens,
-            "do_sample": True,
-            "temperature": max(temperature, 1e-6),
-            "top_p": top_p,
-            "num_return_sequences": requested,
-            "pad_token_id": self.tokenizer.pad_token_id,
-            "eos_token_id": self.tokenizer.eos_token_id,
-            "return_dict_in_generate": True,
-            "output_scores": True,
-        }
+        kwargs = self._build_generate_kwargs(
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            with_logprob=True,
+            num_return_sequences=requested,
+        )
 
         with torch.no_grad():
             output = self.actor_model.generate(**inputs, **kwargs)
@@ -591,41 +724,12 @@ class ModelWrapper:
         for seq_idx in range(sample_count):
             sequence = sequences[seq_idx]
             response_ids = sequence[prompt_len:].tolist()
-            response_text = self.tokenizer.decode(response_ids, skip_special_tokens=True).strip()
-
-            if not response_ids:
-                results.append(
-                    GeneratedSample(
-                        response_text=response_text,
-                        response_token_ids=response_ids,
-                        logprob_old=torch.empty(0),
-                    )
-                )
-                continue
-
-            steps = min(len(scores), len(response_ids))
-            if steps == 0:
-                results.append(
-                    GeneratedSample(
-                        response_text=response_text,
-                        response_token_ids=response_ids,
-                        logprob_old=torch.empty(0),
-                    )
-                )
-                continue
-
-            token_logprobs: list[torch.Tensor] = []
-            for step_idx in range(steps):
-                logits_step = scores[step_idx][seq_idx].float()
-                token_id = response_ids[step_idx]
-                logprob_step = torch.log_softmax(logits_step, dim=-1)[token_id]
-                token_logprobs.append(logprob_step.detach().cpu())
-
             results.append(
-                GeneratedSample(
-                    response_text=response_text,
-                    response_token_ids=response_ids[:steps],
-                    logprob_old=torch.stack(token_logprobs).to(torch.float32),
+                self._finalize_generated_sample(
+                    response_ids,
+                    scores=scores,
+                    sequence_index=seq_idx,
+                    with_logprob=True,
                 )
             )
 
@@ -696,17 +800,12 @@ class ModelWrapper:
         device = self._infer_model_device(model)
         inputs = {k: v.to(device) for k, v in inputs.items()}
         prompt_len = int(inputs["input_ids"].shape[1])
-
-        do_sample = temperature > 0.0
-        kwargs = {
-            "max_new_tokens": max_new_tokens,
-            "do_sample": do_sample,
-            "temperature": max(temperature, 1e-6) if do_sample else 1.0,
-            "top_p": top_p if do_sample else 1.0,
-            "pad_token_id": self.tokenizer.pad_token_id,
-            "eos_token_id": self.tokenizer.eos_token_id,
-            "return_dict_in_generate": True,
-        }
+        kwargs = self._build_generate_kwargs(
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            with_logprob=False,
+        )
 
         with torch.no_grad():
             output = model.generate(**inputs, **kwargs)
@@ -714,7 +813,7 @@ class ModelWrapper:
         sequences = output.sequences
         response_ids = sequences[:, prompt_len:]
         response_texts = self.tokenizer.batch_decode(response_ids, skip_special_tokens=True)
-        return [text.strip() for text in response_texts]
+        return [self._truncate_generated_text(text.strip()) for text in response_texts]
 
     def generate_rewrite_batch(
         self,

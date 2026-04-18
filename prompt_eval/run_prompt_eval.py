@@ -32,6 +32,7 @@ from core.reward_func import (
     clean_rewritten_query,
     compute_format_penalty,
     compute_lexical_overlap,
+    stabilize_generated_rewrite as shared_stabilize_generated_rewrite,
 )
 from data.loader import QueryExample, load_topics_qrels, split_queries
 from eval_compare import evaluate_original
@@ -130,78 +131,26 @@ def stabilize_generated_rewrite(
     prompt_spec: PromptSpec,
     reward_cfg,
 ) -> RewriteRecord:
-    """Clean model output and fall back to source query when the rewrite is unsafe."""
+    """Use the shared rewrite guardrail so prompt-eval matches train/eval behavior."""
 
-    source_clean = _normalize_query_text(source_query)
-    raw_clean = (raw_query or "").strip()
-
-    stop_marker = prompt_spec.stop_on
-    if stop_marker and stop_marker != "\n":
-        stop_idx = raw_clean.find(stop_marker)
-        if stop_idx >= 0:
-            raw_clean = raw_clean[:stop_idx].strip()
-
-    cleaned = clean_rewritten_query(raw_clean, source_query=source_clean)
-    cleaned = _normalize_query_text(cleaned)
-
-    fallback_reasons: list[str] = []
-    if not cleaned:
-        fallback_reasons.append("empty_after_clean")
-    elif compute_format_penalty(cleaned, reward_cfg) > 0.0:
-        fallback_reasons.append("format_fail")
-
-    cleaned_terms = _tokenize_terms(cleaned)
-    cleaned_term_set = set(cleaned_terms)
-
-    for numeric_token in _extract_locked_numeric_tokens(source_clean):
-        if numeric_token not in cleaned_term_set:
-            fallback_reasons.append("lost_numeric")
-            break
-
-    for acronym_token in _extract_locked_acronyms(source_query):
-        if acronym_token not in cleaned_term_set:
-            fallback_reasons.append("lost_acronym")
-            break
-
-    source_terms = _tokenize_terms(source_clean)
-    for negation in NEGATION_TOKENS:
-        if negation in source_terms and negation not in cleaned_term_set:
-            fallback_reasons.append("lost_negation")
-            break
-
-    if cleaned_terms and prompt_spec.max_terms > 0:
-        if len(cleaned_terms) > max(prompt_spec.max_terms + 6, prompt_spec.max_terms * 2):
-            fallback_reasons.append("too_verbose")
-
-    if cleaned_terms and prompt_spec.min_terms > 1 and len(source_terms) >= prompt_spec.min_terms:
-        if len(cleaned_terms) < max(1, prompt_spec.min_terms - 1):
-            fallback_reasons.append("too_short")
-
-    if (
-        cleaned
-        and prompt_spec.fallback_mode == "conservative"
-        and _source_is_retrieval_ready(source_clean)
-        and compute_lexical_overlap(source_clean, cleaned) < 0.30
-    ):
-        fallback_reasons.append("diverged_from_lexical_source")
-
-    fallback_reasons = list(_dedupe_keep_order(fallback_reasons))
-    final_query = source_clean if fallback_reasons else cleaned
-    final_query = _normalize_query_text(final_query or source_clean)
-    final_terms = _tokenize_terms(final_query)
-
+    shared = shared_stabilize_generated_rewrite(
+        raw_query,
+        source_query=source_query,
+        guardrail_cfg=prompt_spec,
+        reward_cfg=reward_cfg,
+    )
     return RewriteRecord(
-        raw_query=raw_clean,
-        cleaned_query=cleaned,
-        final_query=final_query,
-        fallback_to_original=bool(fallback_reasons),
-        fallback_reasons=tuple(fallback_reasons),
-        raw_contains_think=("<think" in raw_clean.lower()) or ("thinking process" in raw_clean.lower()),
-        raw_contains_label=bool(POLLUTION_RE.search(raw_clean)),
-        raw_multiline=("\n" in raw_clean) or ("\r" in raw_clean),
-        raw_format_penalty=float(compute_format_penalty(raw_clean, reward_cfg)),
-        final_overlap=float(compute_lexical_overlap(source_clean, final_query)) if source_clean else 0.0,
-        final_term_count=len(final_terms),
+        raw_query=shared.raw_query,
+        cleaned_query=shared.cleaned_query,
+        final_query=shared.final_query,
+        fallback_to_original=shared.fallback_to_original,
+        fallback_reasons=shared.fallback_reasons,
+        raw_contains_think=shared.raw_contains_think,
+        raw_contains_label=shared.raw_contains_label,
+        raw_multiline=shared.raw_multiline,
+        raw_format_penalty=shared.raw_format_penalty,
+        final_overlap=shared.final_overlap,
+        final_term_count=shared.final_term_count,
     )
 
 
