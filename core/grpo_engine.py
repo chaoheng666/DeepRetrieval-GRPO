@@ -27,6 +27,7 @@ class Sample:
     mrr: float
     recall: float
     copy_penalty: float
+    exact_copy_penalty: float
     format_penalty: float
     duplicate_penalty: float
     fallback_to_original: bool
@@ -307,6 +308,7 @@ class GRPOEngine:
             mrr_scores: list[float] = []
             recall_scores: list[float] = []
             copy_penalties: list[float] = []
+            exact_copy_penalties: list[float] = []
             format_penalties: list[float] = []
             duplicate_penalties: list[float] = []
             all_advantages: list[float] = []
@@ -419,6 +421,7 @@ class GRPOEngine:
                             mrr=reward.mrr,
                             recall=reward.recall,
                             copy_penalty=reward.copy_penalty,
+                            exact_copy_penalty=reward.exact_copy_penalty,
                             format_penalty=reward.format_penalty,
                             duplicate_penalty=duplicate_penalty,
                             fallback_to_original=stabilized.fallback_to_original,
@@ -458,6 +461,7 @@ class GRPOEngine:
                         "group_mrr": [sample.mrr for sample in group_samples],
                         "group_recall": [sample.recall for sample in group_samples],
                         "group_copy_penalties": [sample.copy_penalty for sample in group_samples],
+                        "group_exact_copy_penalties": [sample.exact_copy_penalty for sample in group_samples],
                         "group_format_penalties": [sample.format_penalty for sample in group_samples],
                     }
                 )
@@ -481,6 +485,7 @@ class GRPOEngine:
                     mrr_scores.append(sample.mrr)
                     recall_scores.append(sample.recall)
                     copy_penalties.append(sample.copy_penalty)
+                    exact_copy_penalties.append(sample.exact_copy_penalty)
                     format_penalties.append(sample.format_penalty)
                     duplicate_penalties.append(sample.duplicate_penalty)
 
@@ -535,6 +540,7 @@ class GRPOEngine:
                 "mrr_mean": fmean(mrr_scores) if mrr_scores else 0.0,
                 "recall_mean": fmean(recall_scores) if recall_scores else 0.0,
                 "copy_penalty_mean": fmean(copy_penalties) if copy_penalties else 0.0,
+                "exact_copy_penalty_mean": fmean(exact_copy_penalties) if exact_copy_penalties else 0.0,
                 "format_penalty_mean": fmean(format_penalties) if format_penalties else 0.0,
                 "duplicate_penalty_mean": fmean(duplicate_penalties) if duplicate_penalties else 0.0,
                 "nonzero_reward_ratio": nonzero_reward_ratio,

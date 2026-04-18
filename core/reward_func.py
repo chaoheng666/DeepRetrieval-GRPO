@@ -73,6 +73,7 @@ class RewardBreakdown:
     recall: float
     overlap: float
     copy_penalty: float
+    exact_copy_penalty: float
     format_penalty: float
     hit_rank: int | None
     retrieved_relevant_count: int
@@ -157,6 +158,14 @@ def compute_copy_penalty(overlap: float, tau: float) -> float:
     return max(0.0, float(overlap) - float(tau))
 
 
+def compute_exact_copy_penalty(source_query: str, rewritten_query: str, penalty_value: float) -> float:
+    source_clean = _normalize_query_text(source_query)
+    rewritten_clean = _normalize_query_text(rewritten_query)
+    if not source_clean or not rewritten_clean:
+        return 0.0
+    return float(penalty_value) if source_clean.lower() == rewritten_clean.lower() else 0.0
+
+
 def _english_ratio(text: str) -> float:
     letters = [ch for ch in text if ch.isalpha()]
     if not letters:
@@ -198,6 +207,7 @@ def compose_reward(
     mrr: float,
     recall: float,
     copy_penalty: float,
+    exact_copy_penalty: float,
     format_penalty: float,
     cfg: RewardConfig,
 ) -> float:
@@ -206,6 +216,7 @@ def compose_reward(
         + cfg.w_recall * recall
         - cfg.w_copy * copy_penalty
         - cfg.w_format * format_penalty
+        - exact_copy_penalty
     )
 
 
@@ -225,6 +236,12 @@ def _source_is_retrieval_ready(text: str) -> bool:
     if "?" in normalized:
         return False
     return not any(token in QUESTION_TOKENS for token in tokens)
+
+
+def is_retrieval_ready_query(text: str) -> bool:
+    """Return True when the query already looks like a compact BM25-style keyword query."""
+
+    return _source_is_retrieval_ready(text)
 
 
 def _extract_locked_numeric_tokens(text: str) -> set[str]:
@@ -535,11 +552,21 @@ class Rewarder:
         )
         overlap = compute_lexical_overlap(source_query or "", cleaned_query) if source_query else 0.0
         copy_penalty = compute_copy_penalty(overlap, self.cfg.copy_tau)
+        exact_copy_penalty = (
+            compute_exact_copy_penalty(
+                source_query or "",
+                cleaned_query,
+                getattr(self.cfg, "exact_copy_penalty", 0.0),
+            )
+            if source_query
+            else 0.0
+        )
         format_penalty = compute_format_penalty(cleaned_query, self.cfg)
         total = compose_reward(
             mrr=mrr,
             recall=recall,
             copy_penalty=copy_penalty,
+            exact_copy_penalty=exact_copy_penalty,
             format_penalty=format_penalty,
             cfg=self.cfg,
         )
@@ -549,6 +576,7 @@ class Rewarder:
             recall=recall,
             overlap=overlap,
             copy_penalty=copy_penalty,
+            exact_copy_penalty=exact_copy_penalty,
             format_penalty=format_penalty,
             hit_rank=hit_rank,
             retrieved_relevant_count=retrieved_relevant_count,

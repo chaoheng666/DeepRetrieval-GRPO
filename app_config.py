@@ -188,13 +188,15 @@ class RewardConfig:
     # Pyserini batch_search thread count for retrieval-side parallelism.
     search_threads: int = 8
     # 奖励组合权重：
-    # total = w_mrr*mrr + w_recall*recall - w_copy*copy_penalty - w_format*format_penalty
+    # total = w_mrr*mrr + w_recall*recall - w_copy*copy_penalty - w_format*format_penalty - exact_copy_penalty
     w_mrr: float = 1.0
     w_recall: float = 0.3
-    w_copy: float = 0.25
+    w_copy: float = 0.4
     w_format: float = 0.2
     # CopyPenalty = max(0, overlap - copy_tau), overlap 使用 Jaccard(set)。
-    copy_tau: float = 0.6
+    copy_tau: float = 0.3
+    # ExactCopyPenalty：若最终 query 与原 query 完全一致，则直接扣一个固定分。
+    exact_copy_penalty: float = 0.4
     # 组内重复 query 的确定性惩罚，按重复出现次数线性累计。
     group_duplicate_penalty: float = 0.075
     # FormatPenalty 严格阈值（基于 clean_rewritten_query 后文本）。

@@ -9,9 +9,11 @@ from core.reward_func import (
     clean_rewritten_query,
     compose_reward,
     compute_copy_penalty,
+    compute_exact_copy_penalty,
     compute_format_penalty,
     compute_mrr_at_k,
     compute_recall_at_k,
+    is_retrieval_ready_query,
     stabilize_generated_rewrite,
 )
 
@@ -69,6 +71,10 @@ class RewardMathTests(unittest.TestCase):
         self.assertEqual(compute_copy_penalty(0.55, 0.6), 0.0)
         self.assertAlmostEqual(compute_copy_penalty(0.8, 0.6), 0.2)
 
+    def test_exact_copy_penalty_only_on_exact_match(self):
+        self.assertEqual(compute_exact_copy_penalty("windows media player amr files", "windows media player amr files", 0.4), 0.4)
+        self.assertEqual(compute_exact_copy_penalty("windows media player amr files", "windows media player amr file", 0.4), 0.0)
+
     def test_format_penalty_empty(self):
         cfg = RewardConfig()
         self.assertEqual(compute_format_penalty("", cfg), 1.0)
@@ -99,9 +105,20 @@ class RewardMathTests(unittest.TestCase):
 
     def test_total_reward_formula(self):
         cfg = RewardConfig(w_mrr=1.0, w_recall=0.3, w_copy=0.15, w_format=0.2)
-        total = compose_reward(mrr=0.5, recall=0.4, copy_penalty=0.1, format_penalty=1.0, cfg=cfg)
-        expected = 1.0 * 0.5 + 0.3 * 0.4 - 0.15 * 0.1 - 0.2 * 1.0
+        total = compose_reward(
+            mrr=0.5,
+            recall=0.4,
+            copy_penalty=0.1,
+            exact_copy_penalty=0.4,
+            format_penalty=1.0,
+            cfg=cfg,
+        )
+        expected = 1.0 * 0.5 + 0.3 * 0.4 - 0.15 * 0.1 - 0.2 * 1.0 - 0.4
         self.assertAlmostEqual(total, expected)
+
+    def test_retrieval_ready_query_detection(self):
+        self.assertTrue(is_retrieval_ready_query("windows media player amr files"))
+        self.assertFalse(is_retrieval_ready_query("what is windows media player amr files"))
 
 
 class QueryCleaningTests(unittest.TestCase):

@@ -97,7 +97,7 @@ print(f"[env] cuda device count: {torch.cuda.device_count()}")
 PY
 fi
 
-echo "[preset] 4B stable config: batch=8 group=8 max_group=16 max_new_tokens=14 parallel_group_generate=off temperature=1.0"
+echo "[preset] 4B stable config: batch=8 group=8 max_group=16 max_new_tokens=14 parallel_group_generate=off temperature=1.0 top_p=0.98 filtered_ready_queries=on"
 
 echo "[2/4] Training 4B experiment..."
 "$PYTHON_BIN" train.py \
@@ -112,7 +112,7 @@ echo "[2/4] Training 4B experiment..."
   --search-threads 16 \
   --max-new-tokens 14 \
   --temperature 1 \
-  --top-p 0.95 \
+  --top-p 0.98 \
   --reward-gap-threshold 0.05 \
   --gap-sampling-temperature-delta 0.15 \
   --eval-every-steps 100 \
@@ -121,11 +121,11 @@ echo "[2/4] Training 4B experiment..."
   --max-steps 400 \
   --reward-mrr-k 50 \
   --reward-recall-k 50 \
-  --reward-w-mrr 1.5 \
+  --reward-w-mrr 1.0 \
   --reward-w-recall 0.3 \
-  --reward-w-copy 0.15 \
+  --reward-w-copy 0.4 \
   --reward-w-format 0.2 \
-  --reward-copy-tau 0.6 \
+  --reward-copy-tau 0.3 \
   --format-max-tokens 16 \
   --format-min-english-ratio 0.8 \
   --format-max-unreadable-ratio 0.3 \
@@ -156,9 +156,9 @@ echo "[3/4] Running full evaluation for the 4B experiment..."
   --reward-recall-k 50 \
   --reward-w-mrr 1.0 \
   --reward-w-recall 0.3 \
-  --reward-w-copy 0.15 \
+  --reward-w-copy 0.4 \
   --reward-w-format 0.2 \
-  --reward-copy-tau 0.6 \
+  --reward-copy-tau 0.3 \
   --format-max-tokens 16 \
   --format-min-english-ratio 0.8 \
   --format-max-unreadable-ratio 0.3 \

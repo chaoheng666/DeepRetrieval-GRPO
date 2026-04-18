@@ -23,7 +23,7 @@ import torch
 from app_config import AppConfig, ensure_runtime_dirs, get_default_config
 from core.grpo_engine import GRPOEngine
 from core.model_wrapper import ModelWrapper
-from core.reward_func import Rewarder, stabilize_generated_rewrite
+from core.reward_func import Rewarder, is_retrieval_ready_query, stabilize_generated_rewrite
 from data.loader import QueryExample, maybe_limit, load_topics_qrels, split_queries
 
 
@@ -336,6 +336,16 @@ def append_jsonl(path: Path, payload: dict) -> None:
         f.write(json.dumps(payload, ensure_ascii=False) + "\n")
 
 
+def filter_retrieval_ready_train_queries(queries: Sequence[QueryExample]) -> tuple[list[QueryExample], int]:
+    """Skip already-compact BM25-style keyword queries during training."""
+
+    filtered = [query for query in queries if not is_retrieval_ready_query(query.text)]
+    skipped = len(queries) - len(filtered)
+    if filtered:
+        return filtered, skipped
+    return list(queries), 0
+
+
 def evaluate_policy(
     model: ModelWrapper,
     rewarder: Rewarder,
@@ -428,12 +438,14 @@ def main() -> int:
     # 3) 加载数据并切分 train/val。
     queries, qrels = load_topics_qrels(config.data.topic_name)
     train_queries, val_queries = split_queries(queries, train_ratio=config.data.train_ratio, seed=config.data.seed)
-    # train_queries = maybe_limit(train_queries, config.data.max_train_queries)
-    # val_queries = maybe_limit(val_queries, config.data.max_val_queries)
+    train_queries, skipped_retrieval_ready = filter_retrieval_ready_train_queries(train_queries)
     train_queries = maybe_limit(train_queries, config.data.max_train_queries)
     val_queries = maybe_limit(val_queries, config.data.max_val_queries)
 
-    print(f"[data] train_queries={len(train_queries)}, val_queries={len(val_queries)}, qrels_qids={len(qrels)}")
+    print(
+        f"[data] train_queries={len(train_queries)}, val_queries={len(val_queries)}, "
+        f"qrels_qids={len(qrels)}, filtered_retrieval_ready_train_queries={skipped_retrieval_ready}"
+    )
 
     # 4) 初始化奖励器与模型组件。
     rewarder = Rewarder(
@@ -534,6 +546,7 @@ def main() -> int:
                 f"reward={metrics['reward_mean']:.4f} mrr={metrics['mrr_mean']:.4f} "
                 f"recall={metrics.get('recall_mean', 0.0):.4f} "
                 f"copy_penalty={metrics.get('copy_penalty_mean', 0.0):.4f} "
+                f"exact_copy_penalty={metrics.get('exact_copy_penalty_mean', 0.0):.4f} "
                 f"format_penalty={metrics.get('format_penalty_mean', 0.0):.4f} "
                 f"duplicate_penalty_mean={metrics.get('duplicate_penalty_mean', 0.0):.4f} "
                 f"unique_final_query_mean={metrics.get('unique_final_query_mean', 0.0):.4f} "
