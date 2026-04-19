@@ -1,12 +1,14 @@
 import argparse
+from pathlib import Path
 from types import SimpleNamespace
+import tempfile
 import unittest
 from unittest.mock import patch
 
 import torch
 
 from app_config import ModelConfig, PromptConfig, RewardConfig, get_default_config
-from core.grpo_engine import GRPOEngine, compute_group_duplicate_penalties
+from core.grpo_engine import GRPOEngine
 from core.model_wrapper import GeneratedSample, ModelWrapper
 from core.reward_func import RewardBreakdown
 from data.loader import QueryExample
@@ -193,14 +195,13 @@ class EngineTraceTests(unittest.TestCase):
         self.assertEqual(len(summaries[0]["group_final_queries"]), 2)
         self.assertEqual(len(summaries[0]["group_fallback_to_original"]), 2)
         self.assertEqual(len(summaries[0]["group_fallback_reasons"]), 2)
-        self.assertEqual(len(summaries[0]["group_duplicate_penalties"]), 2)
         self.assertEqual(len(summaries[0]["group_rewards"]), 2)
         self.assertEqual(len(summaries[0]["group_recall"]), 2)
         self.assertEqual(len(summaries[0]["group_copy_penalties"]), 2)
         self.assertEqual(len(summaries[0]["group_format_penalties"]), 2)
         self.assertGreaterEqual(metrics["format_penalty_mean"], 0.0)
-        self.assertIn("duplicate_penalty_mean", metrics)
         self.assertIn("unique_final_query_mean", metrics)
+        self.assertIn("collapsed_group_ratio", metrics)
         self.assertIn("all_same_final_query_ratio", metrics)
         self.assertIn("flat_reward_group_ratio", metrics)
         self.assertIn("loss_pg_abs_mean", metrics)
@@ -254,6 +255,20 @@ class _CharTokenizer:
 
 
 class ModelWrapperCleanupTests(unittest.TestCase):
+    def test_resolve_local_model_source_uses_hf_cache_snapshot_from_refs_main(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache_root = Path(tmpdir) / "models--Qwen--Qwen3.5-0.8B"
+            snapshot_name = "abc123snapshot"
+            snapshot_dir = cache_root / "snapshots" / snapshot_name
+            snapshot_dir.mkdir(parents=True)
+            (cache_root / "refs").mkdir(parents=True)
+            (cache_root / "refs" / "main").write_text(snapshot_name, encoding="utf-8")
+
+            model_source, local_only = ModelWrapper._resolve_local_model_source(str(cache_root))
+
+        self.assertTrue(local_only)
+        self.assertEqual(model_source, str(snapshot_dir))
+
     def test_finalize_generated_sample_truncates_template_continuation(self):
         wrapper = ModelWrapper.__new__(ModelWrapper)
         wrapper.prompt_cfg = PromptConfig(
@@ -333,7 +348,7 @@ class _ResamplingToyModelWrapper(_ToyModelWrapper):
 
 class _ConstantRewarder:
     def __init__(self):
-        self.cfg = RewardConfig(group_duplicate_penalty=0.05)
+        self.cfg = RewardConfig()
 
     def score(self, qid: str, rewritten_query: str, source_query: str | None = None) -> RewardBreakdown:
         return RewardBreakdown(
@@ -351,12 +366,8 @@ class _ConstantRewarder:
         )
 
 
-class DuplicatePenaltyTests(unittest.TestCase):
-    def test_compute_group_duplicate_penalties_is_ordered(self):
-        penalties = compute_group_duplicate_penalties(["same", "same", "other", "same"], 0.05)
-        self.assertEqual(penalties, [0.0, 0.05, 0.0, 0.1])
-
-    def test_duplicate_penalty_breaks_flat_rewards_and_is_logged(self):
+class CollapsedGroupTests(unittest.TestCase):
+    def test_collapsed_group_skips_update_without_artificial_reward_offsets(self):
         wrapper = _DuplicateToyModelWrapper()
         rewarder = _ConstantRewarder()
         optimizer = torch.optim.SGD(wrapper.trainable_parameters(), lr=1e-2)
@@ -379,15 +390,18 @@ class DuplicatePenaltyTests(unittest.TestCase):
         summary = metrics["group_query_summaries"][0]
 
         self.assertEqual(summary["group_final_queries"], ["same query", "same query", "same query"])
-        self.assertEqual(summary["group_duplicate_penalties"], [0.0, 0.05, 0.1])
-        self.assertEqual(summary["group_rewards"], [1.0, 0.95, 0.9])
-        self.assertGreater(metrics["duplicate_penalty_mean"], 0.0)
+        self.assertTrue(summary["collapsed_group"])
+        self.assertEqual(summary["group_rewards"], [1.0, 1.0, 1.0])
+        self.assertEqual(metrics["collapsed_group_ratio"], 1.0)
         self.assertEqual(metrics["unique_final_query_mean"], 1.0)
         self.assertEqual(metrics["all_same_final_query_ratio"], 1.0)
-        self.assertEqual(metrics["flat_reward_group_ratio"], 0.0)
-        self.assertGreater(metrics["adv_std"], 0.0)
-        self.assertGreater(metrics["loss_pg_abs_mean"], 0.0)
-        self.assertNotEqual(metrics["loss_pg"], 0.0)
+        self.assertEqual(metrics["flat_reward_group_ratio"], 1.0)
+        self.assertEqual(metrics["adv_std"], 0.0)
+        self.assertEqual(metrics["loss_pg_abs_mean"], 0.0)
+        self.assertEqual(metrics["loss_pg"], 0.0)
+        self.assertEqual(metrics["loss_kl"], 0.0)
+        self.assertEqual(metrics["updated"], 0.0)
+        self.assertEqual(metrics["valid_samples"], 0.0)
 
     def test_regeneration_breaks_group_collapse_with_novel_queries(self):
         wrapper = _ResamplingToyModelWrapper()
@@ -414,6 +428,7 @@ class DuplicatePenaltyTests(unittest.TestCase):
         summary = metrics["group_query_summaries"][0]
 
         self.assertGreaterEqual(metrics["unique_final_query_mean"], 2.0)
+        self.assertEqual(metrics["collapsed_group_ratio"], 0.0)
         self.assertEqual(metrics["all_same_final_query_ratio"], 0.0)
         self.assertGreaterEqual(len(set(summary["group_final_queries"])), 2)
         self.assertIn("novel query one", summary["group_final_queries"])
@@ -467,8 +482,8 @@ class _ParallelAdaptiveSamplingToyModelWrapper(_AdaptiveSamplingToyModelWrapper)
 
 
 class _MappedRewarder:
-    def __init__(self, scores: dict[str, float], *, duplicate_penalty: float = 0.0):
-        self.cfg = RewardConfig(group_duplicate_penalty=duplicate_penalty)
+    def __init__(self, scores: dict[str, float]):
+        self.cfg = RewardConfig()
         self.scores = dict(scores)
         self.score_calls: list[str] = []
 
@@ -604,7 +619,7 @@ class AdaptiveGapSamplingTests(unittest.TestCase):
 
     def test_gap_sampling_uses_raw_reward_gap_not_duplicate_penalized_reward(self):
         wrapper = _AdaptiveSamplingToyModelWrapper(["same query", "same query", "same query"])
-        rewarder = _MappedRewarder({"same query": 1.0}, duplicate_penalty=0.05)
+        rewarder = _MappedRewarder({"same query": 1.0})
         optimizer = torch.optim.SGD(wrapper.trainable_parameters(), lr=1e-2)
         engine = GRPOEngine(
             model_wrapper=wrapper,
@@ -626,7 +641,8 @@ class AdaptiveGapSamplingTests(unittest.TestCase):
         metrics = engine.train_step([QueryExample(qid="q1", text="input query")], collect_best_queries=False)
         summary = metrics["group_query_summaries"][0]
 
-        self.assertEqual(summary["group_rewards"], [1.0, 0.95, 0.9])
+        self.assertTrue(summary["collapsed_group"])
+        self.assertEqual(summary["group_rewards"], [1.0, 1.0, 1.0])
         self.assertAlmostEqual(summary["reward_gap_raw"], 0.0)
         self.assertFalse(summary["reward_gap_met"])
         self.assertEqual(summary["reward_gap_stop_reason"], "max_group_size_reached")

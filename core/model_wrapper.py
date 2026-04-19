@@ -47,6 +47,36 @@ def _str_to_dtype(dtype_name: str) -> torch.dtype:
 
 
 class ModelWrapper:
+    @staticmethod
+    def _resolve_local_model_source(model_name: str) -> tuple[str, bool]:
+        """Resolve local model directories, including Hugging Face cache roots."""
+
+        model_dir = Path(model_name).expanduser()
+        if not model_dir.is_dir():
+            return model_name, False
+        return str(ModelWrapper._resolve_hf_cache_snapshot(model_dir)), True
+
+    @staticmethod
+    def _resolve_hf_cache_snapshot(model_dir: Path) -> Path:
+        """Map a Hugging Face cache root to its active snapshot when possible."""
+
+        snapshots_dir = model_dir / "snapshots"
+        if not snapshots_dir.is_dir():
+            return model_dir
+
+        ref_main = model_dir / "refs" / "main"
+        if ref_main.is_file():
+            snapshot_name = ref_main.read_text(encoding="utf-8").strip()
+            if snapshot_name:
+                candidate = snapshots_dir / snapshot_name
+                if candidate.is_dir():
+                    return candidate
+
+        snapshot_dirs = sorted(path for path in snapshots_dir.iterdir() if path.is_dir())
+        if len(snapshot_dirs) == 1:
+            return snapshot_dirs[0]
+        return model_dir
+
     def __init__(
         self,
         model_cfg: ModelConfig,
@@ -76,11 +106,13 @@ class ModelWrapper:
         self.ref_dtype_used: torch.dtype | None = None
         self.actor_device_map = self._resolve_runtime_device_map(model_cfg.actor_device_map, model_role="actor")
         self.ref_device_map = self._resolve_runtime_device_map(model_cfg.ref_device_map, model_role="ref")
-        model_dir = Path(model_cfg.model_name).expanduser()
-        self.local_model_only = model_dir.is_dir()
-        self.model_source = str(model_dir) if self.local_model_only else model_cfg.model_name
+        original_model_source = str(Path(model_cfg.model_name).expanduser())
+        self.model_source, self.local_model_only = self._resolve_local_model_source(model_cfg.model_name)
         if self.local_model_only:
-            print(f"[model] using local model directory: {self.model_source}")
+            if self.model_source != original_model_source:
+                print(f"[model] resolved local Hugging Face cache to snapshot: {self.model_source}")
+            else:
+                print(f"[model] using local model directory: {self.model_source}")
 
         if model_cfg.load_in_4bit and not torch.cuda.is_available():
             print("[warn] CUDA is unavailable; disabling 4-bit quantization and loading full precision on CPU.")

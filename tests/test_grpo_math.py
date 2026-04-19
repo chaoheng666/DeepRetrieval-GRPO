@@ -227,6 +227,32 @@ class QueryCleaningTests(unittest.TestCase):
         self.assertIn("diverged_from_lexical_source", record.fallback_reasons)
         self.assertEqual(record.final_query, "guayana venezuela")
 
+    def test_stabilize_generated_rewrite_allows_one_term_entity_for_short_source(self):
+        cfg = RewardConfig()
+        prompt_cfg = PromptConfig(min_terms=3, max_terms=11, fallback_mode="balanced")
+        record = stabilize_generated_rewrite(
+            "iboss",
+            source_query="what is iboss",
+            guardrail_cfg=prompt_cfg,
+            reward_cfg=cfg,
+        )
+        self.assertFalse(record.fallback_to_original)
+        self.assertNotIn("too_short", record.fallback_reasons)
+        self.assertEqual(record.final_query, "iboss")
+
+    def test_stabilize_generated_rewrite_allows_two_terms_for_four_term_source(self):
+        cfg = RewardConfig()
+        prompt_cfg = PromptConfig(min_terms=3, max_terms=11, fallback_mode="balanced")
+        record = stabilize_generated_rewrite(
+            "solaris os",
+            source_query="what is solaris os",
+            guardrail_cfg=prompt_cfg,
+            reward_cfg=cfg,
+        )
+        self.assertFalse(record.fallback_to_original)
+        self.assertNotIn("too_short", record.fallback_reasons)
+        self.assertEqual(record.final_query, "solaris os")
+
 
 class RewarderConsistencyTests(unittest.TestCase):
     def test_score_cleans_query_before_search(self):

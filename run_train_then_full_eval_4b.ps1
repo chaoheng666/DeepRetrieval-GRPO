@@ -23,29 +23,38 @@ try {
   }
 
   $pythonBin = if ($env:PYTHON_BIN) { $env:PYTHON_BIN } else { "python" }
-  $artifactRoot = if ($env:ARTIFACT_ROOT) { $env:ARTIFACT_ROOT } else { "train_and_eval_data_model" }
+  $artifactRoot = if ($env:ARTIFACT_ROOT) { $env:ARTIFACT_ROOT } else { "train_and_eval_data_model_0419" }
   $expName = if ($env:EXP_NAME) { $env:EXP_NAME } else { "4b" }
   $modelName = if ($env:MODEL_NAME) { $env:MODEL_NAME } else { "Qwen/Qwen3-4B-Instruct-2507" }
   $autoGitCommit = if ($env:AUTO_GIT_COMMIT) { $env:AUTO_GIT_COMMIT } else { "1" }
   $autoGitPush = if ($env:AUTO_GIT_PUSH) { $env:AUTO_GIT_PUSH } else { "1" }
   $trainBatchSize = if ($env:TRAIN_BATCH_SIZE) { $env:TRAIN_BATCH_SIZE } else { "8" }
   $trainGroupSize = if ($env:TRAIN_GROUP_SIZE) { $env:TRAIN_GROUP_SIZE } else { "8" }
-  $trainKlBeta = if ($env:TRAIN_KL_BETA) { $env:TRAIN_KL_BETA } else { "0.005" }
-  $trainMaxNewTokens = if ($env:TRAIN_MAX_NEW_TOKENS) { $env:TRAIN_MAX_NEW_TOKENS } else { "16" }
-  $trainEvalEverySteps = if ($env:TRAIN_EVAL_EVERY_STEPS) { $env:TRAIN_EVAL_EVERY_STEPS } else { "100" }
-  $trainMaxSteps = if ($env:TRAIN_MAX_STEPS) { $env:TRAIN_MAX_STEPS } else { "800" }
-  $trainMaxValQueries = if ($env:TRAIN_MAX_VAL_QUERIES) { $env:TRAIN_MAX_VAL_QUERIES } else { "200" }
+  $trainMaxGroupSize = if ($env:TRAIN_MAX_GROUP_SIZE) { $env:TRAIN_MAX_GROUP_SIZE } else { "12" }
+  $trainKlBeta = if ($env:TRAIN_KL_BETA) { $env:TRAIN_KL_BETA } else { "0.01" }
+  $trainMaxNewTokens = if ($env:TRAIN_MAX_NEW_TOKENS) { $env:TRAIN_MAX_NEW_TOKENS } else { "12" }
+  $trainTemperature = if ($env:TRAIN_TEMPERATURE) { $env:TRAIN_TEMPERATURE } else { "0.6" }
+  $trainTopP = if ($env:TRAIN_TOP_P) { $env:TRAIN_TOP_P } else { "0.9" }
+  $trainGroupTemperatureStride = if ($env:TRAIN_GROUP_TEMPERATURE_STRIDE) { $env:TRAIN_GROUP_TEMPERATURE_STRIDE } else { "0.05" }
+  $trainGroupTopPStride = if ($env:TRAIN_GROUP_TOP_P_STRIDE) { $env:TRAIN_GROUP_TOP_P_STRIDE } else { "0.01" }
+  $trainMinUniqueFinalQueries = if ($env:TRAIN_MIN_UNIQUE_FINAL_QUERIES) { $env:TRAIN_MIN_UNIQUE_FINAL_QUERIES } else { "3" }
+  $trainMaxRegenRounds = if ($env:TRAIN_MAX_REGEN_ROUNDS) { $env:TRAIN_MAX_REGEN_ROUNDS } else { "1" }
+  $trainRewardGapThreshold = if ($env:TRAIN_REWARD_GAP_THRESHOLD) { $env:TRAIN_REWARD_GAP_THRESHOLD } else { "0.06" }
+  $trainGapSamplingTemperatureDelta = if ($env:TRAIN_GAP_SAMPLING_TEMPERATURE_DELTA) { $env:TRAIN_GAP_SAMPLING_TEMPERATURE_DELTA } else { "0.10" }
+  $trainEvalEverySteps = if ($env:TRAIN_EVAL_EVERY_STEPS) { $env:TRAIN_EVAL_EVERY_STEPS } else { "20" }
+  $trainMaxSteps = if ($env:TRAIN_MAX_STEPS) { $env:TRAIN_MAX_STEPS } else { "80" }
+  $trainMaxValQueries = if ($env:TRAIN_MAX_VAL_QUERIES) { $env:TRAIN_MAX_VAL_QUERIES } else { "4000" }
 
   $rewardMrrK = if ($env:REWARD_MRR_K) { $env:REWARD_MRR_K } else { "50" }
   $rewardRecallK = if ($env:REWARD_RECALL_K) { $env:REWARD_RECALL_K } else { "50" }
   $rewardWMrr = if ($env:REWARD_W_MRR) { $env:REWARD_W_MRR } else { "1.0" }
-  $rewardWRecall = if ($env:REWARD_W_RECALL) { $env:REWARD_W_RECALL } else { "0.3" }
+  $rewardWRecall = if ($env:REWARD_W_RECALL) { $env:REWARD_W_RECALL } else { "0.1" }
   $rewardWCopy = if ($env:REWARD_W_COPY) { $env:REWARD_W_COPY } else { "0.15" }
   $rewardWFormat = if ($env:REWARD_W_FORMAT) { $env:REWARD_W_FORMAT } else { "0.2" }
-  $rewardCopyTau = if ($env:REWARD_COPY_TAU) { $env:REWARD_COPY_TAU } else { "0.6" }
-  $formatMaxTokens = if ($env:FORMAT_MAX_TOKENS) { $env:FORMAT_MAX_TOKENS } else { "16" }
+  $rewardCopyTau = if ($env:REWARD_COPY_TAU) { $env:REWARD_COPY_TAU } else { "0.5" }
+  $formatMaxTokens = if ($env:FORMAT_MAX_TOKENS) { $env:FORMAT_MAX_TOKENS } else { "12" }
   $formatMinEnglishRatio = if ($env:FORMAT_MIN_ENGLISH_RATIO) { $env:FORMAT_MIN_ENGLISH_RATIO } else { "0.8" }
-  $formatMaxUnreadableRatio = if ($env:FORMAT_MAX_UNREADABLE_RATIO) { $env:FORMAT_MAX_UNREADABLE_RATIO } else { "0.3" }
+  $formatMaxUnreadableRatio = if ($env:FORMAT_MAX_UNREADABLE_RATIO) { $env:FORMAT_MAX_UNREADABLE_RATIO } else { "0.25" }
 
   $trainDir = Join-Path $artifactRoot "artifacts_${expName}_train"
   $evalDir = Join-Path $artifactRoot "artifacts_${expName}_eval"
@@ -84,9 +93,18 @@ try {
     --num-epochs 1 `
     --batch-size $trainBatchSize `
     --group-size $trainGroupSize `
+    --max-group-size $trainMaxGroupSize `
     --kl-beta $trainKlBeta `
     --search-threads 8 `
     --max-new-tokens $trainMaxNewTokens `
+    --temperature $trainTemperature `
+    --top-p $trainTopP `
+    --group-temperature-stride $trainGroupTemperatureStride `
+    --group-top-p-stride $trainGroupTopPStride `
+    --min-unique-final-queries $trainMinUniqueFinalQueries `
+    --max-regen-rounds $trainMaxRegenRounds `
+    --reward-gap-threshold $trainRewardGapThreshold `
+    --gap-sampling-temperature-delta $trainGapSamplingTemperatureDelta `
     --eval-every-steps $trainEvalEverySteps `
     --max-val-queries $trainMaxValQueries `
     --max-steps $trainMaxSteps `

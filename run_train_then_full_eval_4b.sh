@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 PYTHON_BIN="${PYTHON_BIN:-/root/miniconda3/bin/python}"
-ARTIFACT_ROOT="${ARTIFACT_ROOT:-train_and_eval_data_model}"
+ARTIFACT_ROOT="${ARTIFACT_ROOT:-train_and_eval_data_model_0419}"
 EXP_NAME="${EXP_NAME:-4b_conservative_mrr}"
 VENV_DIR="${VENV_DIR:-.venv}"
 LOG_DIR="${LOG_DIR:-log}"
@@ -97,7 +97,7 @@ print(f"[env] cuda device count: {torch.cuda.device_count()}")
 PY
 fi
 
-echo "[preset] 4B conservative config: batch=8 group=8 max_group=8 max_new_tokens=12 temperature=0.6 top_p=0.9 filtered_ready_queries=on diversity_resampling=off reward_w_recall=0.1 reward_w_copy=0.15 copy_tau=0.5"
+echo "[preset] 4B conservative config: batch=8 group=8 max_group=12 max_new_tokens=12 temperature=0.6 top_p=0.9 group_temperature_stride=0.05 group_top_p_stride=0.01 min_unique_final_queries=3 max_regen_rounds=1 reward_gap_threshold=0.06 gap_sampling_temperature_delta=0.10 filtered_ready_queries=on diversity_resampling=on reward_w_recall=0.1 reward_w_copy=0.15 copy_tau=0.5"
 
 echo "[2/4] Training 4B experiment..."
 "$PYTHON_BIN" train.py \
@@ -105,7 +105,7 @@ echo "[2/4] Training 4B experiment..."
   --num-epochs 1 \
   --batch-size 8 \
   --group-size 8 \
-  --max-group-size 8 \
+  --max-group-size 12 \
   --learning-rate 1.5e-5 \
   --clip-range 0.2 \
   --kl-beta 0.01 \
@@ -113,14 +113,14 @@ echo "[2/4] Training 4B experiment..."
   --max-new-tokens 12 \
   --temperature 0.6 \
   --top-p 0.9 \
-  --group-temperature-stride 0 \
-  --group-top-p-stride 0 \
-  --min-unique-final-queries 2 \
-  --max-regen-rounds 0 \
-  --reward-gap-threshold 0 \
-  --gap-sampling-temperature-delta 0 \
-  --eval-every-steps 20 \
-  --max-steps 80 \
+  --group-temperature-stride 0.05 \
+  --group-top-p-stride 0.01 \
+  --min-unique-final-queries 3 \
+  --max-regen-rounds 1 \
+  --reward-gap-threshold 0.06 \
+  --gap-sampling-temperature-delta 0.10 \
+  --eval-every-steps 50 \
+  --max-steps 500 \
   --reward-mrr-k 50 \
   --reward-recall-k 50 \
   --reward-w-mrr 1.0 \

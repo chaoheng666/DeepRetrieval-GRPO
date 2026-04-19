@@ -263,6 +263,20 @@ def _dedupe_keep_order(items: Sequence[str]) -> tuple[str, ...]:
     return tuple(ordered)
 
 
+def _min_required_rewrite_terms(source_term_count: int, guardrail_min_terms: int) -> int:
+    """Allow compact high-confidence rewrites for short source queries."""
+
+    if source_term_count <= 0:
+        return 1
+    if source_term_count <= 3:
+        return 1
+    if source_term_count == 4:
+        return 2
+    if guardrail_min_terms <= 1 or source_term_count < guardrail_min_terms:
+        return 1
+    return max(1, guardrail_min_terms - 1)
+
+
 def stabilize_generated_rewrite(
     raw_query: str,
     *,
@@ -317,8 +331,9 @@ def stabilize_generated_rewrite(
         if len(cleaned_terms) > max(max_terms + 6, max_terms * 2):
             fallback_reasons.append("too_verbose")
 
-    if cleaned_terms and min_terms > 1 and len(source_terms) >= min_terms:
-        if len(cleaned_terms) < max(1, min_terms - 1):
+    if cleaned_terms:
+        min_required_terms = _min_required_rewrite_terms(len(source_terms), min_terms)
+        if len(cleaned_terms) < min_required_terms:
             fallback_reasons.append("too_short")
 
     if (

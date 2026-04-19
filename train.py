@@ -61,6 +61,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-new-tokens", type=int, default=None)
     parser.add_argument("--temperature", type=float, default=None)
     parser.add_argument("--top-p", type=float, default=None)
+    parser.add_argument("--eval-max-new-tokens", type=int, default=None)
+    parser.add_argument("--eval-temperature", type=float, default=None)
+    parser.add_argument("--eval-top-p", type=float, default=None)
     parser.add_argument("--group-temperature-stride", type=float, default=None)
     parser.add_argument("--group-top-p-stride", type=float, default=None)
     parser.add_argument("--min-unique-final-queries", type=int, default=None)
@@ -404,6 +407,7 @@ def evaluate_policy(
     mrr_scores: list[float] = []
     recall_scores: list[float] = []
     copy_penalties: list[float] = []
+    exact_copy_penalties: list[float] = []
     format_penalties: list[float] = []
 
     for query in eval_queries:
@@ -425,6 +429,7 @@ def evaluate_policy(
         mrr_scores.append(score.mrr)
         recall_scores.append(score.recall)
         copy_penalties.append(score.copy_penalty)
+        exact_copy_penalties.append(score.exact_copy_penalty)
         format_penalties.append(score.format_penalty)
 
     return {
@@ -432,8 +437,29 @@ def evaluate_policy(
         "mrr_mean": fmean(mrr_scores) if mrr_scores else 0.0,
         "recall_mean": fmean(recall_scores) if recall_scores else 0.0,
         "copy_penalty_mean": fmean(copy_penalties) if copy_penalties else 0.0,
+        "exact_copy_penalty_mean": fmean(exact_copy_penalties) if exact_copy_penalties else 0.0,
         "format_penalty_mean": fmean(format_penalties) if format_penalties else 0.0,
         "count": float(len(eval_queries)),
+    }
+
+
+def resolve_eval_decode_settings(config: AppConfig, args: argparse.Namespace) -> dict[str, float | int]:
+    """Resolve eval decode settings, defaulting to the active training decode config."""
+
+    return {
+        "max_new_tokens": int(
+            getattr(args, "eval_max_new_tokens", None)
+            if getattr(args, "eval_max_new_tokens", None) is not None
+            else config.train.max_new_tokens
+        ),
+        "temperature": float(
+            getattr(args, "eval_temperature", None)
+            if getattr(args, "eval_temperature", None) is not None
+            else config.train.temperature
+        ),
+        "top_p": float(
+            getattr(args, "eval_top_p", None) if getattr(args, "eval_top_p", None) is not None else config.train.top_p
+        ),
     }
 
 
@@ -474,6 +500,16 @@ def main() -> int:
         print("[mode] low-mem preset enabled (intended for smoke tests on limited VRAM).")
         if not torch.cuda.is_available():
             print("[mode] CUDA is unavailable -> switched to CPU-compatible loading (much slower).")
+
+    eval_decode = resolve_eval_decode_settings(config, args)
+    print(
+        f"[decode] train max_new_tokens={config.train.max_new_tokens} "
+        f"temperature={config.train.temperature} top_p={config.train.top_p}"
+    )
+    print(
+        f"[decode] eval  max_new_tokens={eval_decode['max_new_tokens']} "
+        f"temperature={eval_decode['temperature']} top_p={eval_decode['top_p']}"
+    )
 
     # 3) 加载数据并切分 train/val。
     queries, qrels = load_topics_qrels(config.data.topic_name)
@@ -590,7 +626,6 @@ def main() -> int:
                 f"copy_penalty={metrics.get('copy_penalty_mean', 0.0):.4f} "
                 f"exact_copy_penalty={metrics.get('exact_copy_penalty_mean', 0.0):.4f} "
                 f"format_penalty={metrics.get('format_penalty_mean', 0.0):.4f} "
-                f"duplicate_penalty_mean={metrics.get('duplicate_penalty_mean', 0.0):.4f} "
                 f"unique_final_query_mean={metrics.get('unique_final_query_mean', 0.0):.4f} "
                 f"generated_sample_count_mean={metrics.get('generated_sample_count_mean', 0.0):.4f} "
                 f"generated_sample_count_max={metrics.get('generated_sample_count_max', 0.0):.0f} "
@@ -598,6 +633,7 @@ def main() -> int:
                 f"reward_gap_raw_mean={metrics.get('reward_gap_raw_mean', 0.0):.4f} "
                 f"reward_gap_met_ratio={metrics.get('reward_gap_met_ratio', 0.0):.4f} "
                 f"max_group_size_hit_ratio={metrics.get('max_group_size_hit_ratio', 0.0):.4f} "
+                f"collapsed_group_ratio={metrics.get('collapsed_group_ratio', 0.0):.4f} "
                 f"all_same_final_query_ratio={metrics.get('all_same_final_query_ratio', 0.0):.4f} "
                 f"flat_reward_group_ratio={metrics.get('flat_reward_group_ratio', 0.0):.4f}"
             )
@@ -617,9 +653,9 @@ def main() -> int:
                     val_queries,
                     guardrail_cfg=config.prompt,
                     max_queries=config.data.max_val_queries,
-                    max_new_tokens=config.prompt.max_new_tokens,
-                    temperature=config.prompt.temperature,
-                    top_p=config.prompt.top_p,
+                    max_new_tokens=int(eval_decode["max_new_tokens"]),
+                    temperature=float(eval_decode["temperature"]),
+                    top_p=float(eval_decode["top_p"]),
                 )
                 eval_metrics.update(
                     {
@@ -632,7 +668,10 @@ def main() -> int:
                 append_jsonl(log_path, eval_metrics)
                 print(
                     f"[eval] step={global_step} val_mrr={eval_metrics['mrr_mean']:.4f} "
-                    f"val_reward={eval_metrics['reward_mean']:.4f}"
+                    f"val_reward={eval_metrics['reward_mean']:.4f} "
+                    f"val_copy_penalty={eval_metrics.get('copy_penalty_mean', 0.0):.4f} "
+                    f"val_exact_copy_penalty={eval_metrics.get('exact_copy_penalty_mean', 0.0):.4f} "
+                    f"val_format_penalty={eval_metrics.get('format_penalty_mean', 0.0):.4f}"
                 )
 
                 model.save_adapter(str(latest_path))
@@ -655,9 +694,9 @@ def main() -> int:
         val_queries,
         guardrail_cfg=config.prompt,
         max_queries=config.data.max_val_queries,
-        max_new_tokens=config.prompt.max_new_tokens,
-        temperature=config.prompt.temperature,
-        top_p=config.prompt.top_p,
+        max_new_tokens=int(eval_decode["max_new_tokens"]),
+        temperature=float(eval_decode["temperature"]),
+        top_p=float(eval_decode["top_p"]),
     )
     print(
         f"[done] final_val_{mrr_label}={final_eval['mrr_mean']:.4f} "

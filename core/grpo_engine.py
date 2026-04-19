@@ -29,7 +29,6 @@ class Sample:
     copy_penalty: float
     exact_copy_penalty: float
     format_penalty: float
-    duplicate_penalty: float
     fallback_to_original: bool
     fallback_reasons: tuple[str, ...]
     advantage: float = 0.0
@@ -62,18 +61,6 @@ def ppo_clipped_objective(
     unclipped = ratios * advantage_tensor
     clipped = torch.clamp(ratios, 1.0 - clip_range, 1.0 + clip_range) * advantage_tensor
     return torch.min(unclipped, clipped)
-
-
-def compute_group_duplicate_penalties(queries: Sequence[str], penalty_step: float) -> list[float]:
-    """Apply a small deterministic penalty to repeated final queries within one GRPO group."""
-
-    occurrence_by_query: dict[str, int] = {}
-    penalties: list[float] = []
-    for query in queries:
-        occurrence = occurrence_by_query.get(query, 0)
-        penalties.append(float(occurrence) * float(penalty_step))
-        occurrence_by_query[query] = occurrence + 1
-    return penalties
 
 
 class GRPOEngine:
@@ -346,12 +333,12 @@ class GRPOEngine:
             copy_penalties: list[float] = []
             exact_copy_penalties: list[float] = []
             format_penalties: list[float] = []
-            duplicate_penalties: list[float] = []
             all_advantages: list[float] = []
             unique_final_query_counts: list[float] = []
             generated_sample_counts: list[float] = []
             reward_gap_raw_values: list[float] = []
             flat_reward_group_count = 0
+            collapsed_group_count = 0
             all_same_final_query_group_count = 0
             reward_gap_met_count = 0
             max_group_size_hit_count = 0
@@ -432,17 +419,10 @@ class GRPOEngine:
                 if reward_gap_stop_reason == "max_group_size_reached":
                     max_group_size_hit_count += 1
 
-                duplicate_penalty_group = compute_group_duplicate_penalties(
-                    final_query_group,
-                    getattr(self.rewarder.cfg, "group_duplicate_penalty", 0.0),
-                )
                 unique_final_queries = list(dict.fromkeys(final_query_group))
+                group_collapsed = len(unique_final_queries) == 1
 
-                for generated, stabilized, duplicate_penalty in zip(
-                    generated_group,
-                    stabilized_group,
-                    duplicate_penalty_group,
-                ):
+                for generated, stabilized in zip(generated_group, stabilized_group):
                     reward = reward_by_query[stabilized.final_query]
                     group_samples.append(
                         Sample(
@@ -453,20 +433,20 @@ class GRPOEngine:
                             final_query=stabilized.final_query,
                             response_token_ids=generated.response_token_ids,
                             logprob_old=generated.logprob_old,
-                            reward=reward.total - duplicate_penalty,
+                            reward=reward.total,
                             mrr=reward.mrr,
                             recall=reward.recall,
                             copy_penalty=reward.copy_penalty,
                             exact_copy_penalty=reward.exact_copy_penalty,
                             format_penalty=reward.format_penalty,
-                            duplicate_penalty=duplicate_penalty,
                             fallback_to_original=stabilized.fallback_to_original,
                             fallback_reasons=stabilized.fallback_reasons,
                         )
                     )
                 sampled += len(group_samples)
                 unique_final_query_counts.append(float(len(unique_final_queries)))
-                if len(unique_final_queries) == 1:
+                if group_collapsed:
+                    collapsed_group_count += 1
                     all_same_final_query_group_count += 1
                 if len({sample.reward for sample in group_samples}) == 1:
                     flat_reward_group_count += 1
@@ -482,6 +462,7 @@ class GRPOEngine:
                         "reward_gap_threshold": float(self.reward_gap_threshold),
                         "reward_gap_met": reward_gap_met,
                         "reward_gap_stop_reason": reward_gap_stop_reason,
+                        "collapsed_group": group_collapsed,
                         "gap_sampling_rounds": len(gap_sampling_temperatures),
                         "gap_sampling_temperatures": gap_sampling_temperatures,
                         "group_raw_responses": [
@@ -492,7 +473,6 @@ class GRPOEngine:
                         "group_final_queries": [sample.final_query for sample in group_samples],
                         "group_fallback_to_original": [sample.fallback_to_original for sample in group_samples],
                         "group_fallback_reasons": [list(sample.fallback_reasons) for sample in group_samples],
-                        "group_duplicate_penalties": [sample.duplicate_penalty for sample in group_samples],
                         "group_rewards": [sample.reward for sample in group_samples],
                         "group_mrr": [sample.mrr for sample in group_samples],
                         "group_recall": [sample.recall for sample in group_samples],
@@ -523,7 +503,9 @@ class GRPOEngine:
                     copy_penalties.append(sample.copy_penalty)
                     exact_copy_penalties.append(sample.exact_copy_penalty)
                     format_penalties.append(sample.format_penalty)
-                    duplicate_penalties.append(sample.duplicate_penalty)
+
+                if group_collapsed:
+                    continue
 
                 for sample in group_samples:
                     if not sample.response_token_ids or sample.logprob_old.numel() == 0:
@@ -578,7 +560,6 @@ class GRPOEngine:
                 "copy_penalty_mean": fmean(copy_penalties) if copy_penalties else 0.0,
                 "exact_copy_penalty_mean": fmean(exact_copy_penalties) if exact_copy_penalties else 0.0,
                 "format_penalty_mean": fmean(format_penalties) if format_penalties else 0.0,
-                "duplicate_penalty_mean": fmean(duplicate_penalties) if duplicate_penalties else 0.0,
                 "nonzero_reward_ratio": nonzero_reward_ratio,
                 "adv_mean": fmean(all_advantages) if all_advantages else 0.0,
                 "adv_std": float(torch.tensor(all_advantages).std(unbiased=False)) if all_advantages else 0.0,
@@ -589,6 +570,7 @@ class GRPOEngine:
                 "reward_gap_raw_mean": fmean(reward_gap_raw_values) if reward_gap_raw_values else 0.0,
                 "reward_gap_met_ratio": (reward_gap_met_count / num_groups) if num_groups else 0.0,
                 "max_group_size_hit_ratio": (max_group_size_hit_count / num_groups) if num_groups else 0.0,
+                "collapsed_group_ratio": (collapsed_group_count / num_groups) if num_groups else 0.0,
                 "all_same_final_query_ratio": (all_same_final_query_group_count / num_groups) if num_groups else 0.0,
                 "flat_reward_group_ratio": (flat_reward_group_count / num_groups) if num_groups else 0.0,
                 "sampled": float(sampled),

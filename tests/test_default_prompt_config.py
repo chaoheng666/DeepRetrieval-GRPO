@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 from app_config import RewardConfig, get_default_config
 from data.loader import QueryExample
-from train import evaluate_policy
+from train import evaluate_policy, resolve_eval_decode_settings
 
 
 class _CaptureModel:
@@ -42,6 +42,7 @@ class _DummyRewarder:
             mrr=0.25,
             recall=0.1,
             copy_penalty=0.0,
+            exact_copy_penalty=0.0,
             format_penalty=0.0,
         )
 
@@ -60,7 +61,7 @@ class DefaultPromptConfigTests(unittest.TestCase):
     def test_default_prompt_uses_p23_demo_profile(self):
         config = get_default_config()
 
-        self.assertEqual(config.prompt.prompt_id, "p23_demo")
+        self.assertEqual(config.prompt.prompt_id, "p24_diverse_lexical")
         self.assertEqual(config.prompt.max_new_tokens, 16)
         self.assertEqual(config.prompt.temperature, 0.0)
         self.assertEqual(config.prompt.top_p, 1.0)
@@ -79,11 +80,37 @@ class DefaultPromptConfigTests(unittest.TestCase):
     def test_reward_defaults_penalize_copy_and_duplicates_more(self):
         config = get_default_config()
 
-        self.assertEqual(config.reward.w_copy, 0.25)
-        self.assertEqual(config.reward.group_duplicate_penalty, 0.075)
+        self.assertEqual(config.reward.w_copy, 0.4)
+        self.assertEqual(config.reward.exact_copy_penalty, 0.15)
 
 
 class TrainEvaluationDecodeTests(unittest.TestCase):
+    def test_resolve_eval_decode_settings_defaults_to_train_decode(self):
+        config = get_default_config()
+        config.train.max_new_tokens = 12
+        config.train.temperature = 0.6
+        config.train.top_p = 0.9
+
+        settings = resolve_eval_decode_settings(
+            config,
+            SimpleNamespace(eval_max_new_tokens=None, eval_temperature=None, eval_top_p=None),
+        )
+
+        self.assertEqual(settings["max_new_tokens"], 12)
+        self.assertEqual(settings["temperature"], 0.6)
+        self.assertEqual(settings["top_p"], 0.9)
+
+    def test_resolve_eval_decode_settings_honors_explicit_overrides(self):
+        config = get_default_config()
+        settings = resolve_eval_decode_settings(
+            config,
+            SimpleNamespace(eval_max_new_tokens=24, eval_temperature=0.2, eval_top_p=0.85),
+        )
+
+        self.assertEqual(settings["max_new_tokens"], 24)
+        self.assertEqual(settings["temperature"], 0.2)
+        self.assertEqual(settings["top_p"], 0.85)
+
     def test_evaluate_policy_uses_passed_decode_settings(self):
         model = _CaptureModel()
         rewarder = _DummyRewarder()
@@ -102,6 +129,7 @@ class TrainEvaluationDecodeTests(unittest.TestCase):
         )
 
         self.assertAlmostEqual(metrics["mrr_mean"], 0.25)
+        self.assertAlmostEqual(metrics["exact_copy_penalty_mean"], 0.0)
         self.assertEqual(len(model.calls), 1)
         self.assertEqual(model.calls[0]["policy"], "actor")
         self.assertEqual(model.calls[0]["max_new_tokens"], 16)
