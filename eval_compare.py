@@ -18,7 +18,7 @@ import torch
 
 from app_config import AppConfig, get_default_config
 from core.model_wrapper import ModelWrapper
-from core.reward_func import RewardBreakdown, Rewarder
+from core.reward_func import RewardBreakdown, Rewarder, stabilize_generated_rewrite
 from data.loader import QueryExample, load_topics_qrels, maybe_limit, split_queries
 
 
@@ -188,6 +188,7 @@ def evaluate_with_model(
     queries: Sequence[QueryExample],
     rewarder: Rewarder,
     *,
+    guardrail_cfg=None,
     max_new_tokens: int,
     temperature: float = 0.0,
     top_p: float = 1.0,
@@ -239,7 +240,19 @@ def evaluate_with_model(
             ]
         for query, raw_rewritten in zip(batch, batch_rewrites):
             rewritten = _postprocess_generated_query(raw_rewritten)
-            per_qid[query.qid] = (rewritten, rewarder.score(query.qid, rewritten, source_query=query.text))
+            final_query = rewritten
+            if guardrail_cfg is not None and hasattr(rewarder, "cfg"):
+                stabilized = stabilize_generated_rewrite(
+                    rewritten,
+                    source_query=query.text,
+                    guardrail_cfg=guardrail_cfg,
+                    reward_cfg=rewarder.cfg,
+                )
+                final_query = stabilized.final_query
+            per_qid[query.qid] = (
+                final_query,
+                rewarder.score(query.qid, final_query, source_query=query.text),
+            )
             processed += 1
         if processed % step == 0 or processed == total:
             print(f"[progress] stage={stage_name} {processed}/{total}")
@@ -320,6 +333,7 @@ def main() -> int:
         zero_shot_model,
         val_queries,
         rewarder,
+        guardrail_cfg=config.prompt,
         max_new_tokens=config.prompt.max_new_tokens,
         temperature=config.prompt.temperature,
         top_p=config.prompt.top_p,
@@ -350,6 +364,7 @@ def main() -> int:
         rl_model,
         val_queries,
         rewarder,
+        guardrail_cfg=config.prompt,
         max_new_tokens=config.prompt.max_new_tokens,
         temperature=config.prompt.temperature,
         top_p=config.prompt.top_p,

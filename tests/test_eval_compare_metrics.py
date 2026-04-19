@@ -1,5 +1,6 @@
 import unittest
 
+from app_config import PromptConfig, RewardConfig
 from data.loader import QueryExample
 from eval_compare import evaluate_original, evaluate_with_model
 
@@ -15,6 +16,7 @@ class _DummyRewarder:
     def __init__(self, mrr_k: int, recall_k: int):
         self.mrr_k = mrr_k
         self.recall_k = recall_k
+        self.cfg = RewardConfig()
 
     def score(self, qid: str, rewritten_query: str, source_query: str | None = None):
         del qid, rewritten_query, source_query
@@ -33,6 +35,31 @@ class _DummyModel:
     ) -> str:
         del policy, max_new_tokens, temperature, top_p
         return f"rewritten::{query}"
+
+
+class _TrackingRewarder(_DummyRewarder):
+    def __init__(self, mrr_k: int, recall_k: int):
+        super().__init__(mrr_k=mrr_k, recall_k=recall_k)
+        self.seen_queries: list[str] = []
+
+    def score(self, qid: str, rewritten_query: str, source_query: str | None = None):
+        del qid, source_query
+        self.seen_queries.append(rewritten_query)
+        return _DummyReward(total=0.6, mrr=0.4, recall=0.25)
+
+
+class _PollutedModel:
+    def generate_rewrite(
+        self,
+        query: str,
+        *,
+        policy: str,
+        max_new_tokens: int,
+        temperature: float,
+        top_p: float,
+    ) -> str:
+        del query, policy, max_new_tokens, temperature, top_p
+        return "because this query is better"
 
 
 class EvalCompareMetricTests(unittest.TestCase):
@@ -67,6 +94,24 @@ class EvalCompareMetricTests(unittest.TestCase):
         self.assertAlmostEqual(metrics["recall"], 0.25)
         self.assertAlmostEqual(metrics["recall@50"], 0.25)
         self.assertAlmostEqual(metrics["reward_mean"], 0.6)
+
+    def test_evaluate_with_model_scores_stabilized_final_query_when_guardrail_is_enabled(self):
+        rewarder = _TrackingRewarder(mrr_k=10, recall_k=50)
+        model = _PollutedModel()
+        queries = [QueryExample(qid="q1", text="best budget gaming laptop 2024")]
+
+        _, per_qid = evaluate_with_model(
+            model,
+            queries,
+            rewarder,
+            guardrail_cfg=PromptConfig(min_terms=3, max_terms=11, fallback_mode="balanced"),
+            max_new_tokens=8,
+            stage_name="rl",
+            progress_every=1,
+        )
+
+        self.assertEqual(rewarder.seen_queries, ["best budget gaming laptop 2024"])
+        self.assertEqual(per_qid["q1"][0], "best budget gaming laptop 2024")
 
 
 if __name__ == "__main__":
