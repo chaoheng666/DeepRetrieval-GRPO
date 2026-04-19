@@ -43,7 +43,7 @@ try {
   $trainGapSamplingTemperatureDelta = if ($env:TRAIN_GAP_SAMPLING_TEMPERATURE_DELTA) { $env:TRAIN_GAP_SAMPLING_TEMPERATURE_DELTA } else { "0.10" }
   $trainEvalEverySteps = if ($env:TRAIN_EVAL_EVERY_STEPS) { $env:TRAIN_EVAL_EVERY_STEPS } else { "20" }
   $trainMaxSteps = if ($env:TRAIN_MAX_STEPS) { $env:TRAIN_MAX_STEPS } else { "80" }
-  $trainMaxValQueries = if ($env:TRAIN_MAX_VAL_QUERIES) { $env:TRAIN_MAX_VAL_QUERIES } else { "4000" }
+  $trainMaxValQueries = if ($env:TRAIN_MAX_VAL_QUERIES) { $env:TRAIN_MAX_VAL_QUERIES } else { "400" }
 
   $rewardMrrK = if ($env:REWARD_MRR_K) { $env:REWARD_MRR_K } else { "50" }
   $rewardRecallK = if ($env:REWARD_RECALL_K) { $env:REWARD_RECALL_K } else { "50" }

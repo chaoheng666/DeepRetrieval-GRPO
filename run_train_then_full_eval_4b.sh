@@ -15,6 +15,7 @@ REQUIRE_CUDA="${REQUIRE_CUDA:-1}"
 MODEL_NAME="${MODEL_NAME:-/root/autodl-tmp/hf_models/Qwen3-4B-Instruct-2507}"
 AUTO_GIT_COMMIT="${AUTO_GIT_COMMIT:-1}"
 AUTO_GIT_PUSH="${AUTO_GIT_PUSH:-1}"
+TRAIN_MAX_VAL_QUERIES="${TRAIN_MAX_VAL_QUERIES:-400}"
 
 TRAIN_DIR="${ARTIFACT_ROOT}/artifacts_${EXP_NAME}_train"
 EVAL_DIR="${ARTIFACT_ROOT}/artifacts_${EXP_NAME}_eval"
@@ -97,7 +98,7 @@ print(f"[env] cuda device count: {torch.cuda.device_count()}")
 PY
 fi
 
-echo "[preset] 4B conservative config: batch=8 group=8 max_group=12 max_new_tokens=12 temperature=0.6 top_p=0.9 group_temperature_stride=0.05 group_top_p_stride=0.01 min_unique_final_queries=3 max_regen_rounds=1 reward_gap_threshold=0.06 gap_sampling_temperature_delta=0.10 filtered_ready_queries=on diversity_resampling=on reward_w_recall=0.1 reward_w_copy=0.15 copy_tau=0.5"
+echo "[preset] 4B conservative config: batch=8 group=8 max_group=12 max_new_tokens=12 temperature=0.6 top_p=0.9 group_temperature_stride=0.05 group_top_p_stride=0.01 min_unique_final_queries=3 max_regen_rounds=1 reward_gap_threshold=0.06 gap_sampling_temperature_delta=0.10 max_val_queries=${TRAIN_MAX_VAL_QUERIES} filtered_ready_queries=on diversity_resampling=on reward_w_recall=0.1 reward_w_copy=0.15 copy_tau=0.5"
 
 echo "[2/4] Training 4B experiment..."
 "$PYTHON_BIN" train.py \
@@ -120,6 +121,7 @@ echo "[2/4] Training 4B experiment..."
   --reward-gap-threshold 0.06 \
   --gap-sampling-temperature-delta 0.10 \
   --eval-every-steps 50 \
+  --max-val-queries "$TRAIN_MAX_VAL_QUERIES" \
   --max-steps 500 \
   --reward-mrr-k 50 \
   --reward-recall-k 50 \
