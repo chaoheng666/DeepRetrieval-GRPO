@@ -6,7 +6,7 @@ cd "$SCRIPT_DIR"
 
 PYTHON_BIN="${PYTHON_BIN:-/root/miniconda3/bin/python}"
 ARTIFACT_ROOT="${ARTIFACT_ROOT:-train_and_eval_data_model}"
-EXP_NAME="${EXP_NAME:-4b_gap_fast}"
+EXP_NAME="${EXP_NAME:-4b_conservative_mrr}"
 VENV_DIR="${VENV_DIR:-.venv}"
 LOG_DIR="${LOG_DIR:-log}"
 USE_VENV="${USE_VENV:-0}"
@@ -97,7 +97,7 @@ print(f"[env] cuda device count: {torch.cuda.device_count()}")
 PY
 fi
 
-echo "[preset] 4B stable config: batch=8 group=8 max_group=16 max_new_tokens=14 parallel_group_generate=off temperature=1.0 top_p=0.98 filtered_ready_queries=on diversity_resampling=on"
+echo "[preset] 4B conservative config: batch=8 group=8 max_group=8 max_new_tokens=12 temperature=0.6 top_p=0.9 filtered_ready_queries=on diversity_resampling=off reward_w_recall=0.1 reward_w_copy=0.15 copy_tau=0.5"
 
 echo "[2/4] Training 4B experiment..."
 "$PYTHON_BIN" train.py \
@@ -105,34 +105,32 @@ echo "[2/4] Training 4B experiment..."
   --num-epochs 1 \
   --batch-size 8 \
   --group-size 8 \
-  --max-group-size 16 \
-  --learning-rate 2e-5 \
+  --max-group-size 8 \
+  --learning-rate 1.5e-5 \
   --clip-range 0.2 \
-  --kl-beta 0.005 \
-  --search-threads 16 \
-  --max-new-tokens 14 \
-  --temperature 1 \
-  --top-p 0.98 \
-  --group-temperature-stride 0.05 \
-  --group-top-p-stride 0.005 \
-  --min-unique-final-queries 4 \
-  --max-regen-rounds 4 \
-  --reward-gap-threshold 0.05 \
-  --gap-sampling-temperature-delta 0.15 \
-  --eval-every-steps 100 \
-  --max-train-queries 2000 \
-  --max-val-queries 200 \
-  --max-steps 400 \
+  --kl-beta 0.01 \
+  --search-threads 8 \
+  --max-new-tokens 12 \
+  --temperature 0.6 \
+  --top-p 0.9 \
+  --group-temperature-stride 0 \
+  --group-top-p-stride 0 \
+  --min-unique-final-queries 2 \
+  --max-regen-rounds 0 \
+  --reward-gap-threshold 0 \
+  --gap-sampling-temperature-delta 0 \
+  --eval-every-steps 20 \
+  --max-steps 80 \
   --reward-mrr-k 50 \
   --reward-recall-k 50 \
   --reward-w-mrr 1.0 \
-  --reward-w-recall 0.3 \
-  --reward-w-copy 0.4 \
+  --reward-w-recall 0.1 \
+  --reward-w-copy 0.15 \
   --reward-w-format 0.2 \
-  --reward-copy-tau 0.3 \
-  --format-max-tokens 16 \
+  --reward-copy-tau 0.5 \
+  --format-max-tokens 12 \
   --format-min-english-ratio 0.8 \
-  --format-max-unreadable-ratio 0.3 \
+  --format-max-unreadable-ratio 0.25 \
   --save-dir "$TRAIN_CHECKPOINT_DIR" \
   --log-path "$TRAIN_LOG_PATH" \
   --group-trace-log-path "$TRAIN_TRACE_PATH"
@@ -156,16 +154,17 @@ echo "[3/4] Running full evaluation for the 4B experiment..."
   --model-name "$MODEL_NAME" \
   --strict-tokenizer-model-match \
   --max-eval-queries 1000000 \
+  --search-threads 8 \
   --reward-mrr-k 50 \
   --reward-recall-k 50 \
   --reward-w-mrr 1.0 \
-  --reward-w-recall 0.3 \
-  --reward-w-copy 0.4 \
+  --reward-w-recall 0.1 \
+  --reward-w-copy 0.15 \
   --reward-w-format 0.2 \
-  --reward-copy-tau 0.3 \
-  --format-max-tokens 16 \
+  --reward-copy-tau 0.5 \
+  --format-max-tokens 12 \
   --format-min-english-ratio 0.8 \
-  --format-max-unreadable-ratio 0.3 \
+  --format-max-unreadable-ratio 0.25 \
   --sample-print 20 \
   --report-path "$EVAL_REPORT_PATH"
 

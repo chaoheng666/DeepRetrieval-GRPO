@@ -200,9 +200,9 @@ class RewardConfig:
     # CopyPenalty = max(0, overlap - copy_tau), overlap 使用 Jaccard(set)。
     copy_tau: float = 0.3
     # ExactCopyPenalty：若最终 query 与原 query 完全一致，则直接扣一个固定分。
-    exact_copy_penalty: float = 0.4
+    exact_copy_penalty: float = 0.15
     # 组内重复 query 的确定性惩罚，按重复出现次数线性累计。
-    group_duplicate_penalty: float = 0.075
+    group_duplicate_penalty: float = 0.02
     # FormatPenalty 严格阈值（基于 clean_rewritten_query 后文本）。
     format_max_tokens: int = 16
     format_min_english_ratio: float = 0.80
