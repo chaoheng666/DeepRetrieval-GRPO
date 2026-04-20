@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 PYTHON_BIN="${PYTHON_BIN:-/root/miniconda3/bin/python}"
-ARTIFACT_ROOT="${ARTIFACT_ROOT:-train_and_eval_data_model_0419}"
+ARTIFACT_ROOT="${ARTIFACT_ROOT:-train_and_eval_data_model_0420}"
 EXP_NAME="${EXP_NAME:-4b_conservative_mrr}"
 VENV_DIR="${VENV_DIR:-.venv}"
 LOG_DIR="${LOG_DIR:-log}"
