@@ -112,7 +112,7 @@ echo "[2/4] Training 4B experiment..."
 "$PYTHON_BIN" train.py \
   --model-name "$MODEL_NAME" \
   --num-epochs 1 \
-  --batch-size 24 \
+  --batch-size 16 \
   --group-size 12 \
   --max-group-size 16 \
   --learning-rate 1.5e-5 \
