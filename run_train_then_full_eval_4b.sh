@@ -114,7 +114,7 @@ export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:T
   --model-name "$MODEL_NAME" \
   --num-epochs 1 \
   --batch-size 16 \
-  --group-size 8 \
+  --group-size 24 \
   --max-group-size 12 \
   --learning-rate 1.5e-5 \
   --clip-range 0.2 \
