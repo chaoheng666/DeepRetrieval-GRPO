@@ -28,7 +28,7 @@ try {
   $modelName = if ($env:MODEL_NAME) { $env:MODEL_NAME } else { "Qwen/Qwen3-4B-Instruct-2507" }
   $autoGitCommit = if ($env:AUTO_GIT_COMMIT) { $env:AUTO_GIT_COMMIT } else { "1" }
   $autoGitPush = if ($env:AUTO_GIT_PUSH) { $env:AUTO_GIT_PUSH } else { "1" }
-  $searchThreads = if ($env:SEARCH_THREADS) { $env:SEARCH_THREADS } else { "8" }
+  $searchThreads = if ($env:SEARCH_THREADS) { $env:SEARCH_THREADS } else { "16" }
   $trainBatchSize = if ($env:TRAIN_BATCH_SIZE) { $env:TRAIN_BATCH_SIZE } else { "8" }
   $trainGroupSize = if ($env:TRAIN_GROUP_SIZE) { $env:TRAIN_GROUP_SIZE } else { "8" }
   $trainMaxGroupSize = if ($env:TRAIN_MAX_GROUP_SIZE) { $env:TRAIN_MAX_GROUP_SIZE } else { "12" }
@@ -39,7 +39,7 @@ try {
   $evalMaxNewTokens = if ($env:EVAL_MAX_NEW_TOKENS) { $env:EVAL_MAX_NEW_TOKENS } else { $trainMaxNewTokens }
   $evalTemperature = if ($env:EVAL_TEMPERATURE) { $env:EVAL_TEMPERATURE } else { $trainTemperature }
   $evalTopP = if ($env:EVAL_TOP_P) { $env:EVAL_TOP_P } else { $trainTopP }
-  $evalQueryBatchSize = if ($env:EVAL_QUERY_BATCH_SIZE) { $env:EVAL_QUERY_BATCH_SIZE } else { "1" }
+  $evalQueryBatchSize = if ($env:EVAL_QUERY_BATCH_SIZE) { $env:EVAL_QUERY_BATCH_SIZE } else { $trainBatchSize }
   $trainGroupTemperatureStride = if ($env:TRAIN_GROUP_TEMPERATURE_STRIDE) { $env:TRAIN_GROUP_TEMPERATURE_STRIDE } else { "0.05" }
   $trainGroupTopPStride = if ($env:TRAIN_GROUP_TOP_P_STRIDE) { $env:TRAIN_GROUP_TOP_P_STRIDE } else { "0.01" }
   $trainMinUniqueFinalQueries = if ($env:TRAIN_MIN_UNIQUE_FINAL_QUERIES) { $env:TRAIN_MIN_UNIQUE_FINAL_QUERIES } else { "3" }
@@ -113,6 +113,7 @@ try {
     --eval-max-new-tokens $evalMaxNewTokens `
     --eval-temperature $evalTemperature `
     --eval-top-p $evalTopP `
+    --eval-query-batch-size $evalQueryBatchSize `
     --group-temperature-stride $trainGroupTemperatureStride `
     --group-top-p-stride $trainGroupTopPStride `
     --min-unique-final-queries $trainMinUniqueFinalQueries `

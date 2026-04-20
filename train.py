@@ -64,6 +64,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--eval-max-new-tokens", type=int, default=None)
     parser.add_argument("--eval-temperature", type=float, default=None)
     parser.add_argument("--eval-top-p", type=float, default=None)
+    parser.add_argument("--eval-query-batch-size", type=int, default=None)
     parser.add_argument("--group-temperature-stride", type=float, default=None)
     parser.add_argument("--group-top-p-stride", type=float, default=None)
     parser.add_argument("--min-unique-final-queries", type=int, default=None)
@@ -457,6 +458,7 @@ def evaluate_policy(
     max_new_tokens: int,
     temperature: float,
     top_p: float,
+    query_batch_size: int = 1,
 ) -> dict[str, float]:
     """评估当前 actor 策略在验证集上的效果。"""
 
@@ -477,30 +479,46 @@ def evaluate_policy(
         actor_model.eval()
 
     try:
-        for query in eval_queries:
-            rewritten = model.generate_rewrite(
-                query.text,
-                policy="actor",
-                max_new_tokens=max_new_tokens,
-                temperature=temperature,
-                top_p=top_p,
-            )
-            stabilized = stabilize_generated_rewrite(
-                rewritten,
-                source_query=query.text,
-                guardrail_cfg=guardrail_cfg,
-                reward_cfg=rewarder.cfg,
-            )
-            score = rewarder.score(query.qid, stabilized.final_query, source_query=query.text)
-            rewards.append(score.total)
-            mrr_scores.append(score.mrr)
-            recall_scores.append(score.recall)
-            recall_dense_scores.append(score.recall_dense)
-            term_preserve_scores.append(score.term_preserve)
-            length_scores.append(score.length_score)
-            clean_format_scores.append(score.clean_format)
-            bad_format_penalties.append(score.bad_format_penalty)
-            unsafe_copy_penalties.append(score.unsafe_copy_penalty)
+        batch_size = max(1, int(query_batch_size))
+        for start in range(0, len(eval_queries), batch_size):
+            batch = eval_queries[start : start + batch_size]
+            if hasattr(model, "generate_rewrite_batch"):
+                rewrites = model.generate_rewrite_batch(
+                    [query.text for query in batch],
+                    policy="actor",
+                    max_new_tokens=max_new_tokens,
+                    temperature=temperature,
+                    top_p=top_p,
+                )
+            else:
+                rewrites = [
+                    model.generate_rewrite(
+                        query.text,
+                        policy="actor",
+                        max_new_tokens=max_new_tokens,
+                        temperature=temperature,
+                        top_p=top_p,
+                    )
+                    for query in batch
+                ]
+
+            for query, rewritten in zip(batch, rewrites):
+                stabilized = stabilize_generated_rewrite(
+                    rewritten,
+                    source_query=query.text,
+                    guardrail_cfg=guardrail_cfg,
+                    reward_cfg=rewarder.cfg,
+                )
+                score = rewarder.score(query.qid, stabilized.final_query, source_query=query.text)
+                rewards.append(score.total)
+                mrr_scores.append(score.mrr)
+                recall_scores.append(score.recall)
+                recall_dense_scores.append(score.recall_dense)
+                term_preserve_scores.append(score.term_preserve)
+                length_scores.append(score.length_score)
+                clean_format_scores.append(score.clean_format)
+                bad_format_penalties.append(score.bad_format_penalty)
+                unsafe_copy_penalties.append(score.unsafe_copy_penalty)
     finally:
         if actor_model is not None and previous_mode is not None:
             actor_model.train(previous_mode)
@@ -535,6 +553,14 @@ def resolve_eval_decode_settings(config: AppConfig, args: argparse.Namespace) ->
         ),
         "top_p": float(
             getattr(args, "eval_top_p", None) if getattr(args, "eval_top_p", None) is not None else config.train.top_p
+        ),
+        "query_batch_size": max(
+            1,
+            int(
+                getattr(args, "eval_query_batch_size", None)
+                if getattr(args, "eval_query_batch_size", None) is not None
+                else config.train.batch_size
+            ),
         ),
     }
 
@@ -584,7 +610,8 @@ def main() -> int:
     )
     print(
         f"[decode] eval  max_new_tokens={eval_decode['max_new_tokens']} "
-        f"temperature={eval_decode['temperature']} top_p={eval_decode['top_p']}"
+        f"temperature={eval_decode['temperature']} top_p={eval_decode['top_p']} "
+        f"query_batch_size={eval_decode['query_batch_size']}"
     )
 
     # 3) 加载数据并切分 train/val。
@@ -735,6 +762,7 @@ def main() -> int:
                     max_new_tokens=int(eval_decode["max_new_tokens"]),
                     temperature=float(eval_decode["temperature"]),
                     top_p=float(eval_decode["top_p"]),
+                    query_batch_size=int(eval_decode["query_batch_size"]),
                 )
                 eval_metrics.update(
                     {
@@ -779,6 +807,7 @@ def main() -> int:
         max_new_tokens=int(eval_decode["max_new_tokens"]),
         temperature=float(eval_decode["temperature"]),
         top_p=float(eval_decode["top_p"]),
+        query_batch_size=int(eval_decode["query_batch_size"]),
     )
     print(
         f"[done] final_val_{mrr_label}={final_eval['mrr_mean']:.4f} "

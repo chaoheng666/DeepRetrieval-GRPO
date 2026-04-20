@@ -903,6 +903,140 @@ class ModelWrapper:
             )
             return left + right
 
+    def _compute_logprob_batch_once(
+        self,
+        prompts: Sequence[str],
+        response_token_ids_batch: Sequence[Sequence[int]],
+        *,
+        policy: PolicyName,
+        no_grad: bool,
+    ) -> list[torch.Tensor]:
+        """Recompute token logprobs for multiple fixed responses in one forward pass."""
+
+        prompt_list = list(prompts)
+        response_list = [list(token_ids) for token_ids in response_token_ids_batch]
+        if len(prompt_list) != len(response_list):
+            raise ValueError("prompts and response_token_ids_batch must have the same length.")
+        if not prompt_list:
+            return []
+
+        model = self._policy_model(policy)
+        device = self._infer_model_device(model)
+        pad_token_id = self.tokenizer.pad_token_id
+        if pad_token_id is None:
+            pad_token_id = self.tokenizer.eos_token_id
+        if pad_token_id is None:
+            raise RuntimeError("Tokenizer must define pad_token_id or eos_token_id for batched logprob.")
+
+        outputs: list[torch.Tensor | None] = [None] * len(prompt_list)
+        active_indices: list[int] = []
+        full_sequences: list[torch.Tensor] = []
+        prompt_lengths: list[int] = []
+        response_tensors: list[torch.Tensor] = []
+
+        for index, (prompt, response_token_ids) in enumerate(zip(prompt_list, response_list)):
+            if not response_token_ids:
+                outputs[index] = torch.empty(0, device=device)
+                continue
+
+            prompt_ids = self.tokenizer(prompt, return_tensors="pt").input_ids.to(device)
+            if prompt_ids.shape[1] == 0:
+                eos_id = self.tokenizer.eos_token_id
+                if eos_id is None:
+                    raise RuntimeError("Tokenizer has no eos token id and prompt is empty.")
+                prompt_ids = torch.tensor([[eos_id]], dtype=torch.long, device=device)
+
+            prompt_row = prompt_ids.squeeze(0)
+            response_tensor = torch.tensor(response_token_ids, dtype=torch.long, device=device)
+            full_sequences.append(torch.cat([prompt_row, response_tensor], dim=0))
+            prompt_lengths.append(int(prompt_row.shape[0]))
+            response_tensors.append(response_tensor)
+            active_indices.append(index)
+
+        if not active_indices:
+            return [tensor if tensor is not None else torch.empty(0, device=device) for tensor in outputs]
+
+        max_seq_len = max(int(sequence.shape[0]) for sequence in full_sequences)
+        batch_input_ids = torch.full(
+            (len(full_sequences), max_seq_len),
+            int(pad_token_id),
+            dtype=torch.long,
+            device=device,
+        )
+        batch_attention_mask = torch.zeros(
+            (len(full_sequences), max_seq_len),
+            dtype=torch.long,
+            device=device,
+        )
+        for row_index, sequence in enumerate(full_sequences):
+            seq_len = int(sequence.shape[0])
+            batch_input_ids[row_index, :seq_len] = sequence
+            batch_attention_mask[row_index, :seq_len] = 1
+
+        grad_ctx = torch.no_grad() if no_grad else nullcontext()
+        with grad_ctx:
+            logits = model(
+                input_ids=batch_input_ids,
+                attention_mask=batch_attention_mask,
+                use_cache=False,
+            ).logits
+
+        for row_index, original_index in enumerate(active_indices):
+            response_tensor = response_tensors[row_index]
+            prompt_len = prompt_lengths[row_index]
+            start = max(prompt_len - 1, 0)
+            end = start + int(response_tensor.shape[0])
+            token_logits = logits[row_index : row_index + 1, start:end, :]
+            target_ids = response_tensor.unsqueeze(0)[:, : token_logits.shape[1]]
+            log_probs = torch.log_softmax(token_logits, dim=-1)
+            outputs[original_index] = log_probs.gather(-1, target_ids.unsqueeze(-1)).squeeze(-1).squeeze(0)
+
+        return [tensor if tensor is not None else torch.empty(0, device=device) for tensor in outputs]
+
+    def compute_logprob_batch(
+        self,
+        prompts: Sequence[str],
+        response_token_ids_batch: Sequence[Sequence[int]],
+        *,
+        policy: PolicyName = "actor",
+        no_grad: bool = False,
+    ) -> list[torch.Tensor]:
+        """Batch version of compute_logprob with OOM-safe split fallback."""
+
+        prompt_list = list(prompts)
+        response_list = [list(token_ids) for token_ids in response_token_ids_batch]
+        if len(prompt_list) != len(response_list):
+            raise ValueError("prompts and response_token_ids_batch must have the same length.")
+        if not prompt_list:
+            return []
+
+        try:
+            return self._compute_logprob_batch_once(
+                prompt_list,
+                response_list,
+                policy=policy,
+                no_grad=no_grad,
+            )
+        except RuntimeError as exc:
+            if not (torch.cuda.is_available() and self._is_cuda_oom_error(exc) and len(prompt_list) > 1):
+                raise
+            gc.collect()
+            torch.cuda.empty_cache()
+            mid = max(1, len(prompt_list) // 2)
+            left = self.compute_logprob_batch(
+                prompt_list[:mid],
+                response_list[:mid],
+                policy=policy,
+                no_grad=no_grad,
+            )
+            right = self.compute_logprob_batch(
+                prompt_list[mid:],
+                response_list[mid:],
+                policy=policy,
+                no_grad=no_grad,
+            )
+            return left + right
+
     def compute_logprob(
         self,
         prompt: str,
@@ -913,43 +1047,12 @@ class ModelWrapper:
     ) -> torch.Tensor:
         """对固定 response 重算 token 级 logprob。"""
 
-        if not response_token_ids:
-            model = self._policy_model(policy)
-            device = self._infer_model_device(model)
-            return torch.empty(0, device=device)
-
-        model = self._policy_model(policy)
-        device = self._infer_model_device(model)
-
-        prompt_ids = self.tokenizer(prompt, return_tensors="pt").input_ids.to(device)
-        response_ids = torch.tensor([response_token_ids], dtype=torch.long, device=device)
-
-        if prompt_ids.shape[1] == 0:
-            eos_id = self.tokenizer.eos_token_id
-            if eos_id is None:
-                raise RuntimeError("Tokenizer has no eos token id and prompt is empty.")
-            prompt_ids = torch.tensor([[eos_id]], dtype=torch.long, device=device)
-
-        full_input_ids = torch.cat([prompt_ids, response_ids], dim=1)
-        attention_mask = torch.ones_like(full_input_ids, device=device)
-
-        grad_ctx = torch.no_grad() if no_grad else nullcontext()
-        with grad_ctx:
-            logits = model(
-                input_ids=full_input_ids,
-                attention_mask=attention_mask,
-                use_cache=False,
-            ).logits
-
-        # 因果 LM 对齐：token[t] 由位置 t-1 的 logits 预测。
-        prompt_len = int(prompt_ids.shape[1])
-        start = max(prompt_len - 1, 0)
-        end = start + response_ids.shape[1]
-        token_logits = logits[:, start:end, :]
-        target_ids = response_ids[:, : token_logits.shape[1]]
-        log_probs = torch.log_softmax(token_logits, dim=-1)
-        gathered = log_probs.gather(-1, target_ids.unsqueeze(-1)).squeeze(-1).squeeze(0)
-        return gathered
+        return self.compute_logprob_batch(
+            [prompt],
+            [response_token_ids],
+            policy=policy,
+            no_grad=no_grad,
+        )[0]
 
     def trainable_parameters(self) -> list[torch.nn.Parameter]:
         """返回可训练参数（通常是 LoRA 参数）。"""

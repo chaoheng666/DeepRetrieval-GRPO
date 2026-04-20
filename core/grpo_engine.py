@@ -522,49 +522,104 @@ class GRPOEngine:
                 if group_collapsed:
                     continue
 
-                for sample in group_samples:
-                    if not sample.response_token_ids or sample.logprob_old.numel() == 0:
-                        continue
+                valid_group_samples = [
+                    sample for sample in group_samples if sample.response_token_ids and sample.logprob_old.numel() > 0
+                ]
+                if not valid_group_samples:
+                    continue
 
-                    logprob_new = self.model_wrapper.compute_logprob(
-                        sample.prompt,
-                        sample.response_token_ids,
+                if hasattr(self.model_wrapper, "compute_logprob_batch"):
+                    prompts = [sample.prompt for sample in valid_group_samples]
+                    response_token_ids_batch = [sample.response_token_ids for sample in valid_group_samples]
+                    logprob_new_batch = self.model_wrapper.compute_logprob_batch(
+                        prompts,
+                        response_token_ids_batch,
                         policy="actor",
                         no_grad=False,
                     )
-                    logprob_ref = self.model_wrapper.compute_logprob(
-                        sample.prompt,
-                        sample.response_token_ids,
+                    logprob_ref_batch = self.model_wrapper.compute_logprob_batch(
+                        prompts,
+                        response_token_ids_batch,
                         policy="ref",
                         no_grad=True,
                     )
 
-                    t = min(logprob_new.numel(), sample.logprob_old.numel(), logprob_ref.numel())
-                    if t == 0:
-                        continue
+                    group_loss: torch.Tensor | None = None
+                    for sample, logprob_new, logprob_ref in zip(
+                        valid_group_samples,
+                        logprob_new_batch,
+                        logprob_ref_batch,
+                    ):
+                        t = min(logprob_new.numel(), sample.logprob_old.numel(), logprob_ref.numel())
+                        if t == 0:
+                            continue
 
-                    logprob_new = logprob_new[:t]
-                    logprob_old = sample.logprob_old[:t].to(logprob_new.device)
-                    logprob_ref = logprob_ref[:t].to(logprob_new.device)
+                        logprob_new = logprob_new[:t]
+                        logprob_old = sample.logprob_old[:t].to(logprob_new.device)
+                        logprob_ref = logprob_ref[:t].to(logprob_new.device)
 
-                    clipped_obj = ppo_clipped_objective(
-                        logprob_new=logprob_new,
-                        logprob_old=logprob_old,
-                        advantage=sample.advantage,
-                        clip_range=self.clip_range,
-                    )
-                    loss_pg = -clipped_obj.mean()
-                    loss_kl = self.kl_beta * (logprob_new - logprob_ref).mean()
-                    loss = loss_pg + loss_kl
-                    if not torch.isfinite(loss):
-                        continue
+                        clipped_obj = ppo_clipped_objective(
+                            logprob_new=logprob_new,
+                            logprob_old=logprob_old,
+                            advantage=sample.advantage,
+                            clip_range=self.clip_range,
+                        )
+                        loss_pg = -clipped_obj.mean()
+                        loss_kl = self.kl_beta * (logprob_new - logprob_ref).mean()
+                        loss = loss_pg + loss_kl
+                        if not torch.isfinite(loss):
+                            continue
 
-                    # Immediate backward prevents retaining many graphs at once.
-                    loss.backward()
-                    loss_values.append(float(loss.detach().cpu()))
-                    loss_pg_terms.append(float(loss_pg.detach().cpu()))
-                    loss_kl_terms.append(float(loss_kl.detach().cpu()))
-                    valid_samples += 1
+                        group_loss = loss if group_loss is None else group_loss + loss
+                        loss_values.append(float(loss.detach().cpu()))
+                        loss_pg_terms.append(float(loss_pg.detach().cpu()))
+                        loss_kl_terms.append(float(loss_kl.detach().cpu()))
+                        valid_samples += 1
+
+                    if group_loss is not None:
+                        # One backward per group preserves the old summed objective while amortizing forward cost.
+                        group_loss.backward()
+                else:
+                    for sample in valid_group_samples:
+                        logprob_new = self.model_wrapper.compute_logprob(
+                            sample.prompt,
+                            sample.response_token_ids,
+                            policy="actor",
+                            no_grad=False,
+                        )
+                        logprob_ref = self.model_wrapper.compute_logprob(
+                            sample.prompt,
+                            sample.response_token_ids,
+                            policy="ref",
+                            no_grad=True,
+                        )
+
+                        t = min(logprob_new.numel(), sample.logprob_old.numel(), logprob_ref.numel())
+                        if t == 0:
+                            continue
+
+                        logprob_new = logprob_new[:t]
+                        logprob_old = sample.logprob_old[:t].to(logprob_new.device)
+                        logprob_ref = logprob_ref[:t].to(logprob_new.device)
+
+                        clipped_obj = ppo_clipped_objective(
+                            logprob_new=logprob_new,
+                            logprob_old=logprob_old,
+                            advantage=sample.advantage,
+                            clip_range=self.clip_range,
+                        )
+                        loss_pg = -clipped_obj.mean()
+                        loss_kl = self.kl_beta * (logprob_new - logprob_ref).mean()
+                        loss = loss_pg + loss_kl
+                        if not torch.isfinite(loss):
+                            continue
+
+                        # Immediate backward prevents retaining many graphs at once.
+                        loss.backward()
+                        loss_values.append(float(loss.detach().cpu()))
+                        loss_pg_terms.append(float(loss_pg.detach().cpu()))
+                        loss_kl_terms.append(float(loss_kl.detach().cpu()))
+                        valid_samples += 1
 
             nonzero_reward_ratio = (sum(1 for value in rewards if value > 0.0) / len(rewards)) if rewards else 0.0
 

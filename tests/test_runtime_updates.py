@@ -207,6 +207,34 @@ class EngineTraceTests(unittest.TestCase):
         self.assertTrue(all(flag is False for flag in wrapper.training_flags))
         self.assertTrue(wrapper.actor_model.training)
 
+    def test_train_step_uses_batched_logprob_when_available(self):
+        wrapper = _ToyBatchModelWrapper()
+        rewarder = _ToyRewarder()
+        optimizer = torch.optim.SGD(wrapper.trainable_parameters(), lr=1e-2)
+        engine = GRPOEngine(
+            model_wrapper=wrapper,
+            rewarder=rewarder,
+            optimizer=optimizer,
+            group_size=2,
+            clip_range=0.2,
+            kl_beta=0.01,
+            grad_clip_norm=1.0,
+            max_new_tokens=8,
+            temperature=0.8,
+            top_p=0.95,
+            reward_gap_threshold=0.0,
+        )
+
+        metrics = engine.train_step([QueryExample(qid="q1", text="input query")], collect_best_queries=False)
+
+        self.assertEqual(wrapper.single_compute_calls, 0)
+        self.assertEqual(len(wrapper.batch_compute_calls), 2)
+        self.assertEqual(wrapper.batch_compute_calls[0]["policy"], "actor")
+        self.assertFalse(wrapper.batch_compute_calls[0]["no_grad"])
+        self.assertEqual(wrapper.batch_compute_calls[1]["policy"], "ref")
+        self.assertTrue(wrapper.batch_compute_calls[1]["no_grad"])
+        self.assertGreaterEqual(metrics["valid_samples"], 1.0)
+
     def test_train_step_postprocesses_rollout_queries_before_reward(self):
         wrapper = _ToyModelWrapper()
         wrapper.prompt_cfg = SimpleNamespace(stop_on="\n", enforce_single_line=True)
@@ -240,6 +268,16 @@ class EngineTraceTests(unittest.TestCase):
 class _CharTokenizer:
     pad_token_id = 0
     eos_token_id = 1
+
+    class _TokenizedBatch(dict):
+        def __getattr__(self, item):
+            return self[item]
+
+    def __call__(self, text: str, return_tensors: str = "pt"):
+        if return_tensors != "pt":
+            raise ValueError("Only return_tensors='pt' is supported in tests.")
+        ids = self.encode(text)
+        return self._TokenizedBatch({"input_ids": torch.tensor([ids], dtype=torch.long)})
 
     def decode(self, ids, skip_special_tokens=True):
         del skip_special_tokens
@@ -288,6 +326,60 @@ class ModelWrapperCleanupTests(unittest.TestCase):
         self.assertEqual(sample.response_token_ids, [ord(ch) for ch in "finderscope"])
 
 
+class _ToyLogprobModel(torch.nn.Module):
+    def __init__(self, vocab_size: int = 512):
+        super().__init__()
+        self.vocab_size = vocab_size
+        self.bias = torch.nn.Parameter(torch.tensor(0.0))
+
+    def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor | None = None, use_cache: bool = False):
+        del attention_mask, use_cache
+        batch_size, seq_len = input_ids.shape
+        logits = torch.full(
+            (batch_size, seq_len, self.vocab_size),
+            -4.0,
+            dtype=torch.float32,
+            device=input_ids.device,
+        )
+        token_ids = input_ids.clamp_min(0).clamp_max(self.vocab_size - 1)
+        logits.scatter_(
+            2,
+            token_ids.unsqueeze(-1),
+            (2.0 + self.bias).expand(batch_size, seq_len, 1),
+        )
+        return SimpleNamespace(logits=logits)
+
+
+class ModelWrapperBatchLogprobTests(unittest.TestCase):
+    def test_compute_logprob_batch_matches_single_sample_path(self):
+        wrapper = ModelWrapper.__new__(ModelWrapper)
+        wrapper.tokenizer = _CharTokenizer()
+        wrapper.actor_model = _ToyLogprobModel()
+        wrapper.ref_model = _ToyLogprobModel()
+
+        prompts = ["ab", "query", ""]
+        responses = [
+            [ord("c"), ord("d")],
+            [ord("x")],
+            [],
+        ]
+
+        expected = [
+            wrapper.compute_logprob(prompt, response, policy="actor", no_grad=True)
+            for prompt, response in zip(prompts, responses)
+        ]
+        actual = wrapper.compute_logprob_batch(
+            prompts,
+            responses,
+            policy="actor",
+            no_grad=True,
+        )
+
+        self.assertEqual(len(actual), len(expected))
+        for lhs, rhs in zip(expected, actual):
+            self.assertTrue(torch.allclose(lhs.cpu(), rhs.cpu()))
+
+
 class _DuplicateToyModelWrapper(_ToyModelWrapper):
     def __init__(self):
         super().__init__()
@@ -311,6 +403,55 @@ class _DuplicateToyModelWrapper(_ToyModelWrapper):
             response_token_ids=[1, 2],
             logprob_old=torch.tensor([old_logprob, old_logprob], dtype=torch.float32),
         )
+
+
+class _ToyBatchModelWrapper(_ToyModelWrapper):
+    def __init__(self):
+        super().__init__()
+        self.single_compute_calls = 0
+        self.batch_compute_calls: list[dict[str, object]] = []
+
+    def compute_logprob(
+        self,
+        prompt: str,
+        response_token_ids: list[int],
+        *,
+        policy: str = "actor",
+        no_grad: bool = False,
+    ) -> torch.Tensor:
+        self.single_compute_calls += 1
+        return super().compute_logprob(
+            prompt,
+            response_token_ids,
+            policy=policy,
+            no_grad=no_grad,
+        )
+
+    def compute_logprob_batch(
+        self,
+        prompts: list[str],
+        response_token_ids_batch: list[list[int]],
+        *,
+        policy: str = "actor",
+        no_grad: bool = False,
+    ) -> list[torch.Tensor]:
+        self.batch_compute_calls.append(
+            {
+                "prompts": list(prompts),
+                "policy": policy,
+                "no_grad": no_grad,
+            }
+        )
+        return [
+            _ToyModelWrapper.compute_logprob(
+                self,
+                prompt,
+                response_token_ids,
+                policy=policy,
+                no_grad=no_grad,
+            )
+            for prompt, response_token_ids in zip(prompts, response_token_ids_batch)
+        ]
 
 
 class _ResamplingToyModelWrapper(_ToyModelWrapper):

@@ -31,6 +31,47 @@ class _CaptureModel:
         return f"rewritten::{query}"
 
 
+class _ModeTrackingActor:
+    def __init__(self):
+        self.training = True
+
+    def eval(self):
+        self.training = False
+        return self
+
+    def train(self, mode: bool = True):
+        self.training = bool(mode)
+        return self
+
+
+class _BatchCaptureModel:
+    def __init__(self):
+        self.actor_model = _ModeTrackingActor()
+        self.batch_calls: list[dict[str, object]] = []
+        self.training_flags: list[bool] = []
+
+    def generate_rewrite_batch(
+        self,
+        queries: list[str],
+        *,
+        policy: str,
+        max_new_tokens: int,
+        temperature: float,
+        top_p: float,
+    ) -> list[str]:
+        self.training_flags.append(self.actor_model.training)
+        self.batch_calls.append(
+            {
+                "queries": list(queries),
+                "policy": policy,
+                "max_new_tokens": max_new_tokens,
+                "temperature": temperature,
+                "top_p": top_p,
+            }
+        )
+        return [f"batch::{query}" for query in queries]
+
+
 class _DummyRewarder:
     def __init__(self):
         self.cfg = RewardConfig()
@@ -101,23 +142,35 @@ class TrainEvaluationDecodeTests(unittest.TestCase):
 
         settings = resolve_eval_decode_settings(
             config,
-            SimpleNamespace(eval_max_new_tokens=None, eval_temperature=None, eval_top_p=None),
+            SimpleNamespace(
+                eval_max_new_tokens=None,
+                eval_temperature=None,
+                eval_top_p=None,
+                eval_query_batch_size=None,
+            ),
         )
 
         self.assertEqual(settings["max_new_tokens"], 12)
         self.assertEqual(settings["temperature"], 0.6)
         self.assertEqual(settings["top_p"], 0.9)
+        self.assertEqual(settings["query_batch_size"], config.train.batch_size)
 
     def test_resolve_eval_decode_settings_honors_explicit_overrides(self):
         config = get_default_config()
         settings = resolve_eval_decode_settings(
             config,
-            SimpleNamespace(eval_max_new_tokens=24, eval_temperature=0.2, eval_top_p=0.85),
+            SimpleNamespace(
+                eval_max_new_tokens=24,
+                eval_temperature=0.2,
+                eval_top_p=0.85,
+                eval_query_batch_size=6,
+            ),
         )
 
         self.assertEqual(settings["max_new_tokens"], 24)
         self.assertEqual(settings["temperature"], 0.2)
         self.assertEqual(settings["top_p"], 0.85)
+        self.assertEqual(settings["query_batch_size"], 6)
 
     def test_evaluate_policy_uses_passed_decode_settings(self):
         model = _CaptureModel()
@@ -144,6 +197,37 @@ class TrainEvaluationDecodeTests(unittest.TestCase):
         self.assertEqual(model.calls[0]["max_new_tokens"], 16)
         self.assertEqual(model.calls[0]["temperature"], 0.0)
         self.assertEqual(model.calls[0]["top_p"], 1.0)
+
+    def test_evaluate_policy_uses_batch_generation_when_available(self):
+        model = _BatchCaptureModel()
+        rewarder = _DummyRewarder()
+        config = get_default_config()
+        queries = [
+            QueryExample(qid="q1", text="what are symptoms of anemia in women"),
+            QueryExample(qid="q2", text="bm25 query rewrite methods"),
+        ]
+
+        metrics = evaluate_policy(
+            model,
+            rewarder,
+            queries,
+            guardrail_cfg=config.prompt,
+            max_queries=None,
+            max_new_tokens=12,
+            temperature=0.3,
+            top_p=0.85,
+            query_batch_size=2,
+        )
+
+        self.assertAlmostEqual(metrics["reward_mean"], 0.5)
+        self.assertEqual(len(model.batch_calls), 1)
+        self.assertEqual(model.batch_calls[0]["queries"], [query.text for query in queries])
+        self.assertEqual(model.batch_calls[0]["policy"], "actor")
+        self.assertEqual(model.batch_calls[0]["max_new_tokens"], 12)
+        self.assertEqual(model.batch_calls[0]["temperature"], 0.3)
+        self.assertEqual(model.batch_calls[0]["top_p"], 0.85)
+        self.assertEqual(model.training_flags, [False])
+        self.assertTrue(model.actor_model.training)
 
     def test_evaluate_policy_scores_stabilized_final_query(self):
         class _PollutedModel(_CaptureModel):
