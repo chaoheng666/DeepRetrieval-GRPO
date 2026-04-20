@@ -8,7 +8,7 @@ This directory evaluates multiple retrieval rewrite prompts on the same random q
   (`Direct` + `FewShot`).
 - Every prompt is tied to this project rather than generic paraphrasing:
   - Lucene BM25 / MS MARCO passage retrieval
-  - higher `MRR@10` instead of nicer prose
+  - higher `MRR@50` instead of nicer prose
   - one-line English lexical query output
   - copy penalty / format penalty awareness
   - entity, acronym, number, version, negation preservation

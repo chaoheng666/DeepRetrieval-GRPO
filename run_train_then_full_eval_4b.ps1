@@ -53,7 +53,7 @@ try {
   $trainMaxSteps = if ($env:TRAIN_MAX_STEPS) { $env:TRAIN_MAX_STEPS } else { "500" }
   $trainMaxValQueries = if ($env:TRAIN_MAX_VAL_QUERIES) { $env:TRAIN_MAX_VAL_QUERIES } else { "400" }
 
-  $rewardMrrK = if ($env:REWARD_MRR_K) { $env:REWARD_MRR_K } else { "10" }
+  $rewardMrrK = if ($env:REWARD_MRR_K) { $env:REWARD_MRR_K } else { "50" }
   $rewardRecallK = if ($env:REWARD_RECALL_K) { $env:REWARD_RECALL_K } else { "50" }
   $rewardRecallDenseK = if ($env:REWARD_RECALL_DENSE_K) { $env:REWARD_RECALL_DENSE_K } else { "100" }
   $rewardWMrr = if ($env:REWARD_W_MRR) { $env:REWARD_W_MRR } else { "0.40" }

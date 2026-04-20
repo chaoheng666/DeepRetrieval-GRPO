@@ -178,7 +178,7 @@
             max_queries=config.max_val_queries
         )
         
-        打印 "Original Baseline MRR@10: {baseline_eval.mrr_mean:.4f}"
+        打印 "Original Baseline MRR@50: {baseline_eval.mrr_mean:.4f}"
         best_val_mrr = -∞
     
     // 第五步: 初始化模型与优化器
@@ -869,7 +869,7 @@ total_reward = mrr_weight * MRR@K + overlap_weight * overlap - text_penalty
 ┌────────────────────────────────┐
 │ 3. 周期评估 (train.py)         │
 │   - 验证集推理                 │
-│   - 计算MRR@10                 │
+│   - 计算MRR@50                 │
 │   - 保存best/latest checkpoint │
 └────────────────────────────────┘
     ↓ 训练后模型

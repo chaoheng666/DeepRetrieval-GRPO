@@ -187,13 +187,13 @@ class RewardConfig:
     """Dense BM25 rewrite reward configuration."""
 
     # Retrieval cutoffs.
-    mrr_k: int = 10
+    mrr_k: int = 50
     recall_k: int = 50
     recall_dense_k: int = 100
     # Pyserini batch_search thread count for retrieval-side parallelism.
     search_threads: int = 8
     # Fixed reward formula:
-    # total = 0.40*mrr@10 + 0.20*recall@50 + 0.15*recall@100
+    # total = 0.40*mrr@50 + 0.20*recall@50 + 0.15*recall@100
     #       + 0.10*term_preserve + 0.08*length_score + 0.07*clean_format
     #       - 0.15*bad_format - 0.08*unsafe_copy
     w_mrr: float = 0.40
@@ -224,7 +224,7 @@ class PromptConfig:
     system_prompt: str = (
         "You rewrite search queries for DeepRetrieval-GRPO.\n"
         "The retriever is Lucene BM25 over MS MARCO passages.\n"
-        "Your only goal is to improve sparse lexical retrieval MRR@10 over the original query.\n"
+        "Your only goal is to improve sparse lexical retrieval MRR@50 over the original query.\n"
         "\n"
         "Hard output contract:\n"
         "1) Output exactly one line of English query text.\n"

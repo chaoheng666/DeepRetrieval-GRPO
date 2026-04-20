@@ -259,11 +259,38 @@ class EngineTraceTests(unittest.TestCase):
 
         self.assertEqual(wrapper.single_compute_calls, 0)
         self.assertEqual(len(wrapper.batch_compute_calls), 2)
-        self.assertEqual(wrapper.batch_compute_calls[0]["policy"], "actor")
-        self.assertFalse(wrapper.batch_compute_calls[0]["no_grad"])
-        self.assertEqual(wrapper.batch_compute_calls[1]["policy"], "ref")
-        self.assertTrue(wrapper.batch_compute_calls[1]["no_grad"])
+        self.assertEqual(wrapper.batch_compute_calls[0]["policy"], "ref")
+        self.assertTrue(wrapper.batch_compute_calls[0]["no_grad"])
+        self.assertEqual(wrapper.batch_compute_calls[1]["policy"], "actor")
+        self.assertFalse(wrapper.batch_compute_calls[1]["no_grad"])
         self.assertGreaterEqual(metrics["valid_samples"], 1.0)
+
+    def test_train_step_chunks_actor_batched_logprob_for_large_group(self):
+        wrapper = _ToyBatchModelWrapper()
+        wrapper._responses = iter(["q1", "q2", "q3", "q4"])
+        rewarder = _ToyRewarder()
+        optimizer = torch.optim.SGD(wrapper.trainable_parameters(), lr=1e-2)
+        engine = GRPOEngine(
+            model_wrapper=wrapper,
+            rewarder=rewarder,
+            optimizer=optimizer,
+            group_size=4,
+            clip_range=0.2,
+            kl_beta=0.01,
+            grad_clip_norm=1.0,
+            max_new_tokens=8,
+            temperature=0.8,
+            top_p=0.95,
+            reward_gap_threshold=0.0,
+        )
+
+        engine.train_step([QueryExample(qid="q1", text="input query")], collect_best_queries=False)
+
+        self.assertEqual(wrapper.single_compute_calls, 0)
+        self.assertEqual([call["policy"] for call in wrapper.batch_compute_calls], ["ref", "actor", "actor"])
+        self.assertEqual(len(wrapper.batch_compute_calls[0]["prompts"]), 4)
+        self.assertEqual(len(wrapper.batch_compute_calls[1]["prompts"]), 2)
+        self.assertEqual(len(wrapper.batch_compute_calls[2]["prompts"]), 2)
 
     def test_train_step_postprocesses_rollout_queries_before_reward(self):
         wrapper = _ToyModelWrapper()

@@ -385,6 +385,77 @@ class ModelWrapper:
             return torch.device("cpu")
 
     @staticmethod
+    def _infer_module_device(module: torch.nn.Module) -> torch.device:
+        """Infer the execution device for standalone modules such as lm_head."""
+
+        try:
+            return next(module.parameters()).device
+        except StopIteration:
+            try:
+                return next(module.buffers()).device
+            except StopIteration:
+                return torch.device("cpu")
+
+    @classmethod
+    def _resolve_causal_lm_stack(cls, model: torch.nn.Module) -> tuple[torch.nn.Module, torch.nn.Module] | None:
+        """Find the causal-LM backbone and lm_head through wrapper layers."""
+
+        queue: list[torch.nn.Module] = [model]
+        seen: set[int] = set()
+
+        get_base_model = getattr(model, "get_base_model", None)
+        if callable(get_base_model):
+            try:
+                base = get_base_model()
+            except TypeError:
+                base = None
+            if isinstance(base, torch.nn.Module):
+                queue.append(base)
+
+        while queue:
+            candidate = queue.pop(0)
+            candidate_id = id(candidate)
+            if candidate_id in seen:
+                continue
+            seen.add(candidate_id)
+
+            backbone = getattr(candidate, "model", None)
+            lm_head = getattr(candidate, "lm_head", None)
+            if isinstance(backbone, torch.nn.Module) and isinstance(lm_head, torch.nn.Module):
+                return backbone, lm_head
+
+            for attr in ("base_model", "model"):
+                nested = getattr(candidate, attr, None)
+                if isinstance(nested, torch.nn.Module):
+                    queue.append(nested)
+        return None
+
+    @staticmethod
+    def _gather_selected_logprobs(
+        *,
+        lm_head: torch.nn.Module,
+        selected_hidden_states: torch.Tensor,
+        target_ids: torch.Tensor,
+        projection_chunk_size: int = 32,
+    ) -> torch.Tensor:
+        """Project only the target positions through lm_head to keep VRAM bounded."""
+
+        if selected_hidden_states.numel() == 0:
+            return torch.empty(0, dtype=torch.float32, device=selected_hidden_states.device)
+
+        chunk_size = max(1, int(projection_chunk_size))
+        gathered: list[torch.Tensor] = []
+        for start in range(0, int(selected_hidden_states.shape[0]), chunk_size):
+            end = start + chunk_size
+            hidden_chunk = selected_hidden_states[start:end]
+            target_chunk = target_ids[start:end]
+            logits_chunk = lm_head(hidden_chunk)
+            target_logits = logits_chunk.gather(-1, target_chunk.unsqueeze(-1)).squeeze(-1).to(torch.float32)
+            log_norm = torch.logsumexp(logits_chunk.to(torch.float32), dim=-1)
+            gathered.append(target_logits - log_norm)
+        return torch.cat(gathered, dim=0)
+
+    @staticmethod
     def _normalize_model_id(name: str) -> str:
         """标准化模型 ID（路径分隔符与大小写）。"""
 
@@ -903,7 +974,7 @@ class ModelWrapper:
             )
             return left + right
 
-    def _compute_logprob_batch_once(
+    def _compute_logprob_batch_from_full_logits(
         self,
         prompts: Sequence[str],
         response_token_ids_batch: Sequence[Sequence[int]],
@@ -911,7 +982,7 @@ class ModelWrapper:
         policy: PolicyName,
         no_grad: bool,
     ) -> list[torch.Tensor]:
-        """Recompute token logprobs for multiple fixed responses in one forward pass."""
+        """Compatibility path that materializes full logits."""
 
         prompt_list = list(prompts)
         response_list = [list(token_ids) for token_ids in response_token_ids_batch]
@@ -990,6 +1061,144 @@ class ModelWrapper:
             target_ids = response_tensor.unsqueeze(0)[:, : token_logits.shape[1]]
             log_probs = torch.log_softmax(token_logits, dim=-1)
             outputs[original_index] = log_probs.gather(-1, target_ids.unsqueeze(-1)).squeeze(-1).squeeze(0)
+
+        return [tensor if tensor is not None else torch.empty(0, device=device) for tensor in outputs]
+
+    def _compute_logprob_batch_once(
+        self,
+        prompts: Sequence[str],
+        response_token_ids_batch: Sequence[Sequence[int]],
+        *,
+        policy: PolicyName,
+        no_grad: bool,
+    ) -> list[torch.Tensor]:
+        """Recompute token logprobs while only projecting response positions."""
+
+        prompt_list = list(prompts)
+        response_list = [list(token_ids) for token_ids in response_token_ids_batch]
+        if len(prompt_list) != len(response_list):
+            raise ValueError("prompts and response_token_ids_batch must have the same length.")
+        if not prompt_list:
+            return []
+
+        model = self._policy_model(policy)
+        device = self._infer_model_device(model)
+        pad_token_id = self.tokenizer.pad_token_id
+        if pad_token_id is None:
+            pad_token_id = self.tokenizer.eos_token_id
+        if pad_token_id is None:
+            raise RuntimeError("Tokenizer must define pad_token_id or eos_token_id for batched logprob.")
+
+        outputs: list[torch.Tensor | None] = [None] * len(prompt_list)
+        active_indices: list[int] = []
+        full_sequences: list[torch.Tensor] = []
+        prompt_lengths: list[int] = []
+        response_tensors: list[torch.Tensor] = []
+
+        for index, (prompt, response_token_ids) in enumerate(zip(prompt_list, response_list)):
+            if not response_token_ids:
+                outputs[index] = torch.empty(0, device=device)
+                continue
+
+            prompt_ids = self.tokenizer(prompt, return_tensors="pt").input_ids.to(device)
+            if prompt_ids.shape[1] == 0:
+                eos_id = self.tokenizer.eos_token_id
+                if eos_id is None:
+                    raise RuntimeError("Tokenizer has no eos token id and prompt is empty.")
+                prompt_ids = torch.tensor([[eos_id]], dtype=torch.long, device=device)
+
+            prompt_row = prompt_ids.squeeze(0)
+            response_tensor = torch.tensor(response_token_ids, dtype=torch.long, device=device)
+            full_sequences.append(torch.cat([prompt_row, response_tensor], dim=0))
+            prompt_lengths.append(int(prompt_row.shape[0]))
+            response_tensors.append(response_tensor)
+            active_indices.append(index)
+
+        if not active_indices:
+            return [tensor if tensor is not None else torch.empty(0, device=device) for tensor in outputs]
+
+        causal_lm_stack = self._resolve_causal_lm_stack(model)
+        if causal_lm_stack is None:
+            return self._compute_logprob_batch_from_full_logits(
+                prompt_list,
+                response_list,
+                policy=policy,
+                no_grad=no_grad,
+            )
+        backbone, lm_head = causal_lm_stack
+
+        max_seq_len = max(int(sequence.shape[0]) for sequence in full_sequences)
+        batch_input_ids = torch.full(
+            (len(full_sequences), max_seq_len),
+            int(pad_token_id),
+            dtype=torch.long,
+            device=device,
+        )
+        batch_attention_mask = torch.zeros(
+            (len(full_sequences), max_seq_len),
+            dtype=torch.long,
+            device=device,
+        )
+        for row_index, sequence in enumerate(full_sequences):
+            seq_len = int(sequence.shape[0])
+            batch_input_ids[row_index, :seq_len] = sequence
+            batch_attention_mask[row_index, :seq_len] = 1
+
+        grad_ctx = torch.no_grad() if no_grad else nullcontext()
+        with grad_ctx:
+            try:
+                backbone_outputs = backbone(
+                    input_ids=batch_input_ids,
+                    attention_mask=batch_attention_mask,
+                    use_cache=False,
+                    return_dict=True,
+                )
+            except TypeError:
+                return self._compute_logprob_batch_from_full_logits(
+                    prompt_list,
+                    response_list,
+                    policy=policy,
+                    no_grad=no_grad,
+                )
+
+            hidden_states = getattr(backbone_outputs, "last_hidden_state", None)
+            if hidden_states is None:
+                if isinstance(backbone_outputs, tuple) and backbone_outputs:
+                    hidden_states = backbone_outputs[0]
+                else:
+                    raise RuntimeError("Backbone forward did not return last_hidden_state.")
+
+            selected_hidden_states: list[torch.Tensor] = []
+            selected_target_ids: list[torch.Tensor] = []
+            token_counts: list[int] = []
+            for row_index, response_tensor in enumerate(response_tensors):
+                prompt_len = prompt_lengths[row_index]
+                start = max(prompt_len - 1, 0)
+                end = start + int(response_tensor.shape[0])
+                token_hidden_states = hidden_states[row_index, start:end, :]
+                target_ids = response_tensor[: int(token_hidden_states.shape[0])]
+                selected_hidden_states.append(token_hidden_states)
+                selected_target_ids.append(target_ids)
+                token_counts.append(int(target_ids.shape[0]))
+
+            flat_hidden_states = torch.cat(selected_hidden_states, dim=0)
+            flat_target_ids = torch.cat(selected_target_ids, dim=0)
+            lm_head_device = self._infer_module_device(lm_head)
+            if flat_hidden_states.device != lm_head_device:
+                flat_hidden_states = flat_hidden_states.to(lm_head_device)
+            if flat_target_ids.device != lm_head_device:
+                flat_target_ids = flat_target_ids.to(lm_head_device)
+            flat_logprobs = self._gather_selected_logprobs(
+                lm_head=lm_head,
+                selected_hidden_states=flat_hidden_states,
+                target_ids=flat_target_ids,
+            )
+
+        offset = 0
+        for row_index, original_index in enumerate(active_indices):
+            token_count = token_counts[row_index]
+            outputs[original_index] = flat_logprobs[offset : offset + token_count]
+            offset += token_count
 
         return [tensor if tensor is not None else torch.empty(0, device=device) for tensor in outputs]
 

@@ -8,7 +8,7 @@
   - `get_topics/get_qrels('msmarco-passage-dev-subset')`
   - `LuceneSearcher.from_prebuilt_index('msmarco-v1-passage')`
 
-目标是让模型把模糊用户查询重写为更精准的搜索查询，并通过 MRR@10 衡量检索收益。
+目标是让模型把模糊用户查询重写为更精准的搜索查询，并通过 MRR@50 衡量检索收益。
 
 ---
 
@@ -23,7 +23,7 @@
 |-- core/
 |   |-- model_wrapper.py         # QLoRA模型加载 + 生成 + logprob计算
 |   |-- grpo_engine.py           # GRPO核心（采样、优势归一化、PPO-clip、KL）
-|   `-- reward_func.py           # 奖励函数（MRR@10 + 文本惩罚）
+|   `-- reward_func.py           # 奖励函数（MRR@50 + 文本惩罚）
 |-- data/
 |   `-- loader.py                # Pyserini topics/qrels 加载与数据切分
 `-- tests/
@@ -179,7 +179,7 @@ python train.py \
   --max-regen-rounds 2 \
   --reward-gap-threshold 0.08 \
   --gap-sampling-temperature-delta 0.15 \
-  --reward-mrr-k 10 \
+  --reward-mrr-k 50 \
   --reward-recall-k 50 \
   --reward-recall-dense-k 100 \
   --reward-w-mrr 0.40 \
@@ -430,7 +430,7 @@ python train.py --low-mem-mode
 5. `max_train_queries=64`
 6. `max_val_queries=32`
 7. `max_steps=20`
-8. 奖励计算切换到 `MRR@10 + Recall@50`
+8. 奖励计算切换到 `MRR@50 + Recall@50`
 9. 启用 `CopyPenalty` 与 `FormatPenalty` 约束，避免纯 MRR 稀疏导致无学习信号
 10. 检索索引切换为 `msmarco-v1-passage-slim`（下载体积更小）
 11. 输出目录改为 `train_and_eval_data_model/artifacts_lowmem_train/`
@@ -441,13 +441,13 @@ python train.py --low-mem-mode
 你仍然可以在低显存模式下覆盖参数，例如：
 
 ```bash
-python train.py --low-mem-mode --max-steps 50 --max-train-queries 128 --reward-mrr-k 10 --reward-recall-k 50
+python train.py --low-mem-mode --max-steps 50 --max-train-queries 128 --reward-mrr-k 50 --reward-recall-k 50
 ```
 
 Windows PowerShell 示例：
 
 ```powershell
-python train.py --low-mem-mode --max-steps 50 --max-train-queries 128 --reward-mrr-k 10 --reward-recall-k 50
+python train.py --low-mem-mode --max-steps 50 --max-train-queries 128 --reward-mrr-k 50 --reward-recall-k 50
 ```
 
 
@@ -468,7 +468,7 @@ python train.py `
   --max-regen-rounds 2 `
   --reward-gap-threshold 0.08 `
   --gap-sampling-temperature-delta 0.15 `
-  --reward-mrr-k 10 `
+  --reward-mrr-k 50 `
   --reward-recall-k 50 `
   --reward-recall-dense-k 100 `
   --reward-w-mrr 0.40 `
@@ -488,7 +488,7 @@ python train.py `
 
 目标
 类别	成功标准（建议值，可调整）
-主要效果	在确认阶段（≥1000 queries）MRR@10 相对 Original 提升 ≥ 0.005（绝对值）且 p<0.05
+主要效果	在确认阶段（≥1000 queries）MRR@50 相对 Original 提升 ≥ 0.005（绝对值）且 p<0.05
 次要效果	Recall@50 不下降（或下降 ≤ 0.01）；Zero-shot 基线必须显著低于最佳系统
 工程可用性	格式通过率 ≥ 98%；平均输出词项数 ≤ 12；平均延迟与 token 成本不超过预算
 鲁棒性	至少 3 个 seed 下结论一致；不同 query 类型切片上无明显劣化

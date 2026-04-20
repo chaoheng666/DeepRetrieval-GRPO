@@ -112,7 +112,7 @@ class DefaultPromptConfigTests(unittest.TestCase):
         self.assertEqual(config.prompt.stop_on, "\n")
         self.assertTrue(config.prompt.enforce_single_line)
         self.assertIn("Strategy ID: P23 [FewShot]", config.prompt.system_prompt)
-        self.assertIn("MRR@10", config.prompt.system_prompt)
+        self.assertIn("MRR@50", config.prompt.system_prompt)
         self.assertIn("anemia symptoms women", config.prompt.template)
 
     def test_training_defaults_remain_stochastic(self):
@@ -128,7 +128,7 @@ class DefaultPromptConfigTests(unittest.TestCase):
     def test_reward_defaults_use_dense_three_layer_formula(self):
         config = get_default_config()
 
-        self.assertEqual(config.reward.mrr_k, 10)
+        self.assertEqual(config.reward.mrr_k, 50)
         self.assertEqual(config.reward.recall_k, 50)
         self.assertEqual(config.reward.recall_dense_k, 100)
         self.assertEqual(config.reward.w_mrr, 0.40)

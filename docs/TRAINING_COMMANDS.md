@@ -78,7 +78,7 @@ python train.py `
   --max-regen-rounds 2 `
   --reward-gap-threshold 0.08 `
   --gap-sampling-temperature-delta 0.15 `
-  --reward-mrr-k 10 `
+  --reward-mrr-k 50 `
   --reward-recall-k 50 `
   --reward-recall-dense-k 100 `
   --reward-w-mrr 0.40 `
