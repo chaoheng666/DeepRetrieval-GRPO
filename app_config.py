@@ -150,7 +150,7 @@ class TrainConfig:
     # PPO clip 参数 epsilon。
     clip_range: float = 0.2
     # KL 惩罚系数 beta，用于约束新策略不要偏离参考策略过远。
-    kl_beta: float = 0.005
+    kl_beta: float = 0.02
     # 梯度裁剪阈值，避免梯度爆炸导致训练不稳定。
     grad_clip_norm: float = 1.0
     # 生成长度与采样策略。
@@ -184,27 +184,36 @@ class TrainConfig:
 
 @dataclass(slots=True)
 class RewardConfig:
-    """Reward V1 配置：MRR + Recall + CopyPenalty + FormatPenalty。"""
+    """Dense BM25 rewrite reward configuration."""
 
-    # 检索截断深度（可独立配置，检索时会取二者最大值）。
+    # Retrieval cutoffs.
     mrr_k: int = 50
     recall_k: int = 50
+    recall_dense_k: int = 100
     # Pyserini batch_search thread count for retrieval-side parallelism.
     search_threads: int = 8
-    # 奖励组合权重：
-    # total = w_mrr*mrr + w_recall*recall - w_copy*copy_penalty - w_format*format_penalty - exact_copy_penalty
-    w_mrr: float = 1.0
-    w_recall: float = 0.3
-    w_copy: float = 0.4
-    w_format: float = 0.2
-    # CopyPenalty = max(0, overlap - copy_tau), overlap 使用 Jaccard(set)。
-    copy_tau: float = 0.3
-    # ExactCopyPenalty：若最终 query 与原 query 完全一致，则直接扣一个固定分。
-    exact_copy_penalty: float = 0.15
-    # FormatPenalty 严格阈值（基于 clean_rewritten_query 后文本）。
+    # Fixed reward formula:
+    # total = 0.55*mrr@50 + 0.20*recall@50 + 0.10*recall@100
+    #       + 0.05*term_preserve + 0.05*length_score + 0.05*clean_format
+    #       - 0.10*bad_format - 0.05*unsafe_copy
+    w_mrr: float = 0.55
+    w_recall: float = 0.20
+    w_recall_dense: float = 0.10
+    w_term_preserve: float = 0.05
+    w_length_score: float = 0.05
+    w_clean_format: float = 0.05
+    w_bad_format: float = 0.10
+    w_unsafe_copy: float = 0.05
+    # Length score piecewise anchors.
+    length_score_min_terms: int = 1
+    length_score_ideal_min_terms: int = 4
+    length_score_ideal_max_terms: int = 12
+    length_score_max_terms: int = 20
+    # Continuous bad-format settings.
     format_max_tokens: int = 16
     format_min_english_ratio: float = 0.80
     format_max_unreadable_ratio: float = 0.30
+    bad_format_cap: float = 1.5
 
 
 @dataclass(slots=True)

@@ -26,9 +26,12 @@ class Sample:
     reward: float
     mrr: float
     recall: float
-    copy_penalty: float
-    exact_copy_penalty: float
-    format_penalty: float
+    recall_dense: float
+    term_preserve: float
+    length_score: float
+    clean_format: float
+    bad_format_penalty: float
+    unsafe_copy_penalty: float
     fallback_to_original: bool
     fallback_reasons: tuple[str, ...]
     advantage: float = 0.0
@@ -330,9 +333,12 @@ class GRPOEngine:
             rewards: list[float] = []
             mrr_scores: list[float] = []
             recall_scores: list[float] = []
-            copy_penalties: list[float] = []
-            exact_copy_penalties: list[float] = []
-            format_penalties: list[float] = []
+            recall_dense_scores: list[float] = []
+            term_preserve_scores: list[float] = []
+            length_scores: list[float] = []
+            clean_format_scores: list[float] = []
+            bad_format_penalties: list[float] = []
+            unsafe_copy_penalties: list[float] = []
             all_advantages: list[float] = []
             unique_final_query_counts: list[float] = []
             generated_sample_counts: list[float] = []
@@ -436,9 +442,12 @@ class GRPOEngine:
                             reward=reward.total,
                             mrr=reward.mrr,
                             recall=reward.recall,
-                            copy_penalty=reward.copy_penalty,
-                            exact_copy_penalty=reward.exact_copy_penalty,
-                            format_penalty=reward.format_penalty,
+                            recall_dense=reward.recall_dense,
+                            term_preserve=reward.term_preserve,
+                            length_score=reward.length_score,
+                            clean_format=reward.clean_format,
+                            bad_format_penalty=reward.bad_format_penalty,
+                            unsafe_copy_penalty=reward.unsafe_copy_penalty,
                             fallback_to_original=stabilized.fallback_to_original,
                             fallback_reasons=stabilized.fallback_reasons,
                         )
@@ -476,9 +485,12 @@ class GRPOEngine:
                         "group_rewards": [sample.reward for sample in group_samples],
                         "group_mrr": [sample.mrr for sample in group_samples],
                         "group_recall": [sample.recall for sample in group_samples],
-                        "group_copy_penalties": [sample.copy_penalty for sample in group_samples],
-                        "group_exact_copy_penalties": [sample.exact_copy_penalty for sample in group_samples],
-                        "group_format_penalties": [sample.format_penalty for sample in group_samples],
+                        "group_recall_dense": [sample.recall_dense for sample in group_samples],
+                        "group_term_preserve": [sample.term_preserve for sample in group_samples],
+                        "group_length_scores": [sample.length_score for sample in group_samples],
+                        "group_clean_format_scores": [sample.clean_format for sample in group_samples],
+                        "group_bad_format_penalties": [sample.bad_format_penalty for sample in group_samples],
+                        "group_unsafe_copy_penalties": [sample.unsafe_copy_penalty for sample in group_samples],
                     }
                 )
 
@@ -500,9 +512,12 @@ class GRPOEngine:
                     rewards.append(sample.reward)
                     mrr_scores.append(sample.mrr)
                     recall_scores.append(sample.recall)
-                    copy_penalties.append(sample.copy_penalty)
-                    exact_copy_penalties.append(sample.exact_copy_penalty)
-                    format_penalties.append(sample.format_penalty)
+                    recall_dense_scores.append(sample.recall_dense)
+                    term_preserve_scores.append(sample.term_preserve)
+                    length_scores.append(sample.length_score)
+                    clean_format_scores.append(sample.clean_format)
+                    bad_format_penalties.append(sample.bad_format_penalty)
+                    unsafe_copy_penalties.append(sample.unsafe_copy_penalty)
 
                 if group_collapsed:
                     continue
@@ -557,9 +572,12 @@ class GRPOEngine:
                 "reward_mean": fmean(rewards) if rewards else 0.0,
                 "mrr_mean": fmean(mrr_scores) if mrr_scores else 0.0,
                 "recall_mean": fmean(recall_scores) if recall_scores else 0.0,
-                "copy_penalty_mean": fmean(copy_penalties) if copy_penalties else 0.0,
-                "exact_copy_penalty_mean": fmean(exact_copy_penalties) if exact_copy_penalties else 0.0,
-                "format_penalty_mean": fmean(format_penalties) if format_penalties else 0.0,
+                "recall_dense_mean": fmean(recall_dense_scores) if recall_dense_scores else 0.0,
+                "term_preserve_mean": fmean(term_preserve_scores) if term_preserve_scores else 0.0,
+                "length_score_mean": fmean(length_scores) if length_scores else 0.0,
+                "clean_format_mean": fmean(clean_format_scores) if clean_format_scores else 0.0,
+                "bad_format_penalty_mean": fmean(bad_format_penalties) if bad_format_penalties else 0.0,
+                "unsafe_copy_penalty_mean": fmean(unsafe_copy_penalties) if unsafe_copy_penalties else 0.0,
                 "nonzero_reward_ratio": nonzero_reward_ratio,
                 "adv_mean": fmean(all_advantages) if all_advantages else 0.0,
                 "adv_std": float(torch.tensor(all_advantages).std(unbiased=False)) if all_advantages else 0.0,

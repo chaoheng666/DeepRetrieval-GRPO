@@ -127,15 +127,14 @@ class _ToyRewarder:
         self.cfg = RewardConfig()
 
     def score(self, qid: str, rewritten_query: str, source_query: str | None = None) -> RewardBreakdown:
-        format_penalty = 1.0 if "¤" in rewritten_query else 0.0
+        bad_format_penalty = 1.0 if "¤" in rewritten_query else 0.0
         return RewardBreakdown(
-            total=1.0 - (0.2 * format_penalty),
+            total=1.0 - (0.1 * bad_format_penalty),
             mrr=0.5,
             recall=0.25,
             overlap=0.4,
-            copy_penalty=0.0,
-            exact_copy_penalty=0.0,
-            format_penalty=format_penalty,
+            bad_format_penalty=bad_format_penalty,
+            clean_format=0.0 if bad_format_penalty else 1.0,
             hit_rank=1,
             retrieved_relevant_count=1,
             relevant_total=4,
@@ -155,9 +154,6 @@ class _RecordingRewarder:
             mrr=0.5,
             recall=0.25,
             overlap=0.4,
-            copy_penalty=0.0,
-            exact_copy_penalty=0.0,
-            format_penalty=0.0,
             hit_rank=1,
             retrieved_relevant_count=1,
             relevant_total=4,
@@ -197,9 +193,9 @@ class EngineTraceTests(unittest.TestCase):
         self.assertEqual(len(summaries[0]["group_fallback_reasons"]), 2)
         self.assertEqual(len(summaries[0]["group_rewards"]), 2)
         self.assertEqual(len(summaries[0]["group_recall"]), 2)
-        self.assertEqual(len(summaries[0]["group_copy_penalties"]), 2)
-        self.assertEqual(len(summaries[0]["group_format_penalties"]), 2)
-        self.assertGreaterEqual(metrics["format_penalty_mean"], 0.0)
+        self.assertEqual(len(summaries[0]["group_term_preserve"]), 2)
+        self.assertEqual(len(summaries[0]["group_bad_format_penalties"]), 2)
+        self.assertGreaterEqual(metrics["bad_format_penalty_mean"], 0.0)
         self.assertIn("unique_final_query_mean", metrics)
         self.assertIn("collapsed_group_ratio", metrics)
         self.assertIn("all_same_final_query_ratio", metrics)
@@ -356,9 +352,6 @@ class _ConstantRewarder:
             mrr=0.5,
             recall=1.0,
             overlap=0.2,
-            copy_penalty=0.0,
-            exact_copy_penalty=0.0,
-            format_penalty=0.0,
             hit_rank=1,
             retrieved_relevant_count=1,
             relevant_total=1,
@@ -496,9 +489,6 @@ class _MappedRewarder:
             mrr=total,
             recall=0.0,
             overlap=0.0,
-            copy_penalty=0.0,
-            exact_copy_penalty=0.0,
-            format_penalty=0.0,
             hit_rank=1 if total > 0.0 else None,
             retrieved_relevant_count=0,
             relevant_total=0,

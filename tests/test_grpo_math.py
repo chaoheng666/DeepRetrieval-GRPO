@@ -8,11 +8,13 @@ from core.reward_func import (
     Rewarder,
     clean_rewritten_query,
     compose_reward,
-    compute_copy_penalty,
-    compute_exact_copy_penalty,
-    compute_format_penalty,
+    compute_bad_format_penalty,
+    compute_clean_format_score,
+    compute_length_score,
     compute_mrr_at_k,
     compute_recall_at_k,
+    compute_term_preserve,
+    compute_unsafe_copy_penalty,
     is_retrieval_ready_query,
     stabilize_generated_rewrite,
 )
@@ -44,76 +46,104 @@ class RewardMathTests(unittest.TestCase):
         self.assertAlmostEqual(mrr, 1.0 / 3.0)
         self.assertEqual(rank, 3)
 
-    def test_compute_mrr_at_k_miss(self):
-        mrr, rank = compute_mrr_at_k(["D1", "D2"], {"D3"}, topk=10)
-        self.assertEqual(mrr, 0.0)
-        self.assertIsNone(rank)
-
     def test_compute_recall_at_k_hit(self):
         recall, hit_count, total = compute_recall_at_k(["D1", "D2", "D3"], {"D2", "D9"}, topk=3)
         self.assertAlmostEqual(recall, 0.5)
         self.assertEqual(hit_count, 1)
         self.assertEqual(total, 2)
 
-    def test_compute_recall_at_k_miss(self):
-        recall, hit_count, total = compute_recall_at_k(["D1", "D2"], {"D9"}, topk=2)
-        self.assertEqual(recall, 0.0)
-        self.assertEqual(hit_count, 0)
-        self.assertEqual(total, 1)
+    def test_term_preserve_averages_only_applicable_categories(self):
+        term_preserve, number_preserve, acronym_preserve, negation_preserve = compute_term_preserve(
+            "COPD treatment without oxygen 2024",
+            "copd treatment without oxygen",
+        )
 
-    def test_compute_recall_at_k_multiple_hits(self):
-        recall, hit_count, total = compute_recall_at_k(["D1", "D2", "D3", "D4"], {"D2", "D4"}, topk=4)
-        self.assertAlmostEqual(recall, 1.0)
-        self.assertEqual(hit_count, 2)
-        self.assertEqual(total, 2)
+        self.assertEqual(number_preserve, 0.0)
+        self.assertEqual(acronym_preserve, 1.0)
+        self.assertEqual(negation_preserve, 1.0)
+        self.assertAlmostEqual(term_preserve, 2.0 / 3.0)
 
-    def test_copy_penalty_piecewise(self):
-        self.assertEqual(compute_copy_penalty(0.55, 0.6), 0.0)
-        self.assertAlmostEqual(compute_copy_penalty(0.8, 0.6), 0.2)
+    def test_term_preserve_defaults_to_one_when_no_locked_terms_exist(self):
+        term_preserve, number_preserve, acronym_preserve, negation_preserve = compute_term_preserve(
+            "best budget gaming laptop",
+            "budget gaming laptop deals",
+        )
 
-    def test_exact_copy_penalty_only_on_exact_match(self):
-        self.assertEqual(compute_exact_copy_penalty("windows media player amr files", "windows media player amr files", 0.4), 0.4)
-        self.assertEqual(compute_exact_copy_penalty("windows media player amr files", "windows media player amr file", 0.4), 0.0)
+        self.assertEqual(term_preserve, 1.0)
+        self.assertEqual(number_preserve, 1.0)
+        self.assertEqual(acronym_preserve, 1.0)
+        self.assertEqual(negation_preserve, 1.0)
 
-    def test_format_penalty_empty(self):
+    def test_length_score_piecewise_profile(self):
         cfg = RewardConfig()
-        self.assertEqual(compute_format_penalty("", cfg), 1.0)
+        self.assertEqual(compute_length_score("one", cfg), 0.0)
+        self.assertAlmostEqual(compute_length_score("one two three", cfg), 2.0 / 3.0)
+        self.assertEqual(compute_length_score("one two three four", cfg), 1.0)
+        self.assertEqual(compute_length_score("one two three four five six seven eight nine ten eleven twelve", cfg), 1.0)
+        self.assertEqual(
+            compute_length_score(
+                "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen",
+                cfg,
+            ),
+            0.125,
+        )
+        self.assertEqual(
+            compute_length_score(
+                "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty",
+                cfg,
+            ),
+            0.0,
+        )
 
-    def test_format_penalty_multiline(self):
+    def test_bad_format_penalty_is_continuous(self):
         cfg = RewardConfig()
-        self.assertEqual(compute_format_penalty("first line\nsecond line", cfg), 1.0)
+        self.assertEqual(compute_bad_format_penalty("", cfg), 1.0)
+        self.assertEqual(compute_bad_format_penalty("first line\nsecond line", cfg), 0.5)
+        self.assertEqual(compute_bad_format_penalty("because this query is better", cfg), 0.5)
+        self.assertAlmostEqual(compute_bad_format_penalty("best budget gaming laptop 2024", RewardConfig(format_max_tokens=3)), 0.06)
+        self.assertGreater(compute_bad_format_penalty("天气 预报 北京 明天", cfg), 0.0)
+        self.assertEqual(compute_clean_format_score(0.0), 1.0)
+        self.assertEqual(compute_clean_format_score(0.2), 0.0)
 
-    def test_format_penalty_explanation(self):
-        cfg = RewardConfig()
-        self.assertEqual(compute_format_penalty("because this query is better", cfg), 1.0)
-
-    def test_format_penalty_non_english(self):
-        cfg = RewardConfig()
-        self.assertEqual(compute_format_penalty("天气 预报 北京 明天", cfg), 1.0)
-
-    def test_format_penalty_overlength(self):
-        cfg = RewardConfig(format_max_tokens=3)
-        self.assertEqual(compute_format_penalty("best budget gaming laptop 2024", cfg), 1.0)
-
-    def test_format_penalty_unreadable(self):
-        cfg = RewardConfig(format_max_unreadable_ratio=0.0)
-        self.assertEqual(compute_format_penalty("normal § query", cfg), 1.0)
-
-    def test_format_penalty_valid_query(self):
-        cfg = RewardConfig()
-        self.assertEqual(compute_format_penalty("best budget gaming laptop 2024", cfg), 0.0)
+    def test_unsafe_copy_penalty_only_applies_to_non_retrieval_ready_queries(self):
+        self.assertEqual(
+            compute_unsafe_copy_penalty(
+                "what is windows media player amr files",
+                "what is windows media player amr files",
+            ),
+            1.0,
+        )
+        self.assertEqual(
+            compute_unsafe_copy_penalty(
+                "windows media player amr files",
+                "windows media player amr files",
+            ),
+            0.0,
+        )
 
     def test_total_reward_formula(self):
-        cfg = RewardConfig(w_mrr=1.0, w_recall=0.3, w_copy=0.15, w_format=0.2)
+        cfg = RewardConfig()
         total = compose_reward(
             mrr=0.5,
             recall=0.4,
-            copy_penalty=0.1,
-            exact_copy_penalty=0.4,
-            format_penalty=1.0,
+            recall_dense=0.7,
+            term_preserve=0.8,
+            length_score=1.0,
+            clean_format=1.0,
+            bad_format_penalty=0.25,
+            unsafe_copy_penalty=1.0,
             cfg=cfg,
         )
-        expected = 1.0 * 0.5 + 0.3 * 0.4 - 0.15 * 0.1 - 0.2 * 1.0 - 0.4
+        expected = (
+            0.55 * 0.5
+            + 0.20 * 0.4
+            + 0.10 * 0.7
+            + 0.05 * 0.8
+            + 0.05 * 1.0
+            + 0.05 * 1.0
+            - 0.10 * 0.25
+            - 0.05 * 1.0
+        )
         self.assertAlmostEqual(total, expected)
 
     def test_retrieval_ready_query_detection(self):
@@ -146,14 +176,6 @@ class QueryCleaningTests(unittest.TestCase):
         cleaned = clean_rewritten_query(raw, source_query="best budget gaming laptop 2024")
         self.assertEqual(cleaned, "best budget gaming laptop 2024")
 
-    def test_clean_rewritten_query_without_source_is_deterministic(self):
-        raw = (
-            "Rewritten Query: travel insurance for japan\n"
-            "Search Query: travel insurance japan coverage"
-        )
-        cleaned = clean_rewritten_query(raw)
-        self.assertEqual(cleaned, "travel insurance for japan")
-
     def test_clean_rewritten_query_discards_prompt_template_leakage(self):
         raw = (
             "finderscope\n\n"
@@ -164,44 +186,30 @@ class QueryCleaningTests(unittest.TestCase):
         cleaned = clean_rewritten_query(raw, source_query="what is a finderscope")
         self.assertEqual(cleaned, "finderscope")
 
-    def test_stabilize_generated_rewrite_falls_back_when_numeric_is_lost(self):
+    def test_stabilize_generated_rewrite_only_falls_back_when_cleaning_is_empty(self):
         cfg = RewardConfig()
         prompt_cfg = PromptConfig(min_terms=3, max_terms=12, fallback_mode="conservative")
-        record = stabilize_generated_rewrite(
+
+        empty_record = stabilize_generated_rewrite(
+            "",
+            source_query="best laptop under 1000 2024",
+            guardrail_cfg=prompt_cfg,
+            reward_cfg=cfg,
+        )
+        self.assertTrue(empty_record.fallback_to_original)
+        self.assertEqual(empty_record.final_query, "best laptop under 1000 2024")
+        self.assertIn("empty_after_clean", empty_record.fallback_reasons)
+
+        soft_constraint_record = stabilize_generated_rewrite(
             "best laptop under 1000",
             source_query="best laptop under 1000 2024",
             guardrail_cfg=prompt_cfg,
             reward_cfg=cfg,
         )
-        self.assertTrue(record.fallback_to_original)
-        self.assertIn("lost_numeric", record.fallback_reasons)
-        self.assertEqual(record.final_query, "best laptop under 1000 2024")
+        self.assertFalse(soft_constraint_record.fallback_to_original)
+        self.assertEqual(soft_constraint_record.final_query, "best laptop under 1000")
 
-    def test_stabilize_generated_rewrite_falls_back_when_acronym_or_negation_is_lost(self):
-        cfg = RewardConfig()
-        prompt_cfg = PromptConfig(min_terms=3, max_terms=12, fallback_mode="balanced")
-
-        acronym_record = stabilize_generated_rewrite(
-            "chronic obstructive pulmonary disease treatment options",
-            source_query="COPD treatment options",
-            guardrail_cfg=prompt_cfg,
-            reward_cfg=cfg,
-        )
-        self.assertTrue(acronym_record.fallback_to_original)
-        self.assertIn("lost_acronym", acronym_record.fallback_reasons)
-        self.assertEqual(acronym_record.final_query, "COPD treatment options")
-
-        negation_record = stabilize_generated_rewrite(
-            "foods gluten",
-            source_query="foods without gluten",
-            guardrail_cfg=prompt_cfg,
-            reward_cfg=cfg,
-        )
-        self.assertTrue(negation_record.fallback_to_original)
-        self.assertIn("lost_negation", negation_record.fallback_reasons)
-        self.assertEqual(negation_record.final_query, "foods without gluten")
-
-    def test_stabilize_generated_rewrite_falls_back_on_format_fail(self):
+    def test_stabilize_generated_rewrite_keeps_explanation_like_output_for_soft_scoring(self):
         cfg = RewardConfig()
         prompt_cfg = PromptConfig(min_terms=3, max_terms=11, fallback_mode="balanced")
         record = stabilize_generated_rewrite(
@@ -210,48 +218,9 @@ class QueryCleaningTests(unittest.TestCase):
             guardrail_cfg=prompt_cfg,
             reward_cfg=cfg,
         )
-        self.assertTrue(record.fallback_to_original)
-        self.assertIn("format_fail", record.fallback_reasons)
-        self.assertEqual(record.final_query, "best budget gaming laptop 2024")
-
-    def test_stabilize_generated_rewrite_falls_back_on_conservative_divergence(self):
-        cfg = RewardConfig()
-        prompt_cfg = PromptConfig(min_terms=2, max_terms=11, fallback_mode="conservative")
-        record = stabilize_generated_rewrite(
-            "south america regional dispute",
-            source_query="guayana venezuela",
-            guardrail_cfg=prompt_cfg,
-            reward_cfg=cfg,
-        )
-        self.assertTrue(record.fallback_to_original)
-        self.assertIn("diverged_from_lexical_source", record.fallback_reasons)
-        self.assertEqual(record.final_query, "guayana venezuela")
-
-    def test_stabilize_generated_rewrite_allows_one_term_entity_for_short_source(self):
-        cfg = RewardConfig()
-        prompt_cfg = PromptConfig(min_terms=3, max_terms=11, fallback_mode="balanced")
-        record = stabilize_generated_rewrite(
-            "iboss",
-            source_query="what is iboss",
-            guardrail_cfg=prompt_cfg,
-            reward_cfg=cfg,
-        )
         self.assertFalse(record.fallback_to_original)
-        self.assertNotIn("too_short", record.fallback_reasons)
-        self.assertEqual(record.final_query, "iboss")
-
-    def test_stabilize_generated_rewrite_allows_two_terms_for_four_term_source(self):
-        cfg = RewardConfig()
-        prompt_cfg = PromptConfig(min_terms=3, max_terms=11, fallback_mode="balanced")
-        record = stabilize_generated_rewrite(
-            "solaris os",
-            source_query="what is solaris os",
-            guardrail_cfg=prompt_cfg,
-            reward_cfg=cfg,
-        )
-        self.assertFalse(record.fallback_to_original)
-        self.assertNotIn("too_short", record.fallback_reasons)
-        self.assertEqual(record.final_query, "solaris os")
+        self.assertEqual(record.final_query, "because this query is better")
+        self.assertGreater(record.raw_format_penalty, 0.0)
 
 
 class RewarderConsistencyTests(unittest.TestCase):

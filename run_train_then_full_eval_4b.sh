@@ -16,6 +16,14 @@ MODEL_NAME="${MODEL_NAME:-/root/autodl-tmp/hf_models/Qwen3-4B-Instruct-2507}"
 AUTO_GIT_COMMIT="${AUTO_GIT_COMMIT:-1}"
 AUTO_GIT_PUSH="${AUTO_GIT_PUSH:-1}"
 TRAIN_MAX_VAL_QUERIES="${TRAIN_MAX_VAL_QUERIES:-400}"
+SEARCH_THREADS="${SEARCH_THREADS:-8}"
+TRAIN_MAX_NEW_TOKENS="${TRAIN_MAX_NEW_TOKENS:-12}"
+TRAIN_TEMPERATURE="${TRAIN_TEMPERATURE:-0.6}"
+TRAIN_TOP_P="${TRAIN_TOP_P:-0.9}"
+EVAL_MAX_NEW_TOKENS="${EVAL_MAX_NEW_TOKENS:-$TRAIN_MAX_NEW_TOKENS}"
+EVAL_TEMPERATURE="${EVAL_TEMPERATURE:-$TRAIN_TEMPERATURE}"
+EVAL_TOP_P="${EVAL_TOP_P:-$TRAIN_TOP_P}"
+EVAL_QUERY_BATCH_SIZE="${EVAL_QUERY_BATCH_SIZE:-1}"
 
 TRAIN_DIR="${ARTIFACT_ROOT}/artifacts_${EXP_NAME}_train"
 EVAL_DIR="${ARTIFACT_ROOT}/artifacts_${EXP_NAME}_eval"
@@ -98,7 +106,7 @@ print(f"[env] cuda device count: {torch.cuda.device_count()}")
 PY
 fi
 
-echo "[preset] 4B conservative config: batch=8 group=8 max_group=12 max_new_tokens=12 temperature=0.6 top_p=0.9 group_temperature_stride=0.05 group_top_p_stride=0.01 min_unique_final_queries=3 max_regen_rounds=1 reward_gap_threshold=0.06 gap_sampling_temperature_delta=0.10 max_val_queries=${TRAIN_MAX_VAL_QUERIES} filtered_ready_queries=on diversity_resampling=on reward_w_recall=0.1 reward_w_copy=0.15 copy_tau=0.5"
+echo "[preset] 4B conservative config: batch=8 group=8 max_group=12 train_decode=(${TRAIN_MAX_NEW_TOKENS},${TRAIN_TEMPERATURE},${TRAIN_TOP_P}) eval_decode=(${EVAL_MAX_NEW_TOKENS},${EVAL_TEMPERATURE},${EVAL_TOP_P}) eval_query_batch_size=${EVAL_QUERY_BATCH_SIZE} group_temperature_stride=0.05 group_top_p_stride=0.01 min_unique_final_queries=3 max_regen_rounds=1 reward_gap_threshold=0.06 gap_sampling_temperature_delta=0.10 max_val_queries=${TRAIN_MAX_VAL_QUERIES} search_threads=${SEARCH_THREADS} dense_reward=on"
 
 echo "[2/4] Training 4B experiment..."
 "$PYTHON_BIN" train.py \
@@ -110,10 +118,13 @@ echo "[2/4] Training 4B experiment..."
   --learning-rate 1.5e-5 \
   --clip-range 0.2 \
   --kl-beta 0.01 \
-  --search-threads 8 \
-  --max-new-tokens 12 \
-  --temperature 0.6 \
-  --top-p 0.9 \
+  --search-threads "$SEARCH_THREADS" \
+  --max-new-tokens "$TRAIN_MAX_NEW_TOKENS" \
+  --temperature "$TRAIN_TEMPERATURE" \
+  --top-p "$TRAIN_TOP_P" \
+  --eval-max-new-tokens "$EVAL_MAX_NEW_TOKENS" \
+  --eval-temperature "$EVAL_TEMPERATURE" \
+  --eval-top-p "$EVAL_TOP_P" \
   --group-temperature-stride 0.05 \
   --group-top-p-stride 0.01 \
   --min-unique-final-queries 3 \
@@ -125,11 +136,15 @@ echo "[2/4] Training 4B experiment..."
   --max-steps 500 \
   --reward-mrr-k 50 \
   --reward-recall-k 50 \
-  --reward-w-mrr 1.0 \
-  --reward-w-recall 0.1 \
-  --reward-w-copy 0.15 \
-  --reward-w-format 0.2 \
-  --reward-copy-tau 0.5 \
+  --reward-recall-dense-k 100 \
+  --reward-w-mrr 0.55 \
+  --reward-w-recall 0.20 \
+  --reward-w-recall-dense 0.10 \
+  --reward-w-term-preserve 0.05 \
+  --reward-w-length-score 0.05 \
+  --reward-w-clean-format 0.05 \
+  --reward-w-bad-format 0.10 \
+  --reward-w-unsafe-copy 0.05 \
   --format-max-tokens 12 \
   --format-min-english-ratio 0.8 \
   --format-max-unreadable-ratio 0.25 \
@@ -156,14 +171,22 @@ echo "[3/4] Running full evaluation for the 4B experiment..."
   --model-name "$MODEL_NAME" \
   --strict-tokenizer-model-match \
   --max-eval-queries 1000000 \
-  --search-threads 8 \
+  --search-threads "$SEARCH_THREADS" \
+  --max-new-tokens "$EVAL_MAX_NEW_TOKENS" \
+  --temperature "$EVAL_TEMPERATURE" \
+  --top-p "$EVAL_TOP_P" \
+  --query-batch-size "$EVAL_QUERY_BATCH_SIZE" \
   --reward-mrr-k 50 \
   --reward-recall-k 50 \
-  --reward-w-mrr 1.0 \
-  --reward-w-recall 0.1 \
-  --reward-w-copy 0.15 \
-  --reward-w-format 0.2 \
-  --reward-copy-tau 0.5 \
+  --reward-recall-dense-k 100 \
+  --reward-w-mrr 0.55 \
+  --reward-w-recall 0.20 \
+  --reward-w-recall-dense 0.10 \
+  --reward-w-term-preserve 0.05 \
+  --reward-w-length-score 0.05 \
+  --reward-w-clean-format 0.05 \
+  --reward-w-bad-format 0.10 \
+  --reward-w-unsafe-copy 0.05 \
   --format-max-tokens 12 \
   --format-min-english-ratio 0.8 \
   --format-max-unreadable-ratio 0.25 \

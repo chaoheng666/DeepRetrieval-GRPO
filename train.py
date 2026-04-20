@@ -70,14 +70,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-regen-rounds", type=int, default=None)
     parser.add_argument("--reward-gap-threshold", type=float, default=None)
     parser.add_argument("--gap-sampling-temperature-delta", type=float, default=None)
-    parser.add_argument("--reward-mrr-k", type=int, default=None, help="MRR@k reward cutoff, e.g. 10.")
+    parser.add_argument("--reward-mrr-k", type=int, default=None, help="MRR@k reward cutoff, e.g. 50.")
     parser.add_argument("--reward-recall-k", type=int, default=None, help="Recall@k reward cutoff, e.g. 50.")
+    parser.add_argument("--reward-recall-dense-k", type=int, default=None, help="Dense Recall@k reward cutoff, e.g. 100.")
     parser.add_argument("--search-threads", type=int, default=None, help="Pyserini batch_search thread count.")
     parser.add_argument("--reward-w-mrr", type=float, default=None, help="Weight for MRR reward term.")
     parser.add_argument("--reward-w-recall", type=float, default=None, help="Weight for Recall reward term.")
-    parser.add_argument("--reward-w-copy", type=float, default=None, help="Weight for CopyPenalty term.")
-    parser.add_argument("--reward-w-format", type=float, default=None, help="Weight for FormatPenalty term.")
-    parser.add_argument("--reward-copy-tau", type=float, default=None, help="Threshold tau for CopyPenalty=max(0, overlap-tau).")
+    parser.add_argument("--reward-w-recall-dense", type=float, default=None, help="Weight for dense Recall reward term.")
+    parser.add_argument("--reward-w-term-preserve", type=float, default=None, help="Weight for term-preserve reward term.")
+    parser.add_argument("--reward-w-length-score", type=float, default=None, help="Weight for length-score reward term.")
+    parser.add_argument("--reward-w-clean-format", type=float, default=None, help="Weight for clean-format reward term.")
+    parser.add_argument("--reward-w-bad-format", type=float, default=None, help="Weight for bad-format penalty term.")
+    parser.add_argument("--reward-w-unsafe-copy", type=float, default=None, help="Weight for unsafe-copy penalty term.")
+    parser.add_argument("--length-score-min-terms", type=int, default=None, help="Token count where length score starts above zero.")
+    parser.add_argument("--length-score-ideal-min-terms", type=int, default=None, help="Lower bound of the ideal token-count plateau.")
+    parser.add_argument("--length-score-ideal-max-terms", type=int, default=None, help="Upper bound of the ideal token-count plateau.")
+    parser.add_argument("--length-score-max-terms", type=int, default=None, help="Token count where length score returns to zero.")
     parser.add_argument("--format-max-tokens", type=int, default=None, help="Hard cap for token count in strict format check.")
     parser.add_argument(
         "--format-min-english-ratio",
@@ -91,6 +99,7 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Maximum unreadable-char ratio in strict format check.",
     )
+    parser.add_argument("--bad-format-cap", type=float, default=None, help="Maximum accumulated bad-format penalty.")
     parser.add_argument("--eval-every-steps", type=int, default=None)
     parser.add_argument("--max-steps", type=int, default=None)
     parser.add_argument("--max-train-queries", type=int, default=None)
@@ -204,24 +213,42 @@ def apply_overrides(config: AppConfig, args: argparse.Namespace) -> AppConfig:
         config.reward.mrr_k = args.reward_mrr_k
     if args.reward_recall_k is not None:
         config.reward.recall_k = args.reward_recall_k
+    if args.reward_recall_dense_k is not None:
+        config.reward.recall_dense_k = args.reward_recall_dense_k
     if args.search_threads is not None:
         config.reward.search_threads = max(1, args.search_threads)
     if args.reward_w_mrr is not None:
         config.reward.w_mrr = args.reward_w_mrr
     if args.reward_w_recall is not None:
         config.reward.w_recall = args.reward_w_recall
-    if args.reward_w_copy is not None:
-        config.reward.w_copy = args.reward_w_copy
-    if args.reward_w_format is not None:
-        config.reward.w_format = args.reward_w_format
-    if args.reward_copy_tau is not None:
-        config.reward.copy_tau = args.reward_copy_tau
+    if args.reward_w_recall_dense is not None:
+        config.reward.w_recall_dense = args.reward_w_recall_dense
+    if args.reward_w_term_preserve is not None:
+        config.reward.w_term_preserve = args.reward_w_term_preserve
+    if args.reward_w_length_score is not None:
+        config.reward.w_length_score = args.reward_w_length_score
+    if args.reward_w_clean_format is not None:
+        config.reward.w_clean_format = args.reward_w_clean_format
+    if args.reward_w_bad_format is not None:
+        config.reward.w_bad_format = args.reward_w_bad_format
+    if args.reward_w_unsafe_copy is not None:
+        config.reward.w_unsafe_copy = args.reward_w_unsafe_copy
+    if args.length_score_min_terms is not None:
+        config.reward.length_score_min_terms = args.length_score_min_terms
+    if args.length_score_ideal_min_terms is not None:
+        config.reward.length_score_ideal_min_terms = args.length_score_ideal_min_terms
+    if args.length_score_ideal_max_terms is not None:
+        config.reward.length_score_ideal_max_terms = args.length_score_ideal_max_terms
+    if args.length_score_max_terms is not None:
+        config.reward.length_score_max_terms = args.length_score_max_terms
     if args.format_max_tokens is not None:
         config.reward.format_max_tokens = args.format_max_tokens
     if args.format_min_english_ratio is not None:
         config.reward.format_min_english_ratio = args.format_min_english_ratio
     if args.format_max_unreadable_ratio is not None:
         config.reward.format_max_unreadable_ratio = args.format_max_unreadable_ratio
+    if args.bad_format_cap is not None:
+        config.reward.bad_format_cap = args.bad_format_cap
     if args.eval_every_steps is not None:
         config.train.eval_every_steps = args.eval_every_steps
     if args.max_steps is not None:
@@ -277,6 +304,9 @@ def apply_runtime_mode_adjustments(config: AppConfig, args: argparse.Namespace) 
     if config.reward.recall_k < 1:
         print(f"[warn] reward_recall_k={config.reward.recall_k} is invalid; auto-adjusting to 1.")
         config.reward.recall_k = 1
+    if config.reward.recall_dense_k < 1:
+        print(f"[warn] reward_recall_dense_k={config.reward.recall_dense_k} is invalid; auto-adjusting to 1.")
+        config.reward.recall_dense_k = 1
 
     if config.data.max_train_queries is not None and config.data.max_train_queries < 0:
         print(
@@ -346,6 +376,34 @@ def apply_runtime_mode_adjustments(config: AppConfig, args: argparse.Namespace) 
         )
         config.train.min_unique_final_queries = 1
 
+    if config.reward.length_score_min_terms < 0:
+        print(
+            f"[warn] length_score_min_terms={config.reward.length_score_min_terms} is invalid; "
+            "auto-adjusting to 0."
+        )
+        config.reward.length_score_min_terms = 0
+    if config.reward.length_score_ideal_min_terms < config.reward.length_score_min_terms:
+        print(
+            f"[warn] length_score_ideal_min_terms={config.reward.length_score_ideal_min_terms} is smaller than "
+            f"length_score_min_terms={config.reward.length_score_min_terms}; auto-adjusting."
+        )
+        config.reward.length_score_ideal_min_terms = config.reward.length_score_min_terms
+    if config.reward.length_score_ideal_max_terms < config.reward.length_score_ideal_min_terms:
+        print(
+            f"[warn] length_score_ideal_max_terms={config.reward.length_score_ideal_max_terms} is smaller than "
+            f"length_score_ideal_min_terms={config.reward.length_score_ideal_min_terms}; auto-adjusting."
+        )
+        config.reward.length_score_ideal_max_terms = config.reward.length_score_ideal_min_terms
+    if config.reward.length_score_max_terms < config.reward.length_score_ideal_max_terms:
+        print(
+            f"[warn] length_score_max_terms={config.reward.length_score_max_terms} is smaller than "
+            f"length_score_ideal_max_terms={config.reward.length_score_ideal_max_terms}; auto-adjusting."
+        )
+        config.reward.length_score_max_terms = config.reward.length_score_ideal_max_terms
+    if config.reward.bad_format_cap < 0.0:
+        print(f"[warn] bad_format_cap={config.reward.bad_format_cap} is invalid; auto-adjusting to 0.0.")
+        config.reward.bad_format_cap = 0.0
+
     if config.train.max_regen_rounds < 0:
         print(
             f"[warn] max_regen_rounds={config.train.max_regen_rounds} is invalid; "
@@ -406,39 +464,57 @@ def evaluate_policy(
     rewards: list[float] = []
     mrr_scores: list[float] = []
     recall_scores: list[float] = []
-    copy_penalties: list[float] = []
-    exact_copy_penalties: list[float] = []
-    format_penalties: list[float] = []
+    recall_dense_scores: list[float] = []
+    term_preserve_scores: list[float] = []
+    length_scores: list[float] = []
+    clean_format_scores: list[float] = []
+    bad_format_penalties: list[float] = []
+    unsafe_copy_penalties: list[float] = []
 
-    for query in eval_queries:
-        rewritten = model.generate_rewrite(
-            query.text,
-            policy="actor",
-            max_new_tokens=max_new_tokens,
-            temperature=temperature,
-            top_p=top_p,
-        )
-        stabilized = stabilize_generated_rewrite(
-            rewritten,
-            source_query=query.text,
-            guardrail_cfg=guardrail_cfg,
-            reward_cfg=rewarder.cfg,
-        )
-        score = rewarder.score(query.qid, stabilized.final_query, source_query=query.text)
-        rewards.append(score.total)
-        mrr_scores.append(score.mrr)
-        recall_scores.append(score.recall)
-        copy_penalties.append(score.copy_penalty)
-        exact_copy_penalties.append(score.exact_copy_penalty)
-        format_penalties.append(score.format_penalty)
+    actor_model = getattr(model, "actor_model", None)
+    previous_mode = getattr(actor_model, "training", None)
+    if actor_model is not None:
+        actor_model.eval()
+
+    try:
+        for query in eval_queries:
+            rewritten = model.generate_rewrite(
+                query.text,
+                policy="actor",
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+                top_p=top_p,
+            )
+            stabilized = stabilize_generated_rewrite(
+                rewritten,
+                source_query=query.text,
+                guardrail_cfg=guardrail_cfg,
+                reward_cfg=rewarder.cfg,
+            )
+            score = rewarder.score(query.qid, stabilized.final_query, source_query=query.text)
+            rewards.append(score.total)
+            mrr_scores.append(score.mrr)
+            recall_scores.append(score.recall)
+            recall_dense_scores.append(score.recall_dense)
+            term_preserve_scores.append(score.term_preserve)
+            length_scores.append(score.length_score)
+            clean_format_scores.append(score.clean_format)
+            bad_format_penalties.append(score.bad_format_penalty)
+            unsafe_copy_penalties.append(score.unsafe_copy_penalty)
+    finally:
+        if actor_model is not None and previous_mode is not None:
+            actor_model.train(previous_mode)
 
     return {
         "reward_mean": fmean(rewards) if rewards else 0.0,
         "mrr_mean": fmean(mrr_scores) if mrr_scores else 0.0,
         "recall_mean": fmean(recall_scores) if recall_scores else 0.0,
-        "copy_penalty_mean": fmean(copy_penalties) if copy_penalties else 0.0,
-        "exact_copy_penalty_mean": fmean(exact_copy_penalties) if exact_copy_penalties else 0.0,
-        "format_penalty_mean": fmean(format_penalties) if format_penalties else 0.0,
+        "recall_dense_mean": fmean(recall_dense_scores) if recall_dense_scores else 0.0,
+        "term_preserve_mean": fmean(term_preserve_scores) if term_preserve_scores else 0.0,
+        "length_score_mean": fmean(length_scores) if length_scores else 0.0,
+        "clean_format_mean": fmean(clean_format_scores) if clean_format_scores else 0.0,
+        "bad_format_penalty_mean": fmean(bad_format_penalties) if bad_format_penalties else 0.0,
+        "unsafe_copy_penalty_mean": fmean(unsafe_copy_penalties) if unsafe_copy_penalties else 0.0,
         "count": float(len(eval_queries)),
     }
 
@@ -623,9 +699,12 @@ def main() -> int:
                 f"kl_dom={metrics.get('kl_dominance_ratio', 0.0):.3f} "
                 f"reward={metrics['reward_mean']:.4f} mrr={metrics['mrr_mean']:.4f} "
                 f"recall={metrics.get('recall_mean', 0.0):.4f} "
-                f"copy_penalty={metrics.get('copy_penalty_mean', 0.0):.4f} "
-                f"exact_copy_penalty={metrics.get('exact_copy_penalty_mean', 0.0):.4f} "
-                f"format_penalty={metrics.get('format_penalty_mean', 0.0):.4f} "
+                f"recall_dense={metrics.get('recall_dense_mean', 0.0):.4f} "
+                f"term_preserve={metrics.get('term_preserve_mean', 0.0):.4f} "
+                f"length_score={metrics.get('length_score_mean', 0.0):.4f} "
+                f"clean_format={metrics.get('clean_format_mean', 0.0):.4f} "
+                f"bad_format_penalty={metrics.get('bad_format_penalty_mean', 0.0):.4f} "
+                f"unsafe_copy_penalty={metrics.get('unsafe_copy_penalty_mean', 0.0):.4f} "
                 f"unique_final_query_mean={metrics.get('unique_final_query_mean', 0.0):.4f} "
                 f"generated_sample_count_mean={metrics.get('generated_sample_count_mean', 0.0):.4f} "
                 f"generated_sample_count_max={metrics.get('generated_sample_count_max', 0.0):.0f} "
@@ -669,9 +748,12 @@ def main() -> int:
                 print(
                     f"[eval] step={global_step} val_mrr={eval_metrics['mrr_mean']:.4f} "
                     f"val_reward={eval_metrics['reward_mean']:.4f} "
-                    f"val_copy_penalty={eval_metrics.get('copy_penalty_mean', 0.0):.4f} "
-                    f"val_exact_copy_penalty={eval_metrics.get('exact_copy_penalty_mean', 0.0):.4f} "
-                    f"val_format_penalty={eval_metrics.get('format_penalty_mean', 0.0):.4f}"
+                    f"val_recall_dense={eval_metrics.get('recall_dense_mean', 0.0):.4f} "
+                    f"val_term_preserve={eval_metrics.get('term_preserve_mean', 0.0):.4f} "
+                    f"val_length_score={eval_metrics.get('length_score_mean', 0.0):.4f} "
+                    f"val_clean_format={eval_metrics.get('clean_format_mean', 0.0):.4f} "
+                    f"val_bad_format_penalty={eval_metrics.get('bad_format_penalty_mean', 0.0):.4f} "
+                    f"val_unsafe_copy_penalty={eval_metrics.get('unsafe_copy_penalty_mean', 0.0):.4f}"
                 )
 
                 model.save_adapter(str(latest_path))

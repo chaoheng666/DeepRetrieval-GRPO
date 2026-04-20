@@ -28,6 +28,7 @@ try {
   $modelName = if ($env:MODEL_NAME) { $env:MODEL_NAME } else { "Qwen/Qwen3-4B-Instruct-2507" }
   $autoGitCommit = if ($env:AUTO_GIT_COMMIT) { $env:AUTO_GIT_COMMIT } else { "1" }
   $autoGitPush = if ($env:AUTO_GIT_PUSH) { $env:AUTO_GIT_PUSH } else { "1" }
+  $searchThreads = if ($env:SEARCH_THREADS) { $env:SEARCH_THREADS } else { "8" }
   $trainBatchSize = if ($env:TRAIN_BATCH_SIZE) { $env:TRAIN_BATCH_SIZE } else { "8" }
   $trainGroupSize = if ($env:TRAIN_GROUP_SIZE) { $env:TRAIN_GROUP_SIZE } else { "8" }
   $trainMaxGroupSize = if ($env:TRAIN_MAX_GROUP_SIZE) { $env:TRAIN_MAX_GROUP_SIZE } else { "12" }
@@ -35,6 +36,10 @@ try {
   $trainMaxNewTokens = if ($env:TRAIN_MAX_NEW_TOKENS) { $env:TRAIN_MAX_NEW_TOKENS } else { "12" }
   $trainTemperature = if ($env:TRAIN_TEMPERATURE) { $env:TRAIN_TEMPERATURE } else { "0.6" }
   $trainTopP = if ($env:TRAIN_TOP_P) { $env:TRAIN_TOP_P } else { "0.9" }
+  $evalMaxNewTokens = if ($env:EVAL_MAX_NEW_TOKENS) { $env:EVAL_MAX_NEW_TOKENS } else { $trainMaxNewTokens }
+  $evalTemperature = if ($env:EVAL_TEMPERATURE) { $env:EVAL_TEMPERATURE } else { $trainTemperature }
+  $evalTopP = if ($env:EVAL_TOP_P) { $env:EVAL_TOP_P } else { $trainTopP }
+  $evalQueryBatchSize = if ($env:EVAL_QUERY_BATCH_SIZE) { $env:EVAL_QUERY_BATCH_SIZE } else { "1" }
   $trainGroupTemperatureStride = if ($env:TRAIN_GROUP_TEMPERATURE_STRIDE) { $env:TRAIN_GROUP_TEMPERATURE_STRIDE } else { "0.05" }
   $trainGroupTopPStride = if ($env:TRAIN_GROUP_TOP_P_STRIDE) { $env:TRAIN_GROUP_TOP_P_STRIDE } else { "0.01" }
   $trainMinUniqueFinalQueries = if ($env:TRAIN_MIN_UNIQUE_FINAL_QUERIES) { $env:TRAIN_MIN_UNIQUE_FINAL_QUERIES } else { "3" }
@@ -47,11 +52,15 @@ try {
 
   $rewardMrrK = if ($env:REWARD_MRR_K) { $env:REWARD_MRR_K } else { "50" }
   $rewardRecallK = if ($env:REWARD_RECALL_K) { $env:REWARD_RECALL_K } else { "50" }
-  $rewardWMrr = if ($env:REWARD_W_MRR) { $env:REWARD_W_MRR } else { "1.0" }
-  $rewardWRecall = if ($env:REWARD_W_RECALL) { $env:REWARD_W_RECALL } else { "0.1" }
-  $rewardWCopy = if ($env:REWARD_W_COPY) { $env:REWARD_W_COPY } else { "0.15" }
-  $rewardWFormat = if ($env:REWARD_W_FORMAT) { $env:REWARD_W_FORMAT } else { "0.2" }
-  $rewardCopyTau = if ($env:REWARD_COPY_TAU) { $env:REWARD_COPY_TAU } else { "0.5" }
+  $rewardRecallDenseK = if ($env:REWARD_RECALL_DENSE_K) { $env:REWARD_RECALL_DENSE_K } else { "100" }
+  $rewardWMrr = if ($env:REWARD_W_MRR) { $env:REWARD_W_MRR } else { "0.55" }
+  $rewardWRecall = if ($env:REWARD_W_RECALL) { $env:REWARD_W_RECALL } else { "0.20" }
+  $rewardWRecallDense = if ($env:REWARD_W_RECALL_DENSE) { $env:REWARD_W_RECALL_DENSE } else { "0.10" }
+  $rewardWTermPreserve = if ($env:REWARD_W_TERM_PRESERVE) { $env:REWARD_W_TERM_PRESERVE } else { "0.05" }
+  $rewardWLengthScore = if ($env:REWARD_W_LENGTH_SCORE) { $env:REWARD_W_LENGTH_SCORE } else { "0.05" }
+  $rewardWCleanFormat = if ($env:REWARD_W_CLEAN_FORMAT) { $env:REWARD_W_CLEAN_FORMAT } else { "0.05" }
+  $rewardWBadFormat = if ($env:REWARD_W_BAD_FORMAT) { $env:REWARD_W_BAD_FORMAT } else { "0.10" }
+  $rewardWUnsafeCopy = if ($env:REWARD_W_UNSAFE_COPY) { $env:REWARD_W_UNSAFE_COPY } else { "0.05" }
   $formatMaxTokens = if ($env:FORMAT_MAX_TOKENS) { $env:FORMAT_MAX_TOKENS } else { "12" }
   $formatMinEnglishRatio = if ($env:FORMAT_MIN_ENGLISH_RATIO) { $env:FORMAT_MIN_ENGLISH_RATIO } else { "0.8" }
   $formatMaxUnreadableRatio = if ($env:FORMAT_MAX_UNREADABLE_RATIO) { $env:FORMAT_MAX_UNREADABLE_RATIO } else { "0.25" }
@@ -87,6 +96,8 @@ try {
     Write-Host "[env] model source (model id): $modelName"
   }
 
+  Write-Host "[preset] train_decode=($trainMaxNewTokens,$trainTemperature,$trainTopP) eval_decode=($evalMaxNewTokens,$evalTemperature,$evalTopP) eval_query_batch_size=$evalQueryBatchSize search_threads=$searchThreads reward=(mrr=$rewardMrrK recall=$rewardRecallK recall_dense=$rewardRecallDenseK)"
+
   Write-Host "[1/3] Training 4B experiment..."
   & $pythonBin train.py `
     --model-name $modelName `
@@ -95,10 +106,13 @@ try {
     --group-size $trainGroupSize `
     --max-group-size $trainMaxGroupSize `
     --kl-beta $trainKlBeta `
-    --search-threads 8 `
+    --search-threads $searchThreads `
     --max-new-tokens $trainMaxNewTokens `
     --temperature $trainTemperature `
     --top-p $trainTopP `
+    --eval-max-new-tokens $evalMaxNewTokens `
+    --eval-temperature $evalTemperature `
+    --eval-top-p $evalTopP `
     --group-temperature-stride $trainGroupTemperatureStride `
     --group-top-p-stride $trainGroupTopPStride `
     --min-unique-final-queries $trainMinUniqueFinalQueries `
@@ -110,11 +124,15 @@ try {
     --max-steps $trainMaxSteps `
     --reward-mrr-k $rewardMrrK `
     --reward-recall-k $rewardRecallK `
+    --reward-recall-dense-k $rewardRecallDenseK `
     --reward-w-mrr $rewardWMrr `
     --reward-w-recall $rewardWRecall `
-    --reward-w-copy $rewardWCopy `
-    --reward-w-format $rewardWFormat `
-    --reward-copy-tau $rewardCopyTau `
+    --reward-w-recall-dense $rewardWRecallDense `
+    --reward-w-term-preserve $rewardWTermPreserve `
+    --reward-w-length-score $rewardWLengthScore `
+    --reward-w-clean-format $rewardWCleanFormat `
+    --reward-w-bad-format $rewardWBadFormat `
+    --reward-w-unsafe-copy $rewardWUnsafeCopy `
     --format-max-tokens $formatMaxTokens `
     --format-min-english-ratio $formatMinEnglishRatio `
     --format-max-unreadable-ratio $formatMaxUnreadableRatio `
@@ -143,13 +161,22 @@ try {
     --model-name $modelName `
     --strict-tokenizer-model-match `
     --max-eval-queries 1000000 `
+    --search-threads $searchThreads `
+    --max-new-tokens $evalMaxNewTokens `
+    --temperature $evalTemperature `
+    --top-p $evalTopP `
+    --query-batch-size $evalQueryBatchSize `
     --reward-mrr-k $rewardMrrK `
     --reward-recall-k $rewardRecallK `
+    --reward-recall-dense-k $rewardRecallDenseK `
     --reward-w-mrr $rewardWMrr `
     --reward-w-recall $rewardWRecall `
-    --reward-w-copy $rewardWCopy `
-    --reward-w-format $rewardWFormat `
-    --reward-copy-tau $rewardCopyTau `
+    --reward-w-recall-dense $rewardWRecallDense `
+    --reward-w-term-preserve $rewardWTermPreserve `
+    --reward-w-length-score $rewardWLengthScore `
+    --reward-w-clean-format $rewardWCleanFormat `
+    --reward-w-bad-format $rewardWBadFormat `
+    --reward-w-unsafe-copy $rewardWUnsafeCopy `
     --format-max-tokens $formatMaxTokens `
     --format-min-english-ratio $formatMinEnglishRatio `
     --format-max-unreadable-ratio $formatMaxUnreadableRatio `

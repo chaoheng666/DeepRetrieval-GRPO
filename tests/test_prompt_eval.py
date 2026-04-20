@@ -130,20 +130,20 @@ class PromptEvalHelperTests(unittest.TestCase):
         self.assertEqual(leaderboard[1]["prompt_id"], "p3")
         self.assertEqual(leaderboard[2]["prompt_id"], "p2")
 
-    def test_stabilize_generated_rewrite_falls_back_on_polluted_output(self):
+    def test_stabilize_generated_rewrite_only_falls_back_when_cleaning_is_empty(self):
         spec = next(item for item in build_prompt_specs("sys", "{query}") if item.id == "p01_det")
-        record = stabilize_generated_rewrite(
-            "Assistant: because this query is better",
+        empty_record = stabilize_generated_rewrite(
+            "",
             source_query="guayana venezuela",
             prompt_spec=spec,
             reward_cfg=RewardConfig(),
         )
 
-        self.assertTrue(record.fallback_to_original)
-        self.assertEqual(record.final_query, "guayana venezuela")
-        self.assertIn("format_fail", record.fallback_reasons)
+        self.assertTrue(empty_record.fallback_to_original)
+        self.assertEqual(empty_record.final_query, "guayana venezuela")
+        self.assertIn("empty_after_clean", empty_record.fallback_reasons)
 
-    def test_stabilize_generated_rewrite_preserves_locked_terms(self):
+    def test_stabilize_generated_rewrite_scores_soft_constraints_without_fallback(self):
         spec = next(item for item in build_prompt_specs("sys", "{query}") if item.id == "p05_det")
         record = stabilize_generated_rewrite(
             "best laptop",
@@ -152,9 +152,8 @@ class PromptEvalHelperTests(unittest.TestCase):
             reward_cfg=RewardConfig(),
         )
 
-        self.assertTrue(record.fallback_to_original)
-        self.assertEqual(record.final_query, "best laptop under 1000 2024")
-        self.assertIn("lost_numeric", record.fallback_reasons)
+        self.assertFalse(record.fallback_to_original)
+        self.assertEqual(record.final_query, "best laptop")
 
 
 if __name__ == "__main__":

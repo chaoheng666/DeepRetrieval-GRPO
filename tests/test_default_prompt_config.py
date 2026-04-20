@@ -41,9 +41,12 @@ class _DummyRewarder:
             total=0.5,
             mrr=0.25,
             recall=0.1,
-            copy_penalty=0.0,
-            exact_copy_penalty=0.0,
-            format_penalty=0.0,
+            recall_dense=0.2,
+            term_preserve=1.0,
+            length_score=1.0,
+            clean_format=1.0,
+            bad_format_penalty=0.0,
+            unsafe_copy_penalty=0.0,
         )
 
 
@@ -77,11 +80,16 @@ class DefaultPromptConfigTests(unittest.TestCase):
         self.assertEqual(config.train.temperature, 0.8)
         self.assertEqual(config.train.top_p, 0.95)
 
-    def test_reward_defaults_penalize_copy_and_duplicates_more(self):
+    def test_reward_defaults_use_dense_three_layer_formula(self):
         config = get_default_config()
 
-        self.assertEqual(config.reward.w_copy, 0.4)
-        self.assertEqual(config.reward.exact_copy_penalty, 0.15)
+        self.assertEqual(config.reward.mrr_k, 50)
+        self.assertEqual(config.reward.recall_k, 50)
+        self.assertEqual(config.reward.recall_dense_k, 100)
+        self.assertEqual(config.reward.w_recall_dense, 0.10)
+        self.assertEqual(config.reward.w_term_preserve, 0.05)
+        self.assertEqual(config.reward.w_bad_format, 0.10)
+        self.assertEqual(config.reward.w_unsafe_copy, 0.05)
 
 
 class TrainEvaluationDecodeTests(unittest.TestCase):
@@ -129,7 +137,8 @@ class TrainEvaluationDecodeTests(unittest.TestCase):
         )
 
         self.assertAlmostEqual(metrics["mrr_mean"], 0.25)
-        self.assertAlmostEqual(metrics["exact_copy_penalty_mean"], 0.0)
+        self.assertAlmostEqual(metrics["recall_dense_mean"], 0.2)
+        self.assertAlmostEqual(metrics["unsafe_copy_penalty_mean"], 0.0)
         self.assertEqual(len(model.calls), 1)
         self.assertEqual(model.calls[0]["policy"], "actor")
         self.assertEqual(model.calls[0]["max_new_tokens"], 16)

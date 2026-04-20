@@ -46,14 +46,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--search-threads", type=int, default=None, help="Pyserini batch_search thread count.")
     parser.add_argument("--reward-mrr-k", type=int, default=None)
     parser.add_argument("--reward-recall-k", type=int, default=None)
+    parser.add_argument("--reward-recall-dense-k", type=int, default=None)
     parser.add_argument("--reward-w-mrr", type=float, default=None)
     parser.add_argument("--reward-w-recall", type=float, default=None)
-    parser.add_argument("--reward-w-copy", type=float, default=None)
-    parser.add_argument("--reward-w-format", type=float, default=None)
-    parser.add_argument("--reward-copy-tau", type=float, default=None)
+    parser.add_argument("--reward-w-recall-dense", type=float, default=None)
+    parser.add_argument("--reward-w-term-preserve", type=float, default=None)
+    parser.add_argument("--reward-w-length-score", type=float, default=None)
+    parser.add_argument("--reward-w-clean-format", type=float, default=None)
+    parser.add_argument("--reward-w-bad-format", type=float, default=None)
+    parser.add_argument("--reward-w-unsafe-copy", type=float, default=None)
+    parser.add_argument("--length-score-min-terms", type=int, default=None)
+    parser.add_argument("--length-score-ideal-min-terms", type=int, default=None)
+    parser.add_argument("--length-score-ideal-max-terms", type=int, default=None)
+    parser.add_argument("--length-score-max-terms", type=int, default=None)
     parser.add_argument("--format-max-tokens", type=int, default=None)
     parser.add_argument("--format-min-english-ratio", type=float, default=None)
     parser.add_argument("--format-max-unreadable-ratio", type=float, default=None)
+    parser.add_argument("--bad-format-cap", type=float, default=None)
     parser.add_argument("--sample-print", type=int, default=5)
     parser.add_argument("--progress-every", type=int, default=20, help="Print progress every N queries per stage.")
     parser.add_argument(
@@ -108,22 +117,40 @@ def apply_overrides(config: AppConfig, args: argparse.Namespace) -> AppConfig:
         config.reward.mrr_k = max(1, args.reward_mrr_k)
     if args.reward_recall_k is not None:
         config.reward.recall_k = max(1, args.reward_recall_k)
+    if args.reward_recall_dense_k is not None:
+        config.reward.recall_dense_k = max(1, args.reward_recall_dense_k)
     if args.reward_w_mrr is not None:
         config.reward.w_mrr = args.reward_w_mrr
     if args.reward_w_recall is not None:
         config.reward.w_recall = args.reward_w_recall
-    if args.reward_w_copy is not None:
-        config.reward.w_copy = args.reward_w_copy
-    if args.reward_w_format is not None:
-        config.reward.w_format = args.reward_w_format
-    if args.reward_copy_tau is not None:
-        config.reward.copy_tau = args.reward_copy_tau
+    if args.reward_w_recall_dense is not None:
+        config.reward.w_recall_dense = args.reward_w_recall_dense
+    if args.reward_w_term_preserve is not None:
+        config.reward.w_term_preserve = args.reward_w_term_preserve
+    if args.reward_w_length_score is not None:
+        config.reward.w_length_score = args.reward_w_length_score
+    if args.reward_w_clean_format is not None:
+        config.reward.w_clean_format = args.reward_w_clean_format
+    if args.reward_w_bad_format is not None:
+        config.reward.w_bad_format = args.reward_w_bad_format
+    if args.reward_w_unsafe_copy is not None:
+        config.reward.w_unsafe_copy = args.reward_w_unsafe_copy
+    if args.length_score_min_terms is not None:
+        config.reward.length_score_min_terms = max(0, args.length_score_min_terms)
+    if args.length_score_ideal_min_terms is not None:
+        config.reward.length_score_ideal_min_terms = max(0, args.length_score_ideal_min_terms)
+    if args.length_score_ideal_max_terms is not None:
+        config.reward.length_score_ideal_max_terms = max(0, args.length_score_ideal_max_terms)
+    if args.length_score_max_terms is not None:
+        config.reward.length_score_max_terms = max(0, args.length_score_max_terms)
     if args.format_max_tokens is not None:
         config.reward.format_max_tokens = max(1, args.format_max_tokens)
     if args.format_min_english_ratio is not None:
         config.reward.format_min_english_ratio = args.format_min_english_ratio
     if args.format_max_unreadable_ratio is not None:
         config.reward.format_max_unreadable_ratio = args.format_max_unreadable_ratio
+    if args.bad_format_cap is not None:
+        config.reward.bad_format_cap = max(0.0, args.bad_format_cap)
     if args.max_new_tokens is not None:
         config.prompt.max_new_tokens = args.max_new_tokens
     if args.temperature is not None:
@@ -171,12 +198,15 @@ def evaluate_original(
     values = list(per_qid.values())
     mrr_value = fmean(v.mrr for v in values) if values else 0.0
     recall_value = fmean(v.recall for v in values) if values else 0.0
+    recall_dense_value = fmean(v.recall_dense for v in values) if values else 0.0
     return (
         {
             "mrr": mrr_value,
             f"mrr@{rewarder.mrr_k}": mrr_value,
             "recall": recall_value,
             f"recall@{rewarder.recall_k}": recall_value,
+            "recall_dense": recall_dense_value,
+            f"recall@{rewarder.recall_dense_k}": recall_dense_value,
             "reward_mean": fmean(v.total for v in values) if values else 0.0,
         },
         per_qid,
@@ -260,12 +290,15 @@ def evaluate_with_model(
     values = [item[1] for item in per_qid.values()]
     mrr_value = fmean(v.mrr for v in values) if values else 0.0
     recall_value = fmean(v.recall for v in values) if values else 0.0
+    recall_dense_value = fmean(v.recall_dense for v in values) if values else 0.0
     return (
         {
             "mrr": mrr_value,
             f"mrr@{rewarder.mrr_k}": mrr_value,
             "recall": recall_value,
             f"recall@{rewarder.recall_k}": recall_value,
+            "recall_dense": recall_dense_value,
+            f"recall@{rewarder.recall_dense_k}": recall_dense_value,
             "reward_mean": fmean(v.total for v in values) if values else 0.0,
         },
         per_qid,

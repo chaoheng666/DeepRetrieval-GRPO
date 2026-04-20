@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-"""Reward V1: MRR@k + Recall@k + CopyPenalty + FormatPenalty."""
+"""Dense reward for BM25 query rewriting."""
 
 import os
 import re
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Sequence
@@ -71,14 +72,20 @@ class RewardBreakdown:
     total: float
     mrr: float
     recall: float
-    overlap: float
-    copy_penalty: float
-    exact_copy_penalty: float
-    format_penalty: float
-    hit_rank: int | None
-    retrieved_relevant_count: int
-    relevant_total: int
-    rewritten_query: str
+    recall_dense: float = 0.0
+    overlap: float = 0.0
+    term_preserve: float = 1.0
+    number_preserve: float = 1.0
+    acronym_preserve: float = 1.0
+    negation_preserve: float = 1.0
+    length_score: float = 0.0
+    clean_format: float = 0.0
+    bad_format_penalty: float = 0.0
+    unsafe_copy_penalty: float = 0.0
+    hit_rank: int | None = None
+    retrieved_relevant_count: int = 0
+    relevant_total: int = 0
+    rewritten_query: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,37 +193,131 @@ def _looks_like_explanation(text: str) -> bool:
 
 
 def compute_format_penalty(text: str, cfg: RewardConfig) -> float:
+    return compute_bad_format_penalty(text, cfg)
+
+
+def compute_bad_format_penalty(text: str, cfg: RewardConfig) -> float:
     cleaned = (text or "").strip()
     if not cleaned:
-        return 1.0
+        return min(float(cfg.bad_format_cap), 1.0)
+
+    penalty = 0.0
     if "\n" in cleaned or "\r" in cleaned:
+        penalty += 0.5
+    if _looks_like_explanation(cleaned) or POLLUTION_RE.search(cleaned):
+        penalty += 0.5
+
+    token_count = len(_tokenize_for_overlap(cleaned))
+    if token_count > cfg.format_max_tokens:
+        penalty += min(0.5, max(0, token_count - cfg.format_max_tokens) * 0.03)
+
+    english_ratio = _english_ratio(cleaned)
+    if english_ratio < cfg.format_min_english_ratio:
+        gap = cfg.format_min_english_ratio - english_ratio
+        penalty += min(0.5, 0.5 * (gap / max(cfg.format_min_english_ratio, 1e-6)))
+
+    unreadable_ratio = _unreadable_ratio(cleaned)
+    if unreadable_ratio > cfg.format_max_unreadable_ratio:
+        gap = unreadable_ratio - cfg.format_max_unreadable_ratio
+        penalty += min(0.5, 0.5 * (gap / max(1.0 - cfg.format_max_unreadable_ratio, 1e-6)))
+
+    return min(float(cfg.bad_format_cap), float(penalty))
+
+
+def compute_clean_format_score(bad_format_penalty: float) -> float:
+    return 1.0 if float(bad_format_penalty) == 0.0 else 0.0
+
+
+def _preserve_ratio(source_tokens: Sequence[str], rewritten_tokens: Sequence[str]) -> float:
+    if not source_tokens:
         return 1.0
-    if _looks_like_explanation(cleaned):
+
+    source_counter = Counter(token.lower() for token in source_tokens if token)
+    rewritten_counter = Counter(token.lower() for token in rewritten_tokens if token)
+    preserved = sum(min(count, rewritten_counter.get(token, 0)) for token, count in source_counter.items())
+    total = sum(source_counter.values())
+    return preserved / float(total) if total else 1.0
+
+
+def compute_term_preserve(
+    source_query: str,
+    rewritten_query: str,
+) -> tuple[float, float, float, float]:
+    source_terms = _tokenize_terms(source_query)
+    rewritten_terms = _tokenize_terms(rewritten_query)
+    source_numbers = NUMERIC_RE.findall(source_query or "")
+    source_acronyms = ACRONYM_RE.findall(source_query or "")
+    source_negations = [token for token in source_terms if token in NEGATION_TOKENS]
+
+    number_preserve = _preserve_ratio(source_numbers, NUMERIC_RE.findall(rewritten_query or ""))
+    acronym_preserve = _preserve_ratio(
+        source_acronyms,
+        [token for token in rewritten_terms if token in {acro.lower() for acro in source_acronyms}],
+    )
+    negation_preserve = _preserve_ratio(source_negations, [token for token in rewritten_terms if token in NEGATION_TOKENS])
+
+    applicable_scores: list[float] = []
+    if source_numbers:
+        applicable_scores.append(number_preserve)
+    if source_acronyms:
+        applicable_scores.append(acronym_preserve)
+    if source_negations:
+        applicable_scores.append(negation_preserve)
+
+    term_preserve = sum(applicable_scores) / float(len(applicable_scores)) if applicable_scores else 1.0
+    return term_preserve, number_preserve, acronym_preserve, negation_preserve
+
+
+def compute_length_score(query: str, cfg: RewardConfig) -> float:
+    token_count = len(_tokenize_for_overlap(query))
+    min_terms = int(cfg.length_score_min_terms)
+    ideal_min = int(cfg.length_score_ideal_min_terms)
+    ideal_max = int(cfg.length_score_ideal_max_terms)
+    max_terms = int(cfg.length_score_max_terms)
+
+    if token_count <= min_terms or token_count >= max_terms:
+        return 0.0
+    if ideal_min <= token_count <= ideal_max:
         return 1.0
-    if len(_tokenize_for_overlap(cleaned)) > cfg.format_max_tokens:
-        return 1.0
-    if _english_ratio(cleaned) < cfg.format_min_english_ratio:
-        return 1.0
-    if _unreadable_ratio(cleaned) > cfg.format_max_unreadable_ratio:
-        return 1.0
-    return 0.0
+    if token_count < ideal_min:
+        span = max(1, ideal_min - min_terms)
+        return max(0.0, min(1.0, (token_count - min_terms) / float(span)))
+
+    span = max(1, max_terms - ideal_max)
+    return max(0.0, min(1.0, (max_terms - token_count) / float(span)))
+
+
+def compute_unsafe_copy_penalty(source_query: str, rewritten_query: str) -> float:
+    source_clean = _normalize_query_text(source_query)
+    rewritten_clean = _normalize_query_text(rewritten_query)
+    if not source_clean or not rewritten_clean:
+        return 0.0
+    if _source_is_retrieval_ready(source_clean):
+        return 0.0
+    return 1.0 if source_clean.lower() == rewritten_clean.lower() else 0.0
 
 
 def compose_reward(
     *,
     mrr: float,
     recall: float,
-    copy_penalty: float,
-    exact_copy_penalty: float,
-    format_penalty: float,
+    recall_dense: float,
+    term_preserve: float,
+    length_score: float,
+    clean_format: float,
+    bad_format_penalty: float,
+    unsafe_copy_penalty: float,
     cfg: RewardConfig,
 ) -> float:
     return (
         cfg.w_mrr * mrr
         + cfg.w_recall * recall
-        - cfg.w_copy * copy_penalty
-        - cfg.w_format * format_penalty
-        - exact_copy_penalty
+        + cfg.w_recall_dense * recall_dense
+        + cfg.w_term_preserve * term_preserve
+        + cfg.w_length_score * length_score
+        + cfg.w_clean_format * clean_format
+        - cfg.w_bad_format * bad_format_penalty
+        - cfg.w_unsafe_copy * unsafe_copy_penalty
     )
 
 
@@ -263,20 +364,6 @@ def _dedupe_keep_order(items: Sequence[str]) -> tuple[str, ...]:
     return tuple(ordered)
 
 
-def _min_required_rewrite_terms(source_term_count: int, guardrail_min_terms: int) -> int:
-    """Allow compact high-confidence rewrites for short source queries."""
-
-    if source_term_count <= 0:
-        return 1
-    if source_term_count <= 3:
-        return 1
-    if source_term_count == 4:
-        return 2
-    if guardrail_min_terms <= 1 or source_term_count < guardrail_min_terms:
-        return 1
-    return max(1, guardrail_min_terms - 1)
-
-
 def stabilize_generated_rewrite(
     raw_query: str,
     *,
@@ -297,54 +384,7 @@ def stabilize_generated_rewrite(
 
     cleaned = clean_rewritten_query(raw_clean, source_query=source_clean)
     cleaned = _normalize_query_text(cleaned)
-
-    min_terms = max(1, int(getattr(guardrail_cfg, "min_terms", 1)))
-    max_terms = max(1, int(getattr(guardrail_cfg, "max_terms", reward_cfg.format_max_tokens)))
-    fallback_mode = str(getattr(guardrail_cfg, "fallback_mode", "balanced")).strip().lower()
-
-    fallback_reasons: list[str] = []
-    if not cleaned:
-        fallback_reasons.append("empty_after_clean")
-    elif compute_format_penalty(cleaned, reward_cfg) > 0.0:
-        fallback_reasons.append("format_fail")
-
-    cleaned_terms = _tokenize_terms(cleaned)
-    cleaned_term_set = set(cleaned_terms)
-
-    for numeric_token in _extract_locked_numeric_tokens(source_clean):
-        if numeric_token not in cleaned_term_set:
-            fallback_reasons.append("lost_numeric")
-            break
-
-    for acronym_token in _extract_locked_acronyms(source_query):
-        if acronym_token not in cleaned_term_set:
-            fallback_reasons.append("lost_acronym")
-            break
-
-    source_terms = _tokenize_terms(source_clean)
-    for negation in NEGATION_TOKENS:
-        if negation in source_terms and negation not in cleaned_term_set:
-            fallback_reasons.append("lost_negation")
-            break
-
-    if cleaned_terms and max_terms > 0:
-        if len(cleaned_terms) > max(max_terms + 6, max_terms * 2):
-            fallback_reasons.append("too_verbose")
-
-    if cleaned_terms:
-        min_required_terms = _min_required_rewrite_terms(len(source_terms), min_terms)
-        if len(cleaned_terms) < min_required_terms:
-            fallback_reasons.append("too_short")
-
-    if (
-        cleaned
-        and fallback_mode == "conservative"
-        and _source_is_retrieval_ready(source_clean)
-        and compute_lexical_overlap(source_clean, cleaned) < 0.30
-    ):
-        fallback_reasons.append("diverged_from_lexical_source")
-
-    fallback_reasons = list(_dedupe_keep_order(fallback_reasons))
+    fallback_reasons = ["empty_after_clean"] if not cleaned else []
     final_query = source_clean if fallback_reasons else cleaned
     final_query = _normalize_query_text(final_query or source_clean)
     final_terms = _tokenize_terms(final_query)
@@ -474,7 +514,8 @@ class Rewarder:
         self.cfg = reward_cfg
         self.mrr_k = max(1, int(reward_cfg.mrr_k))
         self.recall_k = max(1, int(reward_cfg.recall_k))
-        self.retrieval_k = max(self.mrr_k, self.recall_k)
+        self.recall_dense_k = max(1, int(reward_cfg.recall_dense_k))
+        self.retrieval_k = max(self.mrr_k, self.recall_k, self.recall_dense_k)
         cpu_count = max(1, os.cpu_count() or 1)
         self.search_threads = max(1, min(int(getattr(reward_cfg, "search_threads", 1)), cpu_count))
         if self.search_threads > 1:
@@ -565,34 +606,46 @@ class Rewarder:
             relevant_docids,
             topk=self.recall_k,
         )
-        overlap = compute_lexical_overlap(source_query or "", cleaned_query) if source_query else 0.0
-        copy_penalty = compute_copy_penalty(overlap, self.cfg.copy_tau)
-        exact_copy_penalty = (
-            compute_exact_copy_penalty(
-                source_query or "",
-                cleaned_query,
-                getattr(self.cfg, "exact_copy_penalty", 0.0),
-            )
-            if source_query
-            else 0.0
+        recall_dense, _, _ = compute_recall_at_k(
+            hits_docids,
+            relevant_docids,
+            topk=self.recall_dense_k,
         )
-        format_penalty = compute_format_penalty(cleaned_query, self.cfg)
+        overlap = compute_lexical_overlap(source_query or "", cleaned_query) if source_query else 0.0
+        term_preserve, number_preserve, acronym_preserve, negation_preserve = (
+            compute_term_preserve(source_query or "", cleaned_query) if source_query else (1.0, 1.0, 1.0, 1.0)
+        )
+        length_score = compute_length_score(cleaned_query, self.cfg)
+        bad_format_penalty = compute_bad_format_penalty(cleaned_query, self.cfg)
+        clean_format = compute_clean_format_score(bad_format_penalty)
+        unsafe_copy_penalty = (
+            compute_unsafe_copy_penalty(source_query or "", cleaned_query) if source_query else 0.0
+        )
         total = compose_reward(
             mrr=mrr,
             recall=recall,
-            copy_penalty=copy_penalty,
-            exact_copy_penalty=exact_copy_penalty,
-            format_penalty=format_penalty,
+            recall_dense=recall_dense,
+            term_preserve=term_preserve,
+            length_score=length_score,
+            clean_format=clean_format,
+            bad_format_penalty=bad_format_penalty,
+            unsafe_copy_penalty=unsafe_copy_penalty,
             cfg=self.cfg,
         )
         return RewardBreakdown(
             total=total,
             mrr=mrr,
             recall=recall,
+            recall_dense=recall_dense,
             overlap=overlap,
-            copy_penalty=copy_penalty,
-            exact_copy_penalty=exact_copy_penalty,
-            format_penalty=format_penalty,
+            term_preserve=term_preserve,
+            number_preserve=number_preserve,
+            acronym_preserve=acronym_preserve,
+            negation_preserve=negation_preserve,
+            length_score=length_score,
+            clean_format=clean_format,
+            bad_format_penalty=bad_format_penalty,
+            unsafe_copy_penalty=unsafe_copy_penalty,
             hit_rank=hit_rank,
             retrieved_relevant_count=retrieved_relevant_count,
             relevant_total=relevant_total,

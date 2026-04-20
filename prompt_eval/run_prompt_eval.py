@@ -175,10 +175,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--search-threads", type=int, default=None)
     parser.add_argument("--reward-mrr-k", type=int, default=None)
     parser.add_argument("--reward-recall-k", type=int, default=None)
+    parser.add_argument("--reward-recall-dense-k", type=int, default=None)
     parser.add_argument("--reward-w-mrr", type=float, default=None)
     parser.add_argument("--reward-w-recall", type=float, default=None)
-    parser.add_argument("--reward-w-copy", type=float, default=None)
-    parser.add_argument("--reward-w-format", type=float, default=None)
+    parser.add_argument("--reward-w-recall-dense", type=float, default=None)
+    parser.add_argument("--reward-w-term-preserve", type=float, default=None)
+    parser.add_argument("--reward-w-length-score", type=float, default=None)
+    parser.add_argument("--reward-w-clean-format", type=float, default=None)
+    parser.add_argument("--reward-w-bad-format", type=float, default=None)
+    parser.add_argument("--reward-w-unsafe-copy", type=float, default=None)
     parser.add_argument(
         "--progress-every",
         type=int,
@@ -264,14 +269,24 @@ def apply_overrides(config: AppConfig, args: argparse.Namespace) -> AppConfig:
         config.reward.mrr_k = max(1, args.reward_mrr_k)
     if args.reward_recall_k is not None:
         config.reward.recall_k = max(1, args.reward_recall_k)
+    if args.reward_recall_dense_k is not None:
+        config.reward.recall_dense_k = max(1, args.reward_recall_dense_k)
     if args.reward_w_mrr is not None:
         config.reward.w_mrr = args.reward_w_mrr
     if args.reward_w_recall is not None:
         config.reward.w_recall = args.reward_w_recall
-    if args.reward_w_copy is not None:
-        config.reward.w_copy = args.reward_w_copy
-    if args.reward_w_format is not None:
-        config.reward.w_format = args.reward_w_format
+    if args.reward_w_recall_dense is not None:
+        config.reward.w_recall_dense = args.reward_w_recall_dense
+    if args.reward_w_term_preserve is not None:
+        config.reward.w_term_preserve = args.reward_w_term_preserve
+    if args.reward_w_length_score is not None:
+        config.reward.w_length_score = args.reward_w_length_score
+    if args.reward_w_clean_format is not None:
+        config.reward.w_clean_format = args.reward_w_clean_format
+    if args.reward_w_bad_format is not None:
+        config.reward.w_bad_format = args.reward_w_bad_format
+    if args.reward_w_unsafe_copy is not None:
+        config.reward.w_unsafe_copy = args.reward_w_unsafe_copy
     return config
 
 
@@ -652,17 +667,22 @@ def _build_report_payload(
             "stage_status": stage_status,
             "rewrite_postprocess": {
                 "cleaner": "clean_rewritten_query",
-                "fallback_to_original_on_invalid": True,
-                "fallback_respects_locked_tokens": True,
+                "fallback_to_original_on_empty": True,
+                "locked_terms_scored_softly": True,
             },
             "reward": {
                 "mrr_k": config.reward.mrr_k,
                 "recall_k": config.reward.recall_k,
+                "recall_dense_k": config.reward.recall_dense_k,
                 "search_threads": config.reward.search_threads,
                 "w_mrr": config.reward.w_mrr,
                 "w_recall": config.reward.w_recall,
-                "w_copy": config.reward.w_copy,
-                "w_format": config.reward.w_format,
+                "w_recall_dense": config.reward.w_recall_dense,
+                "w_term_preserve": config.reward.w_term_preserve,
+                "w_length_score": config.reward.w_length_score,
+                "w_clean_format": config.reward.w_clean_format,
+                "w_bad_format": config.reward.w_bad_format,
+                "w_unsafe_copy": config.reward.w_unsafe_copy,
             },
         },
         "sample_info": {
