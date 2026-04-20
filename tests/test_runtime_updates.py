@@ -83,6 +83,36 @@ class RuntimeConfigTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 apply_runtime_mode_adjustments(cfg, args)
 
+    def test_runtime_adjustments_force_4bit_ref_on_24g_auto_mode(self):
+        cfg = get_default_config()
+        cfg.model.load_in_4bit = True
+        cfg.model.ref_precision_mode = "auto"
+        args = argparse.Namespace(low_mem_mode=False, disable_4bit=False)
+
+        fake_props = SimpleNamespace(total_memory=24 * 1024**3)
+        with patch.dict("os.environ", {}, clear=True), patch("torch.cuda.is_available", return_value=True), patch(
+            "torch.cuda.get_device_properties",
+            return_value=fake_props,
+        ):
+            adjusted = apply_runtime_mode_adjustments(cfg, args)
+
+        self.assertEqual(adjusted.model.ref_precision_mode, "4bit")
+
+    def test_runtime_adjustments_preserve_explicit_full_ref_mode(self):
+        cfg = get_default_config()
+        cfg.model.load_in_4bit = True
+        cfg.model.ref_precision_mode = "full"
+        args = argparse.Namespace(low_mem_mode=False, disable_4bit=False)
+
+        fake_props = SimpleNamespace(total_memory=24 * 1024**3)
+        with patch("torch.cuda.is_available", return_value=True), patch(
+            "torch.cuda.get_device_properties",
+            return_value=fake_props,
+        ):
+            adjusted = apply_runtime_mode_adjustments(cfg, args)
+
+        self.assertEqual(adjusted.model.ref_precision_mode, "full")
+
 
 class _ToyModelWrapper:
     def __init__(self):

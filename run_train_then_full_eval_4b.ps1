@@ -30,11 +30,12 @@ try {
   $autoGitPush = if ($env:AUTO_GIT_PUSH) { $env:AUTO_GIT_PUSH } else { "1" }
   $searchThreads = if ($env:SEARCH_THREADS) { $env:SEARCH_THREADS } else { "16" }
   $trainBatchSize = if ($env:TRAIN_BATCH_SIZE) { $env:TRAIN_BATCH_SIZE } else { "24" }
-  $trainGroupSize = if ($env:TRAIN_GROUP_SIZE) { $env:TRAIN_GROUP_SIZE } else { "10" }
-  $trainMaxGroupSize = if ($env:TRAIN_MAX_GROUP_SIZE) { $env:TRAIN_MAX_GROUP_SIZE } else { "14" }
+  $trainGroupSize = if ($env:TRAIN_GROUP_SIZE) { $env:TRAIN_GROUP_SIZE } else { "8" }
+  $trainMaxGroupSize = if ($env:TRAIN_MAX_GROUP_SIZE) { $env:TRAIN_MAX_GROUP_SIZE } else { "12" }
   $trainLearningRate = if ($env:TRAIN_LEARNING_RATE) { $env:TRAIN_LEARNING_RATE } else { "1.5e-5" }
   $trainClipRange = if ($env:TRAIN_CLIP_RANGE) { $env:TRAIN_CLIP_RANGE } else { "0.2" }
   $trainKlBeta = if ($env:TRAIN_KL_BETA) { $env:TRAIN_KL_BETA } else { "0.03" }
+  $trainRefPrecisionMode = if ($env:TRAIN_REF_PRECISION_MODE) { $env:TRAIN_REF_PRECISION_MODE } else { "4bit" }
   $trainMaxNewTokens = if ($env:TRAIN_MAX_NEW_TOKENS) { $env:TRAIN_MAX_NEW_TOKENS } else { "12" }
   $trainTemperature = if ($env:TRAIN_TEMPERATURE) { $env:TRAIN_TEMPERATURE } else { "0.85" }
   $trainTopP = if ($env:TRAIN_TOP_P) { $env:TRAIN_TOP_P } else { "0.95" }
@@ -98,6 +99,10 @@ try {
     Write-Host "[env] model source (model id): $modelName"
   }
 
+  if (-not $env:PYTORCH_CUDA_ALLOC_CONF) {
+    $env:PYTORCH_CUDA_ALLOC_CONF = "expandable_segments:True"
+  }
+
   Write-Host "[preset] batch=$trainBatchSize group=$trainGroupSize max_group=$trainMaxGroupSize train_decode=($trainMaxNewTokens,$trainTemperature,$trainTopP) eval_decode=($evalMaxNewTokens,$evalTemperature,$evalTopP) eval_query_batch_size=$evalQueryBatchSize strides=($trainGroupTemperatureStride,$trainGroupTopPStride) unique=$trainMinUniqueFinalQueries regen=$trainMaxRegenRounds gap=$trainRewardGapThreshold delta=$trainGapSamplingTemperatureDelta reward=(mrr=$rewardMrrK recall=$rewardRecallK recall_dense=$rewardRecallDenseK)"
 
   Write-Host "[1/3] Training 4B experiment..."
@@ -110,6 +115,7 @@ try {
     --learning-rate $trainLearningRate `
     --clip-range $trainClipRange `
     --kl-beta $trainKlBeta `
+    --ref-precision-mode $trainRefPrecisionMode `
     --search-threads $searchThreads `
     --max-new-tokens $trainMaxNewTokens `
     --temperature $trainTemperature `

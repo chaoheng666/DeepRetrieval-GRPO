@@ -49,6 +49,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--clip-range", type=float, default=None)
     parser.add_argument("--kl-beta", type=float, default=None)
     parser.add_argument(
+        "--ref-precision-mode",
+        type=str,
+        choices=("auto", "full", "4bit"),
+        default=None,
+        help="Reference model precision mode used for the KL anchor.",
+    )
+    parser.add_argument(
         "--disable-4bit",
         action="store_true",
         help="Disable 4-bit quantization for actor model loading.",
@@ -190,6 +197,8 @@ def apply_overrides(config: AppConfig, args: argparse.Namespace) -> AppConfig:
         config.train.clip_range = args.clip_range
     if args.kl_beta is not None:
         config.train.kl_beta = args.kl_beta
+    if args.ref_precision_mode is not None:
+        config.model.ref_precision_mode = args.ref_precision_mode
     if args.disable_4bit:
         config.model.load_in_4bit = False
     if args.max_new_tokens is not None:
@@ -273,9 +282,27 @@ def apply_runtime_mode_adjustments(config: AppConfig, args: argparse.Namespace) 
         config.model.actor_device_map = "cpu"
         config.model.ref_device_map = "cpu"
 
-    # 全精度调试时给出更稳妥的 CUDA 分配策略。
-    if args.disable_4bit:
+    # CUDA 训练时默认启用更稳妥的内存分配策略，降低碎片化导致的假性 OOM。
+    if torch.cuda.is_available():
         os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
+    # 24G 级别显卡上，4bit actor + full ref 容易在首个 KL/logprob 前向时 OOM。
+    # 对 auto 模式做更保守的运行时收紧，优先保证训练能稳定跑起来。
+    if (
+        torch.cuda.is_available()
+        and config.model.load_in_4bit
+        and str(config.model.ref_precision_mode).strip().lower() == "auto"
+    ):
+        try:
+            total_gib = torch.cuda.get_device_properties(0).total_memory / float(1024**3)
+        except Exception:
+            total_gib = None
+        if total_gib is not None and total_gib <= 24.5:
+            print(
+                f"[mode] detected ~{total_gib:.1f} GiB GPU with 4-bit actor training; "
+                "forcing ref_precision_mode=4bit for stability."
+            )
+            config.model.ref_precision_mode = "4bit"
 
     if not 0.0 < config.data.train_ratio < 1.0:
         raise ValueError(f"train_ratio must be in (0, 1), got {config.data.train_ratio}")

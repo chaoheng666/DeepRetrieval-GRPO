@@ -106,18 +106,20 @@ print(f"[env] cuda device count: {torch.cuda.device_count()}")
 PY
 fi
 
-echo "[preset] 4B tuned config: batch=24 group=10 max_group=14 train_decode=(${TRAIN_MAX_NEW_TOKENS},${TRAIN_TEMPERATURE},${TRAIN_TOP_P}) eval_decode=(${EVAL_MAX_NEW_TOKENS},${EVAL_TEMPERATURE},${EVAL_TOP_P}) eval_query_batch_size=${EVAL_QUERY_BATCH_SIZE} group_temperature_stride=0.07 group_top_p_stride=0.015 min_unique_final_queries=4 max_regen_rounds=2 reward_gap_threshold=0.08 gap_sampling_temperature_delta=0.15 reward=(mrr@10, recall@50, recall_dense@100) max_val_queries=${TRAIN_MAX_VAL_QUERIES} search_threads=${SEARCH_THREADS}"
+echo "[preset] 4B stable config: batch=16 group=8 max_group=12 train_decode=(${TRAIN_MAX_NEW_TOKENS},${TRAIN_TEMPERATURE},${TRAIN_TOP_P}) eval_decode=(${EVAL_MAX_NEW_TOKENS},${EVAL_TEMPERATURE},${EVAL_TOP_P}) eval_query_batch_size=${EVAL_QUERY_BATCH_SIZE} group_temperature_stride=0.07 group_top_p_stride=0.015 min_unique_final_queries=4 max_regen_rounds=2 reward_gap_threshold=0.08 gap_sampling_temperature_delta=0.15 ref_precision=4bit reward=(mrr@10, recall@50, recall_dense@100) max_val_queries=${TRAIN_MAX_VAL_QUERIES} search_threads=${SEARCH_THREADS}"
 
 echo "[2/4] Training 4B experiment..."
+export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 "$PYTHON_BIN" train.py \
   --model-name "$MODEL_NAME" \
   --num-epochs 1 \
   --batch-size 16 \
-  --group-size 12 \
-  --max-group-size 16 \
+  --group-size 8 \
+  --max-group-size 12 \
   --learning-rate 1.5e-5 \
   --clip-range 0.2 \
   --kl-beta 0.03 \
+  --ref-precision-mode 4bit \
   --search-threads "$SEARCH_THREADS" \
   --max-new-tokens "$TRAIN_MAX_NEW_TOKENS" \
   --temperature "$TRAIN_TEMPERATURE" \
@@ -126,7 +128,7 @@ echo "[2/4] Training 4B experiment..."
   --eval-temperature "$EVAL_TEMPERATURE" \
   --eval-top-p "$EVAL_TOP_P" \
   --eval-query-batch-size "$EVAL_QUERY_BATCH_SIZE" \
-  --group-temperature-stride 0.08 \
+  --group-temperature-stride 0.07 \
   --group-top-p-stride 0.015 \
   --min-unique-final-queries 4 \
   --max-regen-rounds 2 \
@@ -135,7 +137,7 @@ echo "[2/4] Training 4B experiment..."
   --eval-every-steps 50 \
   --max-val-queries "$TRAIN_MAX_VAL_QUERIES" \
   --max-steps 500 \
-  --reward-mrr-k 50 \
+  --reward-mrr-k 10 \
   --reward-recall-k 50 \
   --reward-recall-dense-k 100 \
   --reward-w-mrr 0.40 \
@@ -177,7 +179,7 @@ echo "[3/4] Running full evaluation for the 4B experiment..."
   --temperature "$EVAL_TEMPERATURE" \
   --top-p "$EVAL_TOP_P" \
   --query-batch-size "$EVAL_QUERY_BATCH_SIZE" \
-  --reward-mrr-k 50 \
+  --reward-mrr-k 10 \
   --reward-recall-k 50 \
   --reward-recall-dense-k 100 \
   --reward-w-mrr 0.40 \
