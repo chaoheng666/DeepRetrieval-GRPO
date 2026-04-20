@@ -18,8 +18,8 @@ AUTO_GIT_PUSH="${AUTO_GIT_PUSH:-1}"
 TRAIN_MAX_VAL_QUERIES="${TRAIN_MAX_VAL_QUERIES:-400}"
 SEARCH_THREADS="${SEARCH_THREADS:-16}"
 TRAIN_MAX_NEW_TOKENS="${TRAIN_MAX_NEW_TOKENS:-12}"
-TRAIN_TEMPERATURE="${TRAIN_TEMPERATURE:-0.6}"
-TRAIN_TOP_P="${TRAIN_TOP_P:-0.9}"
+TRAIN_TEMPERATURE="${TRAIN_TEMPERATURE:-0.85}"
+TRAIN_TOP_P="${TRAIN_TOP_P:-0.95}"
 EVAL_MAX_NEW_TOKENS="${EVAL_MAX_NEW_TOKENS:-$TRAIN_MAX_NEW_TOKENS}"
 EVAL_TEMPERATURE="${EVAL_TEMPERATURE:-$TRAIN_TEMPERATURE}"
 EVAL_TOP_P="${EVAL_TOP_P:-$TRAIN_TOP_P}"
@@ -106,18 +106,18 @@ print(f"[env] cuda device count: {torch.cuda.device_count()}")
 PY
 fi
 
-echo "[preset] 4B conservative config: batch=8 group=8 max_group=12 train_decode=(${TRAIN_MAX_NEW_TOKENS},${TRAIN_TEMPERATURE},${TRAIN_TOP_P}) eval_decode=(${EVAL_MAX_NEW_TOKENS},${EVAL_TEMPERATURE},${EVAL_TOP_P}) eval_query_batch_size=${EVAL_QUERY_BATCH_SIZE} group_temperature_stride=0.05 group_top_p_stride=0.01 min_unique_final_queries=3 max_regen_rounds=1 reward_gap_threshold=0.06 gap_sampling_temperature_delta=0.10 max_val_queries=${TRAIN_MAX_VAL_QUERIES} search_threads=${SEARCH_THREADS} dense_reward=on"
+echo "[preset] 4B tuned config: batch=24 group=10 max_group=14 train_decode=(${TRAIN_MAX_NEW_TOKENS},${TRAIN_TEMPERATURE},${TRAIN_TOP_P}) eval_decode=(${EVAL_MAX_NEW_TOKENS},${EVAL_TEMPERATURE},${EVAL_TOP_P}) eval_query_batch_size=${EVAL_QUERY_BATCH_SIZE} group_temperature_stride=0.07 group_top_p_stride=0.015 min_unique_final_queries=4 max_regen_rounds=2 reward_gap_threshold=0.08 gap_sampling_temperature_delta=0.15 reward=(mrr@10, recall@50, recall_dense@100) max_val_queries=${TRAIN_MAX_VAL_QUERIES} search_threads=${SEARCH_THREADS}"
 
 echo "[2/4] Training 4B experiment..."
 "$PYTHON_BIN" train.py \
   --model-name "$MODEL_NAME" \
   --num-epochs 1 \
-  --batch-size 8 \
-  --group-size 8 \
-  --max-group-size 12 \
+  --batch-size 24 \
+  --group-size 12 \
+  --max-group-size 16 \
   --learning-rate 1.5e-5 \
   --clip-range 0.2 \
-  --kl-beta 0.01 \
+  --kl-beta 0.03 \
   --search-threads "$SEARCH_THREADS" \
   --max-new-tokens "$TRAIN_MAX_NEW_TOKENS" \
   --temperature "$TRAIN_TEMPERATURE" \
@@ -126,26 +126,26 @@ echo "[2/4] Training 4B experiment..."
   --eval-temperature "$EVAL_TEMPERATURE" \
   --eval-top-p "$EVAL_TOP_P" \
   --eval-query-batch-size "$EVAL_QUERY_BATCH_SIZE" \
-  --group-temperature-stride 0.05 \
-  --group-top-p-stride 0.01 \
-  --min-unique-final-queries 3 \
-  --max-regen-rounds 1 \
-  --reward-gap-threshold 0.06 \
-  --gap-sampling-temperature-delta 0.10 \
+  --group-temperature-stride 0.08 \
+  --group-top-p-stride 0.015 \
+  --min-unique-final-queries 4 \
+  --max-regen-rounds 2 \
+  --reward-gap-threshold 0.08 \
+  --gap-sampling-temperature-delta 0.15 \
   --eval-every-steps 50 \
   --max-val-queries "$TRAIN_MAX_VAL_QUERIES" \
   --max-steps 500 \
   --reward-mrr-k 50 \
   --reward-recall-k 50 \
   --reward-recall-dense-k 100 \
-  --reward-w-mrr 0.55 \
+  --reward-w-mrr 0.40 \
   --reward-w-recall 0.20 \
-  --reward-w-recall-dense 0.10 \
-  --reward-w-term-preserve 0.05 \
-  --reward-w-length-score 0.05 \
-  --reward-w-clean-format 0.05 \
-  --reward-w-bad-format 0.10 \
-  --reward-w-unsafe-copy 0.05 \
+  --reward-w-recall-dense 0.15 \
+  --reward-w-term-preserve 0.10 \
+  --reward-w-length-score 0.08 \
+  --reward-w-clean-format 0.07 \
+  --reward-w-bad-format 0.15 \
+  --reward-w-unsafe-copy 0.08 \
   --format-max-tokens 12 \
   --format-min-english-ratio 0.8 \
   --format-max-unreadable-ratio 0.25 \
@@ -180,14 +180,14 @@ echo "[3/4] Running full evaluation for the 4B experiment..."
   --reward-mrr-k 50 \
   --reward-recall-k 50 \
   --reward-recall-dense-k 100 \
-  --reward-w-mrr 0.55 \
+  --reward-w-mrr 0.40 \
   --reward-w-recall 0.20 \
-  --reward-w-recall-dense 0.10 \
-  --reward-w-term-preserve 0.05 \
-  --reward-w-length-score 0.05 \
-  --reward-w-clean-format 0.05 \
-  --reward-w-bad-format 0.10 \
-  --reward-w-unsafe-copy 0.05 \
+  --reward-w-recall-dense 0.15 \
+  --reward-w-term-preserve 0.10 \
+  --reward-w-length-score 0.08 \
+  --reward-w-clean-format 0.07 \
+  --reward-w-bad-format 0.15 \
+  --reward-w-unsafe-copy 0.08 \
   --format-max-tokens 12 \
   --format-min-english-ratio 0.8 \
   --format-max-unreadable-ratio 0.25 \

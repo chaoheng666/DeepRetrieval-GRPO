@@ -468,6 +468,8 @@ def evaluate_policy(
     recall_scores: list[float] = []
     recall_dense_scores: list[float] = []
     term_preserve_scores: list[float] = []
+    keyword_preserve_scores: list[float] = []
+    locked_term_preserve_scores: list[float] = []
     length_scores: list[float] = []
     clean_format_scores: list[float] = []
     bad_format_penalties: list[float] = []
@@ -510,11 +512,19 @@ def evaluate_policy(
                     reward_cfg=rewarder.cfg,
                 )
                 score = rewarder.score(query.qid, stabilized.final_query, source_query=query.text)
+                keyword_preserve = getattr(score, "keyword_preserve", getattr(score, "term_preserve", 1.0))
+                locked_term_preserve = getattr(
+                    score,
+                    "locked_term_preserve",
+                    getattr(score, "term_preserve", 1.0),
+                )
                 rewards.append(score.total)
                 mrr_scores.append(score.mrr)
                 recall_scores.append(score.recall)
                 recall_dense_scores.append(score.recall_dense)
                 term_preserve_scores.append(score.term_preserve)
+                keyword_preserve_scores.append(keyword_preserve)
+                locked_term_preserve_scores.append(locked_term_preserve)
                 length_scores.append(score.length_score)
                 clean_format_scores.append(score.clean_format)
                 bad_format_penalties.append(score.bad_format_penalty)
@@ -529,6 +539,8 @@ def evaluate_policy(
         "recall_mean": fmean(recall_scores) if recall_scores else 0.0,
         "recall_dense_mean": fmean(recall_dense_scores) if recall_dense_scores else 0.0,
         "term_preserve_mean": fmean(term_preserve_scores) if term_preserve_scores else 0.0,
+        "keyword_preserve_mean": fmean(keyword_preserve_scores) if keyword_preserve_scores else 0.0,
+        "locked_term_preserve_mean": fmean(locked_term_preserve_scores) if locked_term_preserve_scores else 0.0,
         "length_score_mean": fmean(length_scores) if length_scores else 0.0,
         "clean_format_mean": fmean(clean_format_scores) if clean_format_scores else 0.0,
         "bad_format_penalty_mean": fmean(bad_format_penalties) if bad_format_penalties else 0.0,
@@ -728,6 +740,8 @@ def main() -> int:
                 f"recall={metrics.get('recall_mean', 0.0):.4f} "
                 f"recall_dense={metrics.get('recall_dense_mean', 0.0):.4f} "
                 f"term_preserve={metrics.get('term_preserve_mean', 0.0):.4f} "
+                f"keyword_preserve={metrics.get('keyword_preserve_mean', 0.0):.4f} "
+                f"locked_term_preserve={metrics.get('locked_term_preserve_mean', 0.0):.4f} "
                 f"length_score={metrics.get('length_score_mean', 0.0):.4f} "
                 f"clean_format={metrics.get('clean_format_mean', 0.0):.4f} "
                 f"bad_format_penalty={metrics.get('bad_format_penalty_mean', 0.0):.4f} "
@@ -778,6 +792,8 @@ def main() -> int:
                     f"val_reward={eval_metrics['reward_mean']:.4f} "
                     f"val_recall_dense={eval_metrics.get('recall_dense_mean', 0.0):.4f} "
                     f"val_term_preserve={eval_metrics.get('term_preserve_mean', 0.0):.4f} "
+                    f"val_keyword_preserve={eval_metrics.get('keyword_preserve_mean', 0.0):.4f} "
+                    f"val_locked_term_preserve={eval_metrics.get('locked_term_preserve_mean', 0.0):.4f} "
                     f"val_length_score={eval_metrics.get('length_score_mean', 0.0):.4f} "
                     f"val_clean_format={eval_metrics.get('clean_format_mean', 0.0):.4f} "
                     f"val_bad_format_penalty={eval_metrics.get('bad_format_penalty_mean', 0.0):.4f} "

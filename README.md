@@ -164,15 +164,33 @@ python train.py
 ```bash
 python train.py \
   --num-epochs 1 \
-  --batch-size 2 \
-  --group-size 4 \
-  --learning-rate 2e-5 \
+  --batch-size 24 \
+  --group-size 10 \
+  --max-group-size 14 \
+  --learning-rate 1.5e-5 \
   --clip-range 0.2 \
-  --kl-beta 0.02 \
-  --max-new-tokens 24 \
-  --temperature 1.0 \
+  --kl-beta 0.03 \
+  --max-new-tokens 12 \
+  --temperature 0.85 \
   --top-p 0.95 \
-  --eval-every-steps 20 \
+  --group-temperature-stride 0.07 \
+  --group-top-p-stride 0.015 \
+  --min-unique-final-queries 4 \
+  --max-regen-rounds 2 \
+  --reward-gap-threshold 0.08 \
+  --gap-sampling-temperature-delta 0.15 \
+  --reward-mrr-k 10 \
+  --reward-recall-k 50 \
+  --reward-recall-dense-k 100 \
+  --reward-w-mrr 0.40 \
+  --reward-w-recall 0.20 \
+  --reward-w-recall-dense 0.15 \
+  --reward-w-term-preserve 0.10 \
+  --reward-w-length-score 0.08 \
+  --reward-w-clean-format 0.07 \
+  --reward-w-bad-format 0.15 \
+  --reward-w-unsafe-copy 0.08 \
+  --eval-every-steps 50 \
   --max-train-queries 2000 \
   --max-val-queries 400
 ```
@@ -434,21 +452,33 @@ python train.py --low-mem-mode --max-steps 50 --max-train-queries 128 --reward-m
 
 
 python train.py `
-  --num-epochs 3 `
-  --batch-size 4 `
-  --group-size 8 `
+  --num-epochs 1 `
+  --batch-size 24 `
+  --group-size 10 `
+  --max-group-size 14 `
   --learning-rate 1.5e-5 `
   --clip-range 0.2 `
   --kl-beta 0.03 `
-  --max-new-tokens 32 `
-  --temperature 0.9 `
+  --max-new-tokens 12 `
+  --temperature 0.85 `
   --top-p 0.95 `
+  --group-temperature-stride 0.07 `
+  --group-top-p-stride 0.015 `
+  --min-unique-final-queries 4 `
+  --max-regen-rounds 2 `
+  --reward-gap-threshold 0.08 `
+  --gap-sampling-temperature-delta 0.15 `
   --reward-mrr-k 10 `
   --reward-recall-k 50 `
-  --reward-w-mrr 1.0 `
-  --reward-w-recall 0.3 `
-  --reward-w-copy 0.15 `
-  --reward-w-format 0.2 `
+  --reward-recall-dense-k 100 `
+  --reward-w-mrr 0.40 `
+  --reward-w-recall 0.20 `
+  --reward-w-recall-dense 0.15 `
+  --reward-w-term-preserve 0.10 `
+  --reward-w-length-score 0.08 `
+  --reward-w-clean-format 0.07 `
+  --reward-w-bad-format 0.15 `
+  --reward-w-unsafe-copy 0.08 `
   --eval-every-steps 100 `
   --save-dir train_and_eval_data_model/artifacts_3b_heavy_train/checkpoints `
   --log-path train_and_eval_data_model/artifacts_3b_heavy_train/train_log.jsonl
@@ -458,7 +488,7 @@ python train.py `
 
 目标
 类别	成功标准（建议值，可调整）
-主要效果	在确认阶段（≥1000 queries）MRR@50 相对 Original 提升 ≥ 0.005（绝对值）且 p<0.05
+主要效果	在确认阶段（≥1000 queries）MRR@10 相对 Original 提升 ≥ 0.005（绝对值）且 p<0.05
 次要效果	Recall@50 不下降（或下降 ≤ 0.01）；Zero-shot 基线必须显著低于最佳系统
 工程可用性	格式通过率 ≥ 98%；平均输出词项数 ≤ 12；平均延迟与 token 成本不超过预算
 鲁棒性	至少 3 个 seed 下结论一致；不同 query 类型切片上无明显劣化

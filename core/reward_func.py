@@ -61,6 +61,44 @@ QUESTION_TOKENS = {
     "please",
 }
 NEGATION_TOKENS = {"no", "not", "without", "except", "excluding", "exclude"}
+STOPWORD_TOKENS = QUESTION_TOKENS | {
+    "a",
+    "an",
+    "and",
+    "are",
+    "as",
+    "at",
+    "be",
+    "been",
+    "being",
+    "between",
+    "but",
+    "by",
+    "for",
+    "from",
+    "if",
+    "in",
+    "into",
+    "is",
+    "it",
+    "its",
+    "of",
+    "on",
+    "or",
+    "that",
+    "the",
+    "their",
+    "them",
+    "then",
+    "there",
+    "these",
+    "those",
+    "to",
+    "was",
+    "were",
+    "will",
+    "with",
+}
 POLLUTION_RE = re.compile(
     r"(?:<think|thinking process|analysis:|assistant:|search query:|rewritten query:)",
     flags=re.IGNORECASE,
@@ -75,6 +113,8 @@ class RewardBreakdown:
     recall_dense: float = 0.0
     overlap: float = 0.0
     term_preserve: float = 1.0
+    keyword_preserve: float = 1.0
+    locked_term_preserve: float = 1.0
     number_preserve: float = 1.0
     acronym_preserve: float = 1.0
     negation_preserve: float = 1.0
@@ -239,22 +279,41 @@ def _preserve_ratio(source_tokens: Sequence[str], rewritten_tokens: Sequence[str
     return preserved / float(total) if total else 1.0
 
 
-def compute_term_preserve(
+def _extract_keyword_terms(text: str) -> list[str]:
+    numeric_tokens = _extract_locked_numeric_tokens(text)
+    acronym_tokens = _extract_locked_acronyms(text)
+    keywords: list[str] = []
+    for token in _tokenize_terms(text):
+        if token in STOPWORD_TOKENS or token in NEGATION_TOKENS:
+            continue
+        if token in numeric_tokens or token in acronym_tokens:
+            continue
+        if len(token) <= 1:
+            continue
+        keywords.append(token)
+    return keywords
+
+
+def compute_keyword_preserve(source_query: str, rewritten_query: str) -> float:
+    return _preserve_ratio(_extract_keyword_terms(source_query), _tokenize_terms(rewritten_query))
+
+
+def compute_locked_term_preserve(
     source_query: str,
     rewritten_query: str,
 ) -> tuple[float, float, float, float]:
     source_terms = _tokenize_terms(source_query)
     rewritten_terms = _tokenize_terms(rewritten_query)
-    source_numbers = NUMERIC_RE.findall(source_query or "")
-    source_acronyms = ACRONYM_RE.findall(source_query or "")
+    source_numbers = [match.group(0).lower() for match in NUMERIC_RE.finditer(source_query or "")]
+    source_acronyms = [match.group(0).lower() for match in ACRONYM_RE.finditer(source_query or "")]
     source_negations = [token for token in source_terms if token in NEGATION_TOKENS]
 
-    number_preserve = _preserve_ratio(source_numbers, NUMERIC_RE.findall(rewritten_query or ""))
-    acronym_preserve = _preserve_ratio(
-        source_acronyms,
-        [token for token in rewritten_terms if token in {acro.lower() for acro in source_acronyms}],
+    number_preserve = _preserve_ratio(
+        source_numbers,
+        [match.group(0).lower() for match in NUMERIC_RE.finditer(rewritten_query or "")],
     )
-    negation_preserve = _preserve_ratio(source_negations, [token for token in rewritten_terms if token in NEGATION_TOKENS])
+    acronym_preserve = _preserve_ratio(source_acronyms, rewritten_terms)
+    negation_preserve = _preserve_ratio(source_negations, rewritten_terms)
 
     applicable_scores: list[float] = []
     if source_numbers:
@@ -264,7 +323,24 @@ def compute_term_preserve(
     if source_negations:
         applicable_scores.append(negation_preserve)
 
-    term_preserve = sum(applicable_scores) / float(len(applicable_scores)) if applicable_scores else 1.0
+    locked_term_preserve = sum(applicable_scores) / float(len(applicable_scores)) if applicable_scores else 1.0
+    return locked_term_preserve, number_preserve, acronym_preserve, negation_preserve
+
+
+def _combine_term_preserve(keyword_preserve: float, locked_term_preserve: float) -> float:
+    return 0.5 * float(keyword_preserve) + 0.5 * float(locked_term_preserve)
+
+
+def compute_term_preserve(
+    source_query: str,
+    rewritten_query: str,
+) -> tuple[float, float, float, float]:
+    keyword_preserve = compute_keyword_preserve(source_query, rewritten_query)
+    locked_term_preserve, number_preserve, acronym_preserve, negation_preserve = compute_locked_term_preserve(
+        source_query,
+        rewritten_query,
+    )
+    term_preserve = _combine_term_preserve(keyword_preserve, locked_term_preserve)
     return term_preserve, number_preserve, acronym_preserve, negation_preserve
 
 
@@ -612,9 +688,17 @@ class Rewarder:
             topk=self.recall_dense_k,
         )
         overlap = compute_lexical_overlap(source_query or "", cleaned_query) if source_query else 0.0
-        term_preserve, number_preserve, acronym_preserve, negation_preserve = (
-            compute_term_preserve(source_query or "", cleaned_query) if source_query else (1.0, 1.0, 1.0, 1.0)
-        )
+        if source_query:
+            keyword_preserve = compute_keyword_preserve(source_query, cleaned_query)
+            locked_term_preserve, number_preserve, acronym_preserve, negation_preserve = compute_locked_term_preserve(
+                source_query,
+                cleaned_query,
+            )
+            term_preserve = _combine_term_preserve(keyword_preserve, locked_term_preserve)
+        else:
+            keyword_preserve = 1.0
+            locked_term_preserve = 1.0
+            term_preserve, number_preserve, acronym_preserve, negation_preserve = (1.0, 1.0, 1.0, 1.0)
         length_score = compute_length_score(cleaned_query, self.cfg)
         bad_format_penalty = compute_bad_format_penalty(cleaned_query, self.cfg)
         clean_format = compute_clean_format_score(bad_format_penalty)
@@ -639,6 +723,8 @@ class Rewarder:
             recall_dense=recall_dense,
             overlap=overlap,
             term_preserve=term_preserve,
+            keyword_preserve=keyword_preserve,
+            locked_term_preserve=locked_term_preserve,
             number_preserve=number_preserve,
             acronym_preserve=acronym_preserve,
             negation_preserve=negation_preserve,

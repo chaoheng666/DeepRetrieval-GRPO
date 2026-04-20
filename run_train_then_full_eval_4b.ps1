@@ -23,44 +23,46 @@ try {
   }
 
   $pythonBin = if ($env:PYTHON_BIN) { $env:PYTHON_BIN } else { "python" }
-  $artifactRoot = if ($env:ARTIFACT_ROOT) { $env:ARTIFACT_ROOT } else { "train_and_eval_data_model_0419" }
-  $expName = if ($env:EXP_NAME) { $env:EXP_NAME } else { "4b" }
+  $artifactRoot = if ($env:ARTIFACT_ROOT) { $env:ARTIFACT_ROOT } else { "train_and_eval_data_model_0420" }
+  $expName = if ($env:EXP_NAME) { $env:EXP_NAME } else { "4b_conservative_mrr" }
   $modelName = if ($env:MODEL_NAME) { $env:MODEL_NAME } else { "Qwen/Qwen3-4B-Instruct-2507" }
   $autoGitCommit = if ($env:AUTO_GIT_COMMIT) { $env:AUTO_GIT_COMMIT } else { "1" }
   $autoGitPush = if ($env:AUTO_GIT_PUSH) { $env:AUTO_GIT_PUSH } else { "1" }
   $searchThreads = if ($env:SEARCH_THREADS) { $env:SEARCH_THREADS } else { "16" }
-  $trainBatchSize = if ($env:TRAIN_BATCH_SIZE) { $env:TRAIN_BATCH_SIZE } else { "8" }
-  $trainGroupSize = if ($env:TRAIN_GROUP_SIZE) { $env:TRAIN_GROUP_SIZE } else { "8" }
-  $trainMaxGroupSize = if ($env:TRAIN_MAX_GROUP_SIZE) { $env:TRAIN_MAX_GROUP_SIZE } else { "12" }
-  $trainKlBeta = if ($env:TRAIN_KL_BETA) { $env:TRAIN_KL_BETA } else { "0.01" }
+  $trainBatchSize = if ($env:TRAIN_BATCH_SIZE) { $env:TRAIN_BATCH_SIZE } else { "24" }
+  $trainGroupSize = if ($env:TRAIN_GROUP_SIZE) { $env:TRAIN_GROUP_SIZE } else { "10" }
+  $trainMaxGroupSize = if ($env:TRAIN_MAX_GROUP_SIZE) { $env:TRAIN_MAX_GROUP_SIZE } else { "14" }
+  $trainLearningRate = if ($env:TRAIN_LEARNING_RATE) { $env:TRAIN_LEARNING_RATE } else { "1.5e-5" }
+  $trainClipRange = if ($env:TRAIN_CLIP_RANGE) { $env:TRAIN_CLIP_RANGE } else { "0.2" }
+  $trainKlBeta = if ($env:TRAIN_KL_BETA) { $env:TRAIN_KL_BETA } else { "0.03" }
   $trainMaxNewTokens = if ($env:TRAIN_MAX_NEW_TOKENS) { $env:TRAIN_MAX_NEW_TOKENS } else { "12" }
-  $trainTemperature = if ($env:TRAIN_TEMPERATURE) { $env:TRAIN_TEMPERATURE } else { "0.6" }
-  $trainTopP = if ($env:TRAIN_TOP_P) { $env:TRAIN_TOP_P } else { "0.9" }
+  $trainTemperature = if ($env:TRAIN_TEMPERATURE) { $env:TRAIN_TEMPERATURE } else { "0.85" }
+  $trainTopP = if ($env:TRAIN_TOP_P) { $env:TRAIN_TOP_P } else { "0.95" }
   $evalMaxNewTokens = if ($env:EVAL_MAX_NEW_TOKENS) { $env:EVAL_MAX_NEW_TOKENS } else { $trainMaxNewTokens }
   $evalTemperature = if ($env:EVAL_TEMPERATURE) { $env:EVAL_TEMPERATURE } else { $trainTemperature }
   $evalTopP = if ($env:EVAL_TOP_P) { $env:EVAL_TOP_P } else { $trainTopP }
-  $evalQueryBatchSize = if ($env:EVAL_QUERY_BATCH_SIZE) { $env:EVAL_QUERY_BATCH_SIZE } else { $trainBatchSize }
-  $trainGroupTemperatureStride = if ($env:TRAIN_GROUP_TEMPERATURE_STRIDE) { $env:TRAIN_GROUP_TEMPERATURE_STRIDE } else { "0.05" }
-  $trainGroupTopPStride = if ($env:TRAIN_GROUP_TOP_P_STRIDE) { $env:TRAIN_GROUP_TOP_P_STRIDE } else { "0.01" }
-  $trainMinUniqueFinalQueries = if ($env:TRAIN_MIN_UNIQUE_FINAL_QUERIES) { $env:TRAIN_MIN_UNIQUE_FINAL_QUERIES } else { "3" }
-  $trainMaxRegenRounds = if ($env:TRAIN_MAX_REGEN_ROUNDS) { $env:TRAIN_MAX_REGEN_ROUNDS } else { "1" }
-  $trainRewardGapThreshold = if ($env:TRAIN_REWARD_GAP_THRESHOLD) { $env:TRAIN_REWARD_GAP_THRESHOLD } else { "0.06" }
-  $trainGapSamplingTemperatureDelta = if ($env:TRAIN_GAP_SAMPLING_TEMPERATURE_DELTA) { $env:TRAIN_GAP_SAMPLING_TEMPERATURE_DELTA } else { "0.10" }
-  $trainEvalEverySteps = if ($env:TRAIN_EVAL_EVERY_STEPS) { $env:TRAIN_EVAL_EVERY_STEPS } else { "20" }
-  $trainMaxSteps = if ($env:TRAIN_MAX_STEPS) { $env:TRAIN_MAX_STEPS } else { "80" }
+  $evalQueryBatchSize = if ($env:EVAL_QUERY_BATCH_SIZE) { $env:EVAL_QUERY_BATCH_SIZE } else { "8" }
+  $trainGroupTemperatureStride = if ($env:TRAIN_GROUP_TEMPERATURE_STRIDE) { $env:TRAIN_GROUP_TEMPERATURE_STRIDE } else { "0.07" }
+  $trainGroupTopPStride = if ($env:TRAIN_GROUP_TOP_P_STRIDE) { $env:TRAIN_GROUP_TOP_P_STRIDE } else { "0.015" }
+  $trainMinUniqueFinalQueries = if ($env:TRAIN_MIN_UNIQUE_FINAL_QUERIES) { $env:TRAIN_MIN_UNIQUE_FINAL_QUERIES } else { "4" }
+  $trainMaxRegenRounds = if ($env:TRAIN_MAX_REGEN_ROUNDS) { $env:TRAIN_MAX_REGEN_ROUNDS } else { "2" }
+  $trainRewardGapThreshold = if ($env:TRAIN_REWARD_GAP_THRESHOLD) { $env:TRAIN_REWARD_GAP_THRESHOLD } else { "0.08" }
+  $trainGapSamplingTemperatureDelta = if ($env:TRAIN_GAP_SAMPLING_TEMPERATURE_DELTA) { $env:TRAIN_GAP_SAMPLING_TEMPERATURE_DELTA } else { "0.15" }
+  $trainEvalEverySteps = if ($env:TRAIN_EVAL_EVERY_STEPS) { $env:TRAIN_EVAL_EVERY_STEPS } else { "50" }
+  $trainMaxSteps = if ($env:TRAIN_MAX_STEPS) { $env:TRAIN_MAX_STEPS } else { "500" }
   $trainMaxValQueries = if ($env:TRAIN_MAX_VAL_QUERIES) { $env:TRAIN_MAX_VAL_QUERIES } else { "400" }
 
-  $rewardMrrK = if ($env:REWARD_MRR_K) { $env:REWARD_MRR_K } else { "50" }
+  $rewardMrrK = if ($env:REWARD_MRR_K) { $env:REWARD_MRR_K } else { "10" }
   $rewardRecallK = if ($env:REWARD_RECALL_K) { $env:REWARD_RECALL_K } else { "50" }
   $rewardRecallDenseK = if ($env:REWARD_RECALL_DENSE_K) { $env:REWARD_RECALL_DENSE_K } else { "100" }
-  $rewardWMrr = if ($env:REWARD_W_MRR) { $env:REWARD_W_MRR } else { "0.55" }
+  $rewardWMrr = if ($env:REWARD_W_MRR) { $env:REWARD_W_MRR } else { "0.40" }
   $rewardWRecall = if ($env:REWARD_W_RECALL) { $env:REWARD_W_RECALL } else { "0.20" }
-  $rewardWRecallDense = if ($env:REWARD_W_RECALL_DENSE) { $env:REWARD_W_RECALL_DENSE } else { "0.10" }
-  $rewardWTermPreserve = if ($env:REWARD_W_TERM_PRESERVE) { $env:REWARD_W_TERM_PRESERVE } else { "0.05" }
-  $rewardWLengthScore = if ($env:REWARD_W_LENGTH_SCORE) { $env:REWARD_W_LENGTH_SCORE } else { "0.05" }
-  $rewardWCleanFormat = if ($env:REWARD_W_CLEAN_FORMAT) { $env:REWARD_W_CLEAN_FORMAT } else { "0.05" }
-  $rewardWBadFormat = if ($env:REWARD_W_BAD_FORMAT) { $env:REWARD_W_BAD_FORMAT } else { "0.10" }
-  $rewardWUnsafeCopy = if ($env:REWARD_W_UNSAFE_COPY) { $env:REWARD_W_UNSAFE_COPY } else { "0.05" }
+  $rewardWRecallDense = if ($env:REWARD_W_RECALL_DENSE) { $env:REWARD_W_RECALL_DENSE } else { "0.15" }
+  $rewardWTermPreserve = if ($env:REWARD_W_TERM_PRESERVE) { $env:REWARD_W_TERM_PRESERVE } else { "0.10" }
+  $rewardWLengthScore = if ($env:REWARD_W_LENGTH_SCORE) { $env:REWARD_W_LENGTH_SCORE } else { "0.08" }
+  $rewardWCleanFormat = if ($env:REWARD_W_CLEAN_FORMAT) { $env:REWARD_W_CLEAN_FORMAT } else { "0.07" }
+  $rewardWBadFormat = if ($env:REWARD_W_BAD_FORMAT) { $env:REWARD_W_BAD_FORMAT } else { "0.15" }
+  $rewardWUnsafeCopy = if ($env:REWARD_W_UNSAFE_COPY) { $env:REWARD_W_UNSAFE_COPY } else { "0.08" }
   $formatMaxTokens = if ($env:FORMAT_MAX_TOKENS) { $env:FORMAT_MAX_TOKENS } else { "12" }
   $formatMinEnglishRatio = if ($env:FORMAT_MIN_ENGLISH_RATIO) { $env:FORMAT_MIN_ENGLISH_RATIO } else { "0.8" }
   $formatMaxUnreadableRatio = if ($env:FORMAT_MAX_UNREADABLE_RATIO) { $env:FORMAT_MAX_UNREADABLE_RATIO } else { "0.25" }
@@ -96,7 +98,7 @@ try {
     Write-Host "[env] model source (model id): $modelName"
   }
 
-  Write-Host "[preset] train_decode=($trainMaxNewTokens,$trainTemperature,$trainTopP) eval_decode=($evalMaxNewTokens,$evalTemperature,$evalTopP) eval_query_batch_size=$evalQueryBatchSize search_threads=$searchThreads reward=(mrr=$rewardMrrK recall=$rewardRecallK recall_dense=$rewardRecallDenseK)"
+  Write-Host "[preset] batch=$trainBatchSize group=$trainGroupSize max_group=$trainMaxGroupSize train_decode=($trainMaxNewTokens,$trainTemperature,$trainTopP) eval_decode=($evalMaxNewTokens,$evalTemperature,$evalTopP) eval_query_batch_size=$evalQueryBatchSize strides=($trainGroupTemperatureStride,$trainGroupTopPStride) unique=$trainMinUniqueFinalQueries regen=$trainMaxRegenRounds gap=$trainRewardGapThreshold delta=$trainGapSamplingTemperatureDelta reward=(mrr=$rewardMrrK recall=$rewardRecallK recall_dense=$rewardRecallDenseK)"
 
   Write-Host "[1/3] Training 4B experiment..."
   & $pythonBin train.py `
@@ -105,6 +107,8 @@ try {
     --batch-size $trainBatchSize `
     --group-size $trainGroupSize `
     --max-group-size $trainMaxGroupSize `
+    --learning-rate $trainLearningRate `
+    --clip-range $trainClipRange `
     --kl-beta $trainKlBeta `
     --search-threads $searchThreads `
     --max-new-tokens $trainMaxNewTokens `

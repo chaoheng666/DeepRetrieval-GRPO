@@ -10,7 +10,9 @@ from core.reward_func import (
     compose_reward,
     compute_bad_format_penalty,
     compute_clean_format_score,
+    compute_keyword_preserve,
     compute_length_score,
+    compute_locked_term_preserve,
     compute_mrr_at_k,
     compute_recall_at_k,
     compute_term_preserve,
@@ -52,27 +54,56 @@ class RewardMathTests(unittest.TestCase):
         self.assertEqual(hit_count, 1)
         self.assertEqual(total, 2)
 
-    def test_term_preserve_averages_only_applicable_categories(self):
+    def test_term_preserve_blends_keyword_and_locked_terms(self):
         term_preserve, number_preserve, acronym_preserve, negation_preserve = compute_term_preserve(
-            "COPD treatment without oxygen 2024",
-            "copd treatment without oxygen",
+            "COPD home treatment without oxygen 2024",
+            "copd treatment oxygen",
+        )
+        keyword_preserve = compute_keyword_preserve(
+            "COPD home treatment without oxygen 2024",
+            "copd treatment oxygen",
+        )
+        locked_term_preserve, _, _, _ = compute_locked_term_preserve(
+            "COPD home treatment without oxygen 2024",
+            "copd treatment oxygen",
         )
 
         self.assertEqual(number_preserve, 0.0)
         self.assertEqual(acronym_preserve, 1.0)
-        self.assertEqual(negation_preserve, 1.0)
-        self.assertAlmostEqual(term_preserve, 2.0 / 3.0)
+        self.assertEqual(negation_preserve, 0.0)
+        self.assertAlmostEqual(keyword_preserve, 2.0 / 3.0)
+        self.assertAlmostEqual(locked_term_preserve, 1.0 / 3.0)
+        self.assertAlmostEqual(term_preserve, 0.5)
 
-    def test_term_preserve_defaults_to_one_when_no_locked_terms_exist(self):
+    def test_term_preserve_still_varies_when_no_locked_terms_exist(self):
         term_preserve, number_preserve, acronym_preserve, negation_preserve = compute_term_preserve(
             "best budget gaming laptop",
-            "budget gaming laptop deals",
+            "gaming laptop deals",
+        )
+        keyword_preserve = compute_keyword_preserve(
+            "best budget gaming laptop",
+            "gaming laptop deals",
+        )
+        locked_term_preserve, _, _, _ = compute_locked_term_preserve(
+            "best budget gaming laptop",
+            "gaming laptop deals",
         )
 
-        self.assertEqual(term_preserve, 1.0)
+        self.assertAlmostEqual(keyword_preserve, 0.5)
+        self.assertEqual(locked_term_preserve, 1.0)
+        self.assertAlmostEqual(term_preserve, 0.75)
         self.assertEqual(number_preserve, 1.0)
         self.assertEqual(acronym_preserve, 1.0)
         self.assertEqual(negation_preserve, 1.0)
+
+    def test_keyword_preserve_filters_question_words_and_stopwords(self):
+        self.assertEqual(
+            compute_keyword_preserve(
+                "what are symptoms of anemia in women",
+                "anemia symptoms women",
+            ),
+            1.0,
+        )
 
     def test_length_score_piecewise_profile(self):
         cfg = RewardConfig()
@@ -135,14 +166,14 @@ class RewardMathTests(unittest.TestCase):
             cfg=cfg,
         )
         expected = (
-            0.55 * 0.5
+            0.40 * 0.5
             + 0.20 * 0.4
-            + 0.10 * 0.7
-            + 0.05 * 0.8
-            + 0.05 * 1.0
-            + 0.05 * 1.0
-            - 0.10 * 0.25
-            - 0.05 * 1.0
+            + 0.15 * 0.7
+            + 0.10 * 0.8
+            + 0.08 * 1.0
+            + 0.07 * 1.0
+            - 0.15 * 0.25
+            - 0.08 * 1.0
         )
         self.assertAlmostEqual(total, expected)
 

@@ -62,12 +62,33 @@ $EVAL_DIR = "$ROOT/artifacts_${EXP}_eval"
 
 python train.py `
   --model-name Qwen/Qwen3-4B-Instruct-2507 `
-  --num-epochs 3 `
-  --batch-size 4 `
-  --group-size 8 `
-  --max-new-tokens 20 `
-  --temperature 0.7 `
-  --top-p 0.9 `
+  --num-epochs 1 `
+  --batch-size 24 `
+  --group-size 10 `
+  --max-group-size 14 `
+  --learning-rate 1.5e-5 `
+  --clip-range 0.2 `
+  --kl-beta 0.03 `
+  --max-new-tokens 12 `
+  --temperature 0.85 `
+  --top-p 0.95 `
+  --group-temperature-stride 0.07 `
+  --group-top-p-stride 0.015 `
+  --min-unique-final-queries 4 `
+  --max-regen-rounds 2 `
+  --reward-gap-threshold 0.08 `
+  --gap-sampling-temperature-delta 0.15 `
+  --reward-mrr-k 10 `
+  --reward-recall-k 50 `
+  --reward-recall-dense-k 100 `
+  --reward-w-mrr 0.40 `
+  --reward-w-recall 0.20 `
+  --reward-w-recall-dense 0.15 `
+  --reward-w-term-preserve 0.10 `
+  --reward-w-length-score 0.08 `
+  --reward-w-clean-format 0.07 `
+  --reward-w-bad-format 0.15 `
+  --reward-w-unsafe-copy 0.08 `
   --save-dir "$TRAIN_DIR/checkpoints" `
   --log-path "$TRAIN_DIR/train_log.jsonl" `
   --group-trace-log-path "$TRAIN_DIR/group_trace_log.jsonl"

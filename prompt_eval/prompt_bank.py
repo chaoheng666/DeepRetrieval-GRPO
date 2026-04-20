@@ -75,7 +75,7 @@ def _compose_system_prompt(pattern: PromptPattern, profile: DecodeProfile) -> st
     lines: list[str] = [
         "You rewrite search queries for DeepRetrieval-GRPO.",
         "The retriever is Lucene BM25 over MS MARCO passages.",
-        "Your only goal is to improve sparse lexical retrieval MRR@50 over the original query.",
+        "Your only goal is to improve sparse lexical retrieval MRR@10 over the original query.",
         "",
         "Hard output contract:",
         "1) Output exactly one line of English query text.",

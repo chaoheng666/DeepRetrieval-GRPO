@@ -28,6 +28,8 @@ class Sample:
     recall: float
     recall_dense: float
     term_preserve: float
+    keyword_preserve: float
+    locked_term_preserve: float
     length_score: float
     clean_format: float
     bad_format_penalty: float
@@ -82,11 +84,11 @@ class GRPOEngine:
         top_p: float,
         group_temperature_stride: float = 0.0,
         group_top_p_stride: float = 0.0,
-        max_group_size: int = 24,
-        min_unique_final_queries: int = 3,
+        max_group_size: int = 14,
+        min_unique_final_queries: int = 4,
         max_regen_rounds: int = 2,
         regen_temperature_delta: float = 0.15,
-        reward_gap_threshold: float = 0.10,
+        reward_gap_threshold: float = 0.08,
         gap_sampling_temperature_delta: float = 0.15,
         parallel_group_generate: bool = False,
     ) -> None:
@@ -335,6 +337,8 @@ class GRPOEngine:
             recall_scores: list[float] = []
             recall_dense_scores: list[float] = []
             term_preserve_scores: list[float] = []
+            keyword_preserve_scores: list[float] = []
+            locked_term_preserve_scores: list[float] = []
             length_scores: list[float] = []
             clean_format_scores: list[float] = []
             bad_format_penalties: list[float] = []
@@ -430,6 +434,12 @@ class GRPOEngine:
 
                 for generated, stabilized in zip(generated_group, stabilized_group):
                     reward = reward_by_query[stabilized.final_query]
+                    keyword_preserve = getattr(reward, "keyword_preserve", getattr(reward, "term_preserve", 1.0))
+                    locked_term_preserve = getattr(
+                        reward,
+                        "locked_term_preserve",
+                        getattr(reward, "term_preserve", 1.0),
+                    )
                     group_samples.append(
                         Sample(
                             qid=query.qid,
@@ -444,6 +454,8 @@ class GRPOEngine:
                             recall=reward.recall,
                             recall_dense=reward.recall_dense,
                             term_preserve=reward.term_preserve,
+                            keyword_preserve=keyword_preserve,
+                            locked_term_preserve=locked_term_preserve,
                             length_score=reward.length_score,
                             clean_format=reward.clean_format,
                             bad_format_penalty=reward.bad_format_penalty,
@@ -487,6 +499,8 @@ class GRPOEngine:
                         "group_recall": [sample.recall for sample in group_samples],
                         "group_recall_dense": [sample.recall_dense for sample in group_samples],
                         "group_term_preserve": [sample.term_preserve for sample in group_samples],
+                        "group_keyword_preserve": [sample.keyword_preserve for sample in group_samples],
+                        "group_locked_term_preserve": [sample.locked_term_preserve for sample in group_samples],
                         "group_length_scores": [sample.length_score for sample in group_samples],
                         "group_clean_format_scores": [sample.clean_format for sample in group_samples],
                         "group_bad_format_penalties": [sample.bad_format_penalty for sample in group_samples],
@@ -514,6 +528,8 @@ class GRPOEngine:
                     recall_scores.append(sample.recall)
                     recall_dense_scores.append(sample.recall_dense)
                     term_preserve_scores.append(sample.term_preserve)
+                    keyword_preserve_scores.append(sample.keyword_preserve)
+                    locked_term_preserve_scores.append(sample.locked_term_preserve)
                     length_scores.append(sample.length_score)
                     clean_format_scores.append(sample.clean_format)
                     bad_format_penalties.append(sample.bad_format_penalty)
@@ -629,6 +645,10 @@ class GRPOEngine:
                 "recall_mean": fmean(recall_scores) if recall_scores else 0.0,
                 "recall_dense_mean": fmean(recall_dense_scores) if recall_dense_scores else 0.0,
                 "term_preserve_mean": fmean(term_preserve_scores) if term_preserve_scores else 0.0,
+                "keyword_preserve_mean": fmean(keyword_preserve_scores) if keyword_preserve_scores else 0.0,
+                "locked_term_preserve_mean": (
+                    fmean(locked_term_preserve_scores) if locked_term_preserve_scores else 0.0
+                ),
                 "length_score_mean": fmean(length_scores) if length_scores else 0.0,
                 "clean_format_mean": fmean(clean_format_scores) if clean_format_scores else 0.0,
                 "bad_format_penalty_mean": fmean(bad_format_penalties) if bad_format_penalties else 0.0,

@@ -112,25 +112,32 @@ class DefaultPromptConfigTests(unittest.TestCase):
         self.assertEqual(config.prompt.stop_on, "\n")
         self.assertTrue(config.prompt.enforce_single_line)
         self.assertIn("Strategy ID: P23 [FewShot]", config.prompt.system_prompt)
+        self.assertIn("MRR@10", config.prompt.system_prompt)
         self.assertIn("anemia symptoms women", config.prompt.template)
 
     def test_training_defaults_remain_stochastic(self):
         config = get_default_config()
 
-        self.assertEqual(config.train.max_new_tokens, 18)
-        self.assertEqual(config.train.temperature, 0.8)
+        self.assertEqual(config.train.group_size, 10)
+        self.assertEqual(config.train.max_group_size, 14)
+        self.assertEqual(config.train.kl_beta, 0.03)
+        self.assertEqual(config.train.max_new_tokens, 12)
+        self.assertEqual(config.train.temperature, 0.85)
         self.assertEqual(config.train.top_p, 0.95)
 
     def test_reward_defaults_use_dense_three_layer_formula(self):
         config = get_default_config()
 
-        self.assertEqual(config.reward.mrr_k, 50)
+        self.assertEqual(config.reward.mrr_k, 10)
         self.assertEqual(config.reward.recall_k, 50)
         self.assertEqual(config.reward.recall_dense_k, 100)
-        self.assertEqual(config.reward.w_recall_dense, 0.10)
-        self.assertEqual(config.reward.w_term_preserve, 0.05)
-        self.assertEqual(config.reward.w_bad_format, 0.10)
-        self.assertEqual(config.reward.w_unsafe_copy, 0.05)
+        self.assertEqual(config.reward.w_mrr, 0.40)
+        self.assertEqual(config.reward.w_recall_dense, 0.15)
+        self.assertEqual(config.reward.w_term_preserve, 0.10)
+        self.assertEqual(config.reward.w_length_score, 0.08)
+        self.assertEqual(config.reward.w_clean_format, 0.07)
+        self.assertEqual(config.reward.w_bad_format, 0.15)
+        self.assertEqual(config.reward.w_unsafe_copy, 0.08)
 
 
 class TrainEvaluationDecodeTests(unittest.TestCase):

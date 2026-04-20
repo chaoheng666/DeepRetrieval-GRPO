@@ -8,7 +8,7 @@ This directory evaluates multiple retrieval rewrite prompts on the same random q
   (`Direct` + `FewShot`).
 - Every prompt is tied to this project rather than generic paraphrasing:
   - Lucene BM25 / MS MARCO passage retrieval
-  - higher `MRR@50` instead of nicer prose
+  - higher `MRR@10` instead of nicer prose
   - one-line English lexical query output
   - copy penalty / format penalty awareness
   - entity, acronym, number, version, negation preservation
@@ -48,8 +48,10 @@ python prompt_eval/run_prompt_eval.py --sample-size 200 --prompt-model-parallel 
 - `--train-ratio`
 - `--max-new-tokens`
 - `--disable-4bit`
-- `--reward-mrr-k`, `--reward-recall-k`
-- `--reward-w-mrr`, `--reward-w-recall`, `--reward-w-copy`, `--reward-w-format`
+- `--reward-mrr-k`, `--reward-recall-k`, `--reward-recall-dense-k`
+- `--reward-w-mrr`, `--reward-w-recall`, `--reward-w-recall-dense`
+- `--reward-w-term-preserve`, `--reward-w-length-score`, `--reward-w-clean-format`
+- `--reward-w-bad-format`, `--reward-w-unsafe-copy`
 - `--report-path` (custom output path)
 - `--prompt-ids` (comma-separated subset for slow incremental testing)
 - `--max-prompts` (only run first N prompts after filtering)

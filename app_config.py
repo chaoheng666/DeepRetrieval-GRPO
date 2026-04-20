@@ -142,33 +142,33 @@ class TrainConfig:
     num_epochs: int = 1
     batch_size: int = 8
     # Initial group size for each query before adaptive gap-driven resampling.
-    group_size: int = 8
+    group_size: int = 10
     # Hard cap for adaptive gap-driven resampling.
-    max_group_size: int = 24
-    learning_rate: float = 2e-5
+    max_group_size: int = 14
+    learning_rate: float = 1.5e-5
     weight_decay: float = 0.0
     # PPO clip 参数 epsilon。
     clip_range: float = 0.2
     # KL 惩罚系数 beta，用于约束新策略不要偏离参考策略过远。
-    kl_beta: float = 0.02
+    kl_beta: float = 0.03
     # 梯度裁剪阈值，避免梯度爆炸导致训练不稳定。
     grad_clip_norm: float = 1.0
     # 生成长度与采样策略。
-    max_new_tokens: int = 18
-    temperature: float = 0.8
+    max_new_tokens: int = 12
+    temperature: float = 0.85
     top_p: float = 0.95
     # Optionally diversify grouped sampling by slightly varying decode params
     # across samples within the same GRPO group.
-    group_temperature_stride: float = 0.0
-    group_top_p_stride: float = 0.0
+    group_temperature_stride: float = 0.07
+    group_top_p_stride: float = 0.015
     # When a sampled group collapses to too few distinct final queries, retry
     # duplicate/polluted slots with a slightly warmer decode.
-    min_unique_final_queries: int = 3
+    min_unique_final_queries: int = 4
     max_regen_rounds: int = 2
     regen_temperature_delta: float = 0.15
     # Keep sampling until best-minus-worst raw reward reaches this spread,
     # or until max_group_size is reached.
-    reward_gap_threshold: float = 0.10
+    reward_gap_threshold: float = 0.08
     # Only adaptive extra samples use a higher temperature.
     gap_sampling_temperature_delta: float = 0.15
     # 每隔多少个 step 在验证集上评估一次。
@@ -187,23 +187,23 @@ class RewardConfig:
     """Dense BM25 rewrite reward configuration."""
 
     # Retrieval cutoffs.
-    mrr_k: int = 50
+    mrr_k: int = 10
     recall_k: int = 50
     recall_dense_k: int = 100
     # Pyserini batch_search thread count for retrieval-side parallelism.
     search_threads: int = 8
     # Fixed reward formula:
-    # total = 0.55*mrr@50 + 0.20*recall@50 + 0.10*recall@100
-    #       + 0.05*term_preserve + 0.05*length_score + 0.05*clean_format
-    #       - 0.10*bad_format - 0.05*unsafe_copy
-    w_mrr: float = 0.55
+    # total = 0.40*mrr@10 + 0.20*recall@50 + 0.15*recall@100
+    #       + 0.10*term_preserve + 0.08*length_score + 0.07*clean_format
+    #       - 0.15*bad_format - 0.08*unsafe_copy
+    w_mrr: float = 0.40
     w_recall: float = 0.20
-    w_recall_dense: float = 0.10
-    w_term_preserve: float = 0.05
-    w_length_score: float = 0.05
-    w_clean_format: float = 0.05
-    w_bad_format: float = 0.10
-    w_unsafe_copy: float = 0.05
+    w_recall_dense: float = 0.15
+    w_term_preserve: float = 0.10
+    w_length_score: float = 0.08
+    w_clean_format: float = 0.07
+    w_bad_format: float = 0.15
+    w_unsafe_copy: float = 0.08
     # Length score piecewise anchors.
     length_score_min_terms: int = 1
     length_score_ideal_min_terms: int = 4
@@ -224,7 +224,7 @@ class PromptConfig:
     system_prompt: str = (
         "You rewrite search queries for DeepRetrieval-GRPO.\n"
         "The retriever is Lucene BM25 over MS MARCO passages.\n"
-        "Your only goal is to improve sparse lexical retrieval MRR@50 over the original query.\n"
+        "Your only goal is to improve sparse lexical retrieval MRR@10 over the original query.\n"
         "\n"
         "Hard output contract:\n"
         "1) Output exactly one line of English query text.\n"
