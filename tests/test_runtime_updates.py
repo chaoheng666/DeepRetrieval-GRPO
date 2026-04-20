@@ -408,6 +408,30 @@ class _ToyLogprobModel(torch.nn.Module):
 
 
 class ModelWrapperBatchLogprobTests(unittest.TestCase):
+    def test_resolve_causal_lm_stack_descends_past_nested_causallm_wrappers(self):
+        class _NestedBackbone(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.proj = torch.nn.Linear(4, 4)
+
+        class _NestedCausalLM(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.model = _NestedBackbone()
+                self.lm_head = torch.nn.Linear(4, 8)
+
+        class _PeftLikeWrapper(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.model = _NestedCausalLM()
+                self.lm_head = self.model.lm_head
+
+        wrapper_model = _PeftLikeWrapper()
+        backbone, lm_head = ModelWrapper._resolve_causal_lm_stack(wrapper_model)
+
+        self.assertIs(backbone, wrapper_model.model.model)
+        self.assertIs(lm_head, wrapper_model.model.lm_head)
+
     def test_compute_logprob_batch_matches_single_sample_path(self):
         wrapper = ModelWrapper.__new__(ModelWrapper)
         wrapper.tokenizer = _CharTokenizer()

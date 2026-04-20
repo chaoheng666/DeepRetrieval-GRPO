@@ -422,6 +422,16 @@ class ModelWrapper:
             backbone = getattr(candidate, "model", None)
             lm_head = getattr(candidate, "lm_head", None)
             if isinstance(backbone, torch.nn.Module) and isinstance(lm_head, torch.nn.Module):
+                # Some PEFT wrappers expose a full *ForCausalLM module as `.model`.
+                # Walk through nested causal-LM wrappers until we reach the true
+                # decoder backbone that returns `last_hidden_state`.
+                while True:
+                    nested_backbone = getattr(backbone, "model", None)
+                    nested_lm_head = getattr(backbone, "lm_head", None)
+                    if isinstance(nested_backbone, torch.nn.Module) and isinstance(nested_lm_head, torch.nn.Module):
+                        backbone = nested_backbone
+                        continue
+                    break
                 return backbone, lm_head
 
             for attr in ("base_model", "model"):
@@ -1165,6 +1175,13 @@ class ModelWrapper:
             if hidden_states is None:
                 if isinstance(backbone_outputs, tuple) and backbone_outputs:
                     hidden_states = backbone_outputs[0]
+                elif getattr(backbone_outputs, "logits", None) is not None:
+                    return self._compute_logprob_batch_from_full_logits(
+                        prompt_list,
+                        response_list,
+                        policy=policy,
+                        no_grad=no_grad,
+                    )
                 else:
                     raise RuntimeError("Backbone forward did not return last_hidden_state.")
 
