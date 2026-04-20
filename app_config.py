@@ -186,12 +186,17 @@ class TrainConfig:
     log_path: str = f"{DEFAULT_TRAIN_DIR}/train_log.jsonl"
     # 每个 query 一条 group 采样明细日志（每个训练 step 追加多行）。
     group_trace_log_path: str = f"{DEFAULT_TRAIN_DIR}/group_trace_log.jsonl"
+    curriculum_enable: bool = False
+    curriculum_phase: str = "phase1"
+    curriculum_metadata_path: str | None = None
+    early_stop_patience: int = 3
 
 
 @dataclass(slots=True)
 class RewardConfig:
     """Dense BM25 rewrite reward configuration."""
 
+    reward_mode: str = "legacy"
     # Retrieval cutoffs.
     mrr_k: int = 50
     recall_k: int = 50
@@ -210,6 +215,9 @@ class RewardConfig:
     w_clean_format: float = 0.07
     w_bad_format: float = 0.15
     w_unsafe_copy: float = 0.08
+    w_rank_bonus: float = 0.10
+    w_overedit: float = 0.10
+    overedit_tau: float = 0.40
     # Length score piecewise anchors.
     length_score_min_terms: int = 1
     length_score_ideal_min_terms: int = 4
@@ -304,6 +312,49 @@ def get_default_config() -> AppConfig:
     """返回默认配置（每次调用都会生成新的实例）。"""
 
     return AppConfig()
+
+
+def apply_reward_mode_prompt_defaults(config: AppConfig) -> AppConfig:
+    """Adjust the stock prompt wording for non-legacy reward modes."""
+
+    if config.reward.reward_mode != "top20_delta":
+        return config
+    if config.prompt.prompt_id != "p24_diverse_lexical":
+        return config
+
+    config.prompt.prompt_id = "p24_diverse_lexical_top20"
+    config.prompt.system_prompt = (
+        "You rewrite search queries for DeepRetrieval-GRPO.\n"
+        "The retriever is Lucene BM25 over MS MARCO passages.\n"
+        "Your only goal is to improve top-20 sparse lexical retrieval over the original query.\n"
+        "Optimize primarily for MRR@20, with supporting focus on Recall@20 and Recall@50.\n"
+        "\n"
+        "Hard output contract:\n"
+        "1) Output exactly one line of English query text.\n"
+        "2) Output only the final query: no explanation, no answer, no labels, no XML, no markdown.\n"
+        "3) Never emit <think>, multiple options, bullet points, or reasoning traces.\n"
+        "\n"
+        "Strategy ID: P23 [FewShot]\n"
+        "Strategy objective: Favor lexical forms that are common in explanatory passages rather than conversational wording.\n"
+        "\n"
+        "BM25 rules:\n"
+        "- Preferred length: 3-11 meaningful terms.\n"
+        "- Preserve named entities, rare technical terms, acronyms, numbers, years, versions, units, and negations.\n"
+        "- If the original query is already concise and retrieval-ready, keep it close but prefer a small lexical improvement over an exact copy when a safe variant exists.\n"
+        "- Prefer exact terms likely to appear verbatim in top-ranked relevant passages.\n"
+        "- Favor edits that can surface a relevant document in the top 20 while also improving Recall@20 and Recall@50.\n"
+        "- Remove chatty wrappers and helper verbs when safe.\n"
+        "- Avoid speculative synonyms, broadening, and answer-style prose.\n"
+        "- Match the demonstration style exactly and emit only the live rewrite.\n"
+        "- Stop immediately after the rewrite; never continue with another "
+        "\"User query\" or \"Better BM25 query\" block.\n"
+        "- Strategy-specific rules:\n"
+        "  - Prefer content nouns and modifiers that are likely to appear in passage text.\n"
+        "  - Avoid answer-style sentences and keep the query keyword-like.\n"
+        "  - Avoid copying the source query verbatim when a nearby lexical variant is equally safe.\n"
+        "  - Small reordering, clarification, or insertion of one high-value lexical term is better than no rewrite."
+    )
+    return config
 
 
 def ensure_runtime_dirs(config: AppConfig) -> None:

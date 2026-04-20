@@ -27,11 +27,22 @@ class Sample:
     mrr: float
     recall: float
     recall_dense: float
+    rank_bonus: float
+    main_reward: float
+    orig_mrr: float
+    orig_recall: float
+    orig_recall_aux: float
+    orig_rank_bonus: float
+    delta_mrr: float
+    delta_recall: float
+    delta_recall_aux: float
+    delta_rank_bonus: float
     term_preserve: float
     keyword_preserve: float
     locked_term_preserve: float
     length_score: float
     clean_format: float
+    overedit_penalty: float
     bad_format_penalty: float
     unsafe_copy_penalty: float
     fallback_to_original: bool
@@ -338,11 +349,22 @@ class GRPOEngine:
             mrr_scores: list[float] = []
             recall_scores: list[float] = []
             recall_dense_scores: list[float] = []
+            rank_bonus_scores: list[float] = []
+            main_reward_scores: list[float] = []
+            orig_mrr_scores: list[float] = []
+            orig_recall_scores: list[float] = []
+            orig_recall_aux_scores: list[float] = []
+            orig_rank_bonus_scores: list[float] = []
+            delta_mrr_scores: list[float] = []
+            delta_recall_scores: list[float] = []
+            delta_recall_aux_scores: list[float] = []
+            delta_rank_bonus_scores: list[float] = []
             term_preserve_scores: list[float] = []
             keyword_preserve_scores: list[float] = []
             locked_term_preserve_scores: list[float] = []
             length_scores: list[float] = []
             clean_format_scores: list[float] = []
+            overedit_penalties: list[float] = []
             bad_format_penalties: list[float] = []
             unsafe_copy_penalties: list[float] = []
             all_advantages: list[float] = []
@@ -350,11 +372,14 @@ class GRPOEngine:
             generated_sample_counts: list[float] = []
             reward_gap_raw_values: list[float] = []
             flat_reward_group_count = 0
+            flat_mrr_group_count = 0
+            flat_main_reward_group_count = 0
             collapsed_group_count = 0
             all_same_final_query_group_count = 0
             reward_gap_met_count = 0
             max_group_size_hit_count = 0
             extra_sample_count_total = 0
+            best_reward_hit_best_mrr20_count = 0
 
             best_query_pairs: list[dict[str, object]] = []
             group_query_summaries: list[dict[str, object]] = []
@@ -455,11 +480,22 @@ class GRPOEngine:
                             mrr=reward.mrr,
                             recall=reward.recall,
                             recall_dense=reward.recall_dense,
+                            rank_bonus=getattr(reward, "rank_bonus", 0.0),
+                            main_reward=getattr(reward, "main_reward", reward.total),
+                            orig_mrr=getattr(reward, "orig_mrr", 0.0),
+                            orig_recall=getattr(reward, "orig_recall", 0.0),
+                            orig_recall_aux=getattr(reward, "orig_recall_aux", 0.0),
+                            orig_rank_bonus=getattr(reward, "orig_rank_bonus", 0.0),
+                            delta_mrr=getattr(reward, "delta_mrr", 0.0),
+                            delta_recall=getattr(reward, "delta_recall", 0.0),
+                            delta_recall_aux=getattr(reward, "delta_recall_aux", 0.0),
+                            delta_rank_bonus=getattr(reward, "delta_rank_bonus", 0.0),
                             term_preserve=reward.term_preserve,
                             keyword_preserve=keyword_preserve,
                             locked_term_preserve=locked_term_preserve,
                             length_score=reward.length_score,
                             clean_format=reward.clean_format,
+                            overedit_penalty=getattr(reward, "overedit_penalty", 0.0),
                             bad_format_penalty=reward.bad_format_penalty,
                             unsafe_copy_penalty=reward.unsafe_copy_penalty,
                             fallback_to_original=stabilized.fallback_to_original,
@@ -473,6 +509,15 @@ class GRPOEngine:
                     all_same_final_query_group_count += 1
                 if len({sample.reward for sample in group_samples}) == 1:
                     flat_reward_group_count += 1
+                if len({sample.mrr for sample in group_samples}) == 1:
+                    flat_mrr_group_count += 1
+                if len({sample.main_reward for sample in group_samples}) == 1:
+                    flat_main_reward_group_count += 1
+                if group_samples:
+                    best_reward_sample = max(group_samples, key=lambda sample: sample.reward)
+                    best_group_mrr = max(sample.mrr for sample in group_samples)
+                    if best_reward_sample.mrr == best_group_mrr:
+                        best_reward_hit_best_mrr20_count += 1
 
                 group_query_summaries.append(
                     {
@@ -500,11 +545,22 @@ class GRPOEngine:
                         "group_mrr": [sample.mrr for sample in group_samples],
                         "group_recall": [sample.recall for sample in group_samples],
                         "group_recall_dense": [sample.recall_dense for sample in group_samples],
+                        "group_rank_bonus": [sample.rank_bonus for sample in group_samples],
+                        "group_orig_mrr": [sample.orig_mrr for sample in group_samples],
+                        "group_orig_recall": [sample.orig_recall for sample in group_samples],
+                        "group_orig_recall_aux": [sample.orig_recall_aux for sample in group_samples],
+                        "group_orig_rank_bonus": [sample.orig_rank_bonus for sample in group_samples],
+                        "group_delta_mrr": [sample.delta_mrr for sample in group_samples],
+                        "group_delta_recall": [sample.delta_recall for sample in group_samples],
+                        "group_delta_recall_aux": [sample.delta_recall_aux for sample in group_samples],
+                        "group_delta_rank_bonus": [sample.delta_rank_bonus for sample in group_samples],
+                        "group_main_rewards": [sample.main_reward for sample in group_samples],
                         "group_term_preserve": [sample.term_preserve for sample in group_samples],
                         "group_keyword_preserve": [sample.keyword_preserve for sample in group_samples],
                         "group_locked_term_preserve": [sample.locked_term_preserve for sample in group_samples],
                         "group_length_scores": [sample.length_score for sample in group_samples],
                         "group_clean_format_scores": [sample.clean_format for sample in group_samples],
+                        "group_overedit_penalties": [sample.overedit_penalty for sample in group_samples],
                         "group_bad_format_penalties": [sample.bad_format_penalty for sample in group_samples],
                         "group_unsafe_copy_penalties": [sample.unsafe_copy_penalty for sample in group_samples],
                     }
@@ -529,11 +585,22 @@ class GRPOEngine:
                     mrr_scores.append(sample.mrr)
                     recall_scores.append(sample.recall)
                     recall_dense_scores.append(sample.recall_dense)
+                    rank_bonus_scores.append(sample.rank_bonus)
+                    main_reward_scores.append(sample.main_reward)
+                    orig_mrr_scores.append(sample.orig_mrr)
+                    orig_recall_scores.append(sample.orig_recall)
+                    orig_recall_aux_scores.append(sample.orig_recall_aux)
+                    orig_rank_bonus_scores.append(sample.orig_rank_bonus)
+                    delta_mrr_scores.append(sample.delta_mrr)
+                    delta_recall_scores.append(sample.delta_recall)
+                    delta_recall_aux_scores.append(sample.delta_recall_aux)
+                    delta_rank_bonus_scores.append(sample.delta_rank_bonus)
                     term_preserve_scores.append(sample.term_preserve)
                     keyword_preserve_scores.append(sample.keyword_preserve)
                     locked_term_preserve_scores.append(sample.locked_term_preserve)
                     length_scores.append(sample.length_score)
                     clean_format_scores.append(sample.clean_format)
+                    overedit_penalties.append(sample.overedit_penalty)
                     bad_format_penalties.append(sample.bad_format_penalty)
                     unsafe_copy_penalties.append(sample.unsafe_copy_penalty)
 
@@ -656,6 +723,18 @@ class GRPOEngine:
                 "mrr_mean": fmean(mrr_scores) if mrr_scores else 0.0,
                 "recall_mean": fmean(recall_scores) if recall_scores else 0.0,
                 "recall_dense_mean": fmean(recall_dense_scores) if recall_dense_scores else 0.0,
+                "rank_bonus_mean": fmean(rank_bonus_scores) if rank_bonus_scores else 0.0,
+                "main_reward_mean": fmean(main_reward_scores) if main_reward_scores else 0.0,
+                "orig_mrr20_mean": fmean(orig_mrr_scores) if orig_mrr_scores else 0.0,
+                "rewrite_mrr20_mean": fmean(mrr_scores) if mrr_scores else 0.0,
+                "orig_recall20_mean": fmean(orig_recall_scores) if orig_recall_scores else 0.0,
+                "rewrite_recall20_mean": fmean(recall_scores) if recall_scores else 0.0,
+                "rewrite_recall50_mean": fmean(recall_dense_scores) if recall_dense_scores else 0.0,
+                "delta_mrr20_mean": fmean(delta_mrr_scores) if delta_mrr_scores else 0.0,
+                "delta_recall20_mean": fmean(delta_recall_scores) if delta_recall_scores else 0.0,
+                "delta_recall50_mean": fmean(delta_recall_aux_scores) if delta_recall_aux_scores else 0.0,
+                "orig_rank_bonus_mean": fmean(orig_rank_bonus_scores) if orig_rank_bonus_scores else 0.0,
+                "delta_rank_bonus_mean": fmean(delta_rank_bonus_scores) if delta_rank_bonus_scores else 0.0,
                 "term_preserve_mean": fmean(term_preserve_scores) if term_preserve_scores else 0.0,
                 "keyword_preserve_mean": fmean(keyword_preserve_scores) if keyword_preserve_scores else 0.0,
                 "locked_term_preserve_mean": (
@@ -663,9 +742,22 @@ class GRPOEngine:
                 ),
                 "length_score_mean": fmean(length_scores) if length_scores else 0.0,
                 "clean_format_mean": fmean(clean_format_scores) if clean_format_scores else 0.0,
+                "overedit_penalty_mean": fmean(overedit_penalties) if overedit_penalties else 0.0,
                 "bad_format_penalty_mean": fmean(bad_format_penalties) if bad_format_penalties else 0.0,
                 "unsafe_copy_penalty_mean": fmean(unsafe_copy_penalties) if unsafe_copy_penalties else 0.0,
                 "nonzero_reward_ratio": nonzero_reward_ratio,
+                "nonzero_mrr20_ratio": (
+                    sum(1 for value in mrr_scores if value > 0.0) / len(mrr_scores)
+                ) if mrr_scores else 0.0,
+                "nonzero_recall20_ratio": (
+                    sum(1 for value in recall_scores if value > 0.0) / len(recall_scores)
+                ) if recall_scores else 0.0,
+                "delta_mrr20_positive_ratio": (
+                    sum(1 for value in delta_mrr_scores if value > 0.0) / len(delta_mrr_scores)
+                ) if delta_mrr_scores else 0.0,
+                "delta_recall20_positive_ratio": (
+                    sum(1 for value in delta_recall_scores if value > 0.0) / len(delta_recall_scores)
+                ) if delta_recall_scores else 0.0,
                 "adv_mean": fmean(all_advantages) if all_advantages else 0.0,
                 "adv_std": float(torch.tensor(all_advantages).std(unbiased=False)) if all_advantages else 0.0,
                 "unique_final_query_mean": fmean(unique_final_query_counts) if unique_final_query_counts else 0.0,
@@ -678,6 +770,13 @@ class GRPOEngine:
                 "collapsed_group_ratio": (collapsed_group_count / num_groups) if num_groups else 0.0,
                 "all_same_final_query_ratio": (all_same_final_query_group_count / num_groups) if num_groups else 0.0,
                 "flat_reward_group_ratio": (flat_reward_group_count / num_groups) if num_groups else 0.0,
+                "flat_mrr20_group_ratio": (flat_mrr_group_count / num_groups) if num_groups else 0.0,
+                "flat_main_reward_group_ratio": (
+                    flat_main_reward_group_count / num_groups
+                ) if num_groups else 0.0,
+                "best_reward_hit_best_mrr20_ratio": (
+                    best_reward_hit_best_mrr20_count / num_groups
+                ) if num_groups else 0.0,
                 "sampled": float(sampled),
                 "valid_samples": float(valid_samples),
                 "group_query_summaries": group_query_summaries,

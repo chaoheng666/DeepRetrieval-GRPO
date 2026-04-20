@@ -1,7 +1,7 @@
 import unittest
 from types import SimpleNamespace
 
-from app_config import RewardConfig, get_default_config
+from app_config import RewardConfig, apply_reward_mode_prompt_defaults, get_default_config
 from data.loader import QueryExample
 from train import evaluate_policy, resolve_eval_decode_settings
 
@@ -133,13 +133,28 @@ class DefaultPromptConfigTests(unittest.TestCase):
         self.assertEqual(config.reward.mrr_k, 50)
         self.assertEqual(config.reward.recall_k, 50)
         self.assertEqual(config.reward.recall_dense_k, 100)
+        self.assertEqual(config.reward.reward_mode, "legacy")
         self.assertEqual(config.reward.w_mrr, 0.40)
         self.assertEqual(config.reward.w_recall_dense, 0.15)
+        self.assertEqual(config.reward.w_rank_bonus, 0.10)
         self.assertEqual(config.reward.w_term_preserve, 0.10)
         self.assertEqual(config.reward.w_length_score, 0.08)
         self.assertEqual(config.reward.w_clean_format, 0.07)
         self.assertEqual(config.reward.w_bad_format, 0.15)
         self.assertEqual(config.reward.w_unsafe_copy, 0.08)
+        self.assertEqual(config.reward.w_overedit, 0.10)
+        self.assertEqual(config.reward.overedit_tau, 0.40)
+
+    def test_top20_reward_mode_updates_stock_prompt_wording(self):
+        config = get_default_config()
+        config.reward.reward_mode = "top20_delta"
+
+        updated = apply_reward_mode_prompt_defaults(config)
+
+        self.assertEqual(updated.prompt.prompt_id, "p24_diverse_lexical_top20")
+        self.assertIn("MRR@20", updated.prompt.system_prompt)
+        self.assertIn("Recall@20", updated.prompt.system_prompt)
+        self.assertIn("Recall@50", updated.prompt.system_prompt)
 
 
 class TrainEvaluationDecodeTests(unittest.TestCase):
@@ -201,6 +216,9 @@ class TrainEvaluationDecodeTests(unittest.TestCase):
         self.assertAlmostEqual(metrics["mrr_mean"], 0.25)
         self.assertAlmostEqual(metrics["recall_dense_mean"], 0.2)
         self.assertAlmostEqual(metrics["unsafe_copy_penalty_mean"], 0.0)
+        self.assertIn("orig_mrr20_mean", metrics)
+        self.assertIn("rewrite_mrr20_mean", metrics)
+        self.assertIn("delta_mrr20_positive_ratio", metrics)
         self.assertEqual(len(model.calls), 1)
         self.assertEqual(model.calls[0]["policy"], "actor")
         self.assertEqual(model.calls[0]["max_new_tokens"], 16)

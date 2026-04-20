@@ -1,6 +1,7 @@
 import unittest
 
 import torch
+from types import SimpleNamespace
 
 from app_config import PromptConfig, RewardConfig
 from core.grpo_engine import normalize_advantages, ppo_clipped_objective
@@ -14,6 +15,8 @@ from core.reward_func import (
     compute_length_score,
     compute_locked_term_preserve,
     compute_mrr_at_k,
+    compute_overedit_penalty,
+    compute_rank_bonus,
     compute_recall_at_k,
     compute_term_preserve,
     compute_unsafe_copy_penalty,
@@ -152,6 +155,21 @@ class RewardMathTests(unittest.TestCase):
             0.0,
         )
 
+    def test_rank_bonus_profile(self):
+        self.assertEqual(compute_rank_bonus(1), 1.0)
+        self.assertEqual(compute_rank_bonus(3), 0.8)
+        self.assertEqual(compute_rank_bonus(5), 0.5)
+        self.assertEqual(compute_rank_bonus(10), 0.3)
+        self.assertEqual(compute_rank_bonus(20), 0.15)
+        self.assertEqual(compute_rank_bonus(50), 0.05)
+        self.assertEqual(compute_rank_bonus(80), 0.0)
+        self.assertEqual(compute_rank_bonus(None), 0.0)
+
+    def test_overedit_penalty_uses_keyword_threshold(self):
+        cfg = RewardConfig()
+        self.assertAlmostEqual(compute_overedit_penalty(0.10, cfg), 0.30)
+        self.assertEqual(compute_overedit_penalty(0.45, cfg), 0.0)
+
     def test_total_reward_formula(self):
         cfg = RewardConfig()
         total = compose_reward(
@@ -174,6 +192,42 @@ class RewardMathTests(unittest.TestCase):
             + 0.07 * 1.0
             - 0.15 * 0.25
             - 0.08 * 1.0
+        )
+        self.assertAlmostEqual(total, expected)
+
+    def test_top20_delta_reward_formula(self):
+        cfg = RewardConfig(
+            reward_mode="top20_delta",
+            w_mrr=0.55,
+            w_recall=0.20,
+            w_recall_dense=0.15,
+            w_rank_bonus=0.10,
+            w_bad_format=0.18,
+            w_unsafe_copy=0.12,
+            w_overedit=0.10,
+        )
+        total = compose_reward(
+            mrr=0.25,
+            recall=0.5,
+            recall_dense=0.75,
+            rank_bonus=0.30,
+            orig_mrr=0.05,
+            orig_recall=0.25,
+            orig_recall_aux=0.50,
+            orig_rank_bonus=0.05,
+            bad_format_penalty=0.20,
+            unsafe_copy_penalty=1.0,
+            overedit_penalty=0.10,
+            cfg=cfg,
+        )
+        expected = (
+            0.55 * 0.20
+            + 0.20 * 0.25
+            + 0.15 * 0.25
+            + 0.10 * 0.25
+            - 0.18 * 0.20
+            - 0.12 * 1.0
+            - 0.10 * 0.10
         )
         self.assertAlmostEqual(total, expected)
 
@@ -263,15 +317,24 @@ class RewarderConsistencyTests(unittest.TestCase):
             seen["search_query"] = query
             return ["D1"]
 
-        def _score_one(qid: str, cleaned_query: str, hits_docids: list[str], source_query: str | None):
+        def _score_one(
+            qid: str,
+            cleaned_query: str,
+            hits_docids: list[str],
+            source_query: str | None,
+            *,
+            original_baseline=None,
+        ):
             seen["score_query"] = cleaned_query
             seen["score_hits"] = list(hits_docids)
             seen["score_qid"] = qid
             seen["score_source"] = source_query
+            seen["score_baseline"] = original_baseline
             return cleaned_query
 
         rewarder._search_docids = _search_docids  # type: ignore[attr-defined]
         rewarder._score_one = _score_one  # type: ignore[attr-defined]
+        rewarder._get_original_baseline = lambda qid, source_query: None  # type: ignore[attr-defined]
 
         raw = "Search Query:\n  best budget gaming laptop 2024\nExplanation: keep concise"
         scored = rewarder.score("q1", raw, source_query="best budget gaming laptop 2024")
@@ -282,6 +345,7 @@ class RewarderConsistencyTests(unittest.TestCase):
         self.assertEqual(seen["score_hits"], ["D1"])
         self.assertEqual(seen["score_qid"], "q1")
         self.assertEqual(seen["score_source"], "best budget gaming laptop 2024")
+        self.assertIsNone(seen["score_baseline"])
 
     def test_score_batch_cleans_queries_before_batch_search(self):
         rewarder = Rewarder.__new__(Rewarder)
@@ -291,16 +355,25 @@ class RewarderConsistencyTests(unittest.TestCase):
             seen["search_queries"] = list(queries)
             return [["D1"], ["D2"]]
 
-        def _score_one(qid: str, cleaned_query: str, hits_docids: list[str], source_query: str | None):
+        def _score_one(
+            qid: str,
+            cleaned_query: str,
+            hits_docids: list[str],
+            source_query: str | None,
+            *,
+            original_baseline=None,
+        ):
             return {
                 "qid": qid,
                 "query": cleaned_query,
                 "hits": list(hits_docids),
                 "source": source_query,
+                "baseline": original_baseline,
             }
 
         rewarder._search_docids_batch = _search_docids_batch  # type: ignore[attr-defined]
         rewarder._score_one = _score_one  # type: ignore[attr-defined]
+        rewarder._get_original_baseline = lambda qid, source_query: None  # type: ignore[attr-defined]
 
         raw_queries = [
             "Search Query:\n  best budget gaming laptop 2024\nExplanation: keep concise",
@@ -314,6 +387,43 @@ class RewarderConsistencyTests(unittest.TestCase):
         )
         self.assertEqual(scored[0]["query"], "best budget gaming laptop 2024")
         self.assertEqual(scored[1]["query"], "mastoidectomy")
+
+    def test_original_baseline_cache_reuses_cached_lookup(self):
+        rewarder = Rewarder.__new__(Rewarder)
+        rewarder.original_baseline_cache = {}
+        rewarder.qrels = {}
+        rewarder.mrr_k = 20
+        rewarder.recall_k = 20
+        rewarder.recall_dense_k = 50
+        rewarder.cfg = RewardConfig(reward_mode="top20_delta")
+        seen_queries: list[tuple[str, int | None]] = []
+
+        def _search_docids(query: str, *, k: int | None = None):
+            seen_queries.append((query, k))
+            return ["D1"]
+
+        def _build_original_baseline(qid: str, source_query: str, hits_docids: list[str]):
+            del qid, hits_docids
+            return SimpleNamespace(
+                query=source_query,
+                mrr=0.0,
+                recall=0.0,
+                recall_aux=0.0,
+                rank_bonus=0.0,
+                hit_rank=None,
+                retrieved_relevant_count=0,
+                relevant_total=0,
+            )
+
+        rewarder._search_docids = _search_docids  # type: ignore[attr-defined]
+        rewarder._build_original_baseline = _build_original_baseline  # type: ignore[attr-defined]
+
+        first = rewarder._get_original_baseline("q1", "source query")
+        second = rewarder._get_original_baseline("q1", "source query")
+
+        self.assertEqual(first.query, "source query")
+        self.assertEqual(second.query, "source query")
+        self.assertEqual(seen_queries, [("source query", None)])
 
 
 if __name__ == "__main__":

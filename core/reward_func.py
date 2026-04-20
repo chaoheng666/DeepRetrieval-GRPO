@@ -7,6 +7,7 @@ import re
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
+from statistics import fmean
 from typing import Iterable, Sequence
 
 from app_config import RewardConfig, patch_pyserini_prebuilt_index_urls
@@ -111,6 +112,7 @@ class RewardBreakdown:
     mrr: float
     recall: float
     recall_dense: float = 0.0
+    rank_bonus: float = 0.0
     overlap: float = 0.0
     term_preserve: float = 1.0
     keyword_preserve: float = 1.0
@@ -120,12 +122,34 @@ class RewardBreakdown:
     negation_preserve: float = 1.0
     length_score: float = 0.0
     clean_format: float = 0.0
+    main_reward: float = 0.0
+    orig_mrr: float = 0.0
+    orig_recall: float = 0.0
+    orig_recall_aux: float = 0.0
+    orig_rank_bonus: float = 0.0
+    delta_mrr: float = 0.0
+    delta_recall: float = 0.0
+    delta_recall_aux: float = 0.0
+    delta_rank_bonus: float = 0.0
+    overedit_penalty: float = 0.0
     bad_format_penalty: float = 0.0
     unsafe_copy_penalty: float = 0.0
     hit_rank: int | None = None
     retrieved_relevant_count: int = 0
     relevant_total: int = 0
     rewritten_query: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class OriginalBaseline:
+    query: str
+    mrr: float
+    recall: float
+    recall_aux: float
+    rank_bonus: float
+    hit_rank: int | None
+    retrieved_relevant_count: int
+    relevant_total: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,6 +190,24 @@ def compute_recall_at_k(
 
     retrieved_relevant_count = len(set(result_docids[:topk]) & relevant)
     return retrieved_relevant_count / float(relevant_total), retrieved_relevant_count, relevant_total
+
+
+def compute_rank_bonus(rank: int | None) -> float:
+    if rank is None:
+        return 0.0
+    if rank == 1:
+        return 1.0
+    if rank <= 3:
+        return 0.8
+    if rank <= 5:
+        return 0.5
+    if rank <= 10:
+        return 0.3
+    if rank <= 20:
+        return 0.15
+    if rank <= 50:
+        return 0.05
+    return 0.0
 
 
 def _unreadable_ratio(text: str) -> float:
@@ -373,18 +415,46 @@ def compute_unsafe_copy_penalty(source_query: str, rewritten_query: str) -> floa
     return 1.0 if source_clean.lower() == rewritten_clean.lower() else 0.0
 
 
+def compute_overedit_penalty(keyword_preserve: float, cfg: RewardConfig) -> float:
+    return max(0.0, float(getattr(cfg, "overedit_tau", 0.40)) - float(keyword_preserve))
+
+
 def compose_reward(
     *,
     mrr: float,
     recall: float,
     recall_dense: float,
-    term_preserve: float,
-    length_score: float,
-    clean_format: float,
-    bad_format_penalty: float,
-    unsafe_copy_penalty: float,
+    term_preserve: float = 1.0,
+    length_score: float = 0.0,
+    clean_format: float = 0.0,
+    bad_format_penalty: float = 0.0,
+    unsafe_copy_penalty: float = 0.0,
+    rank_bonus: float = 0.0,
+    orig_mrr: float = 0.0,
+    orig_recall: float = 0.0,
+    orig_recall_aux: float = 0.0,
+    orig_rank_bonus: float = 0.0,
+    overedit_penalty: float = 0.0,
     cfg: RewardConfig,
 ) -> float:
+    if getattr(cfg, "reward_mode", "legacy") == "top20_delta":
+        delta_mrr = float(mrr) - float(orig_mrr)
+        delta_recall = float(recall) - float(orig_recall)
+        delta_recall_aux = float(recall_dense) - float(orig_recall_aux)
+        delta_rank_bonus = float(rank_bonus) - float(orig_rank_bonus)
+        main_reward = (
+            cfg.w_mrr * delta_mrr
+            + cfg.w_recall * delta_recall
+            + cfg.w_recall_dense * delta_recall_aux
+            + cfg.w_rank_bonus * delta_rank_bonus
+        )
+        return (
+            main_reward
+            - cfg.w_bad_format * bad_format_penalty
+            - cfg.w_unsafe_copy * unsafe_copy_penalty
+            - cfg.w_overedit * overedit_penalty
+        )
+
     return (
         cfg.w_mrr * mrr
         + cfg.w_recall * recall
@@ -571,6 +641,89 @@ def clean_rewritten_query(text: str, source_query: str | None = None) -> str:
     return best
 
 
+def summarize_reward_breakdowns(
+    values: Sequence[RewardBreakdown],
+    *,
+    mrr_key: str = "mrr_mean",
+    recall_key: str = "recall_mean",
+    recall_aux_key: str = "recall_dense_mean",
+) -> dict[str, float]:
+    items = list(values)
+    get = lambda item, name, default=0.0: getattr(item, name, default)
+    if not items:
+        return {
+            mrr_key: 0.0,
+            recall_key: 0.0,
+            recall_aux_key: 0.0,
+            "reward_mean": 0.0,
+            "orig_mrr20_mean": 0.0,
+            "rewrite_mrr20_mean": 0.0,
+            "orig_recall20_mean": 0.0,
+            "rewrite_recall20_mean": 0.0,
+            "rewrite_recall50_mean": 0.0,
+            "delta_mrr20_mean": 0.0,
+            "delta_recall20_mean": 0.0,
+            "delta_recall50_mean": 0.0,
+            "rank_bonus_mean": 0.0,
+            "orig_rank_bonus_mean": 0.0,
+            "delta_rank_bonus_mean": 0.0,
+            "main_reward_mean": 0.0,
+            "term_preserve_mean": 0.0,
+            "keyword_preserve_mean": 0.0,
+            "locked_term_preserve_mean": 0.0,
+            "length_score_mean": 0.0,
+            "clean_format_mean": 0.0,
+            "bad_format_penalty_mean": 0.0,
+            "unsafe_copy_penalty_mean": 0.0,
+            "overedit_penalty_mean": 0.0,
+            "nonzero_mrr20_ratio": 0.0,
+            "nonzero_recall20_ratio": 0.0,
+            "delta_mrr20_positive_ratio": 0.0,
+            "delta_recall20_positive_ratio": 0.0,
+            "count": 0.0,
+        }
+
+    return {
+        mrr_key: fmean(get(item, "mrr") for item in items),
+        recall_key: fmean(get(item, "recall") for item in items),
+        recall_aux_key: fmean(get(item, "recall_dense") for item in items),
+        "reward_mean": fmean(get(item, "total") for item in items),
+        "orig_mrr20_mean": fmean(get(item, "orig_mrr") for item in items),
+        "rewrite_mrr20_mean": fmean(get(item, "mrr") for item in items),
+        "orig_recall20_mean": fmean(get(item, "orig_recall") for item in items),
+        "rewrite_recall20_mean": fmean(get(item, "recall") for item in items),
+        "rewrite_recall50_mean": fmean(get(item, "recall_dense") for item in items),
+        "delta_mrr20_mean": fmean(get(item, "delta_mrr") for item in items),
+        "delta_recall20_mean": fmean(get(item, "delta_recall") for item in items),
+        "delta_recall50_mean": fmean(get(item, "delta_recall_aux") for item in items),
+        "rank_bonus_mean": fmean(get(item, "rank_bonus") for item in items),
+        "orig_rank_bonus_mean": fmean(get(item, "orig_rank_bonus") for item in items),
+        "delta_rank_bonus_mean": fmean(get(item, "delta_rank_bonus") for item in items),
+        "main_reward_mean": fmean(get(item, "main_reward") for item in items),
+        "term_preserve_mean": fmean(get(item, "term_preserve", 1.0) for item in items),
+        "keyword_preserve_mean": fmean(get(item, "keyword_preserve", get(item, "term_preserve", 1.0)) for item in items),
+        "locked_term_preserve_mean": fmean(get(item, "locked_term_preserve", get(item, "term_preserve", 1.0)) for item in items),
+        "length_score_mean": fmean(get(item, "length_score") for item in items),
+        "clean_format_mean": fmean(get(item, "clean_format") for item in items),
+        "bad_format_penalty_mean": fmean(get(item, "bad_format_penalty") for item in items),
+        "unsafe_copy_penalty_mean": fmean(get(item, "unsafe_copy_penalty") for item in items),
+        "overedit_penalty_mean": fmean(get(item, "overedit_penalty") for item in items),
+        "nonzero_mrr20_ratio": (
+            sum(1 for item in items if get(item, "mrr") > 0.0) / float(len(items))
+        ),
+        "nonzero_recall20_ratio": (
+            sum(1 for item in items if get(item, "recall") > 0.0) / float(len(items))
+        ),
+        "delta_mrr20_positive_ratio": (
+            sum(1 for item in items if get(item, "delta_mrr") > 0.0) / float(len(items))
+        ),
+        "delta_recall20_positive_ratio": (
+            sum(1 for item in items if get(item, "delta_recall") > 0.0) / float(len(items))
+        ),
+        "count": float(len(items)),
+    }
+
+
 class Rewarder:
     def __init__(
         self,
@@ -594,6 +747,7 @@ class Rewarder:
         self.retrieval_k = max(self.mrr_k, self.recall_k, self.recall_dense_k)
         cpu_count = max(1, os.cpu_count() or 1)
         self.search_threads = max(1, min(int(getattr(reward_cfg, "search_threads", 1)), cpu_count))
+        self.original_baseline_cache: dict[tuple[str, str], OriginalBaseline] = {}
         if self.search_threads > 1:
             print(f"[reward] retrieval batch_search enabled: threads={self.search_threads}")
 
@@ -627,20 +781,21 @@ class Rewarder:
                     continue
                 raise
 
-    def _search_docids(self, query: str) -> list[str]:
+    def _search_docids(self, query: str, *, k: int | None = None) -> list[str]:
         if not query:
             return []
         try:
-            hits = self.searcher.search(query, k=self.retrieval_k)
+            hits = self.searcher.search(query, k=max(1, int(k or self.retrieval_k)))
             return [str(hit.docid) for hit in hits]
         except Exception:
             return []
 
-    def _search_docids_batch(self, queries: Sequence[str]) -> list[list[str]]:
+    def _search_docids_batch(self, queries: Sequence[str], *, k: int | None = None) -> list[list[str]]:
         results: list[list[str]] = [[] for _ in queries]
         if not queries:
             return results
 
+        requested_k = max(1, int(k or self.retrieval_k))
         non_empty_pairs = [(idx, q) for idx, q in enumerate(queries) if q]
         if not non_empty_pairs:
             return results
@@ -654,7 +809,7 @@ class Rewarder:
                 batch_hits = self.searcher.batch_search(
                     batch_queries,
                     qids,
-                    k=self.retrieval_k,
+                    k=requested_k,
                     threads=self.search_threads,
                 )
                 for (idx, _), qid in zip(non_empty_pairs, qids):
@@ -665,16 +820,15 @@ class Rewarder:
                 pass
 
         for idx, query in non_empty_pairs:
-            results[idx] = self._search_docids(query)
+            results[idx] = self._search_docids(query, k=requested_k)
         return results
 
-    def _score_one(
+    def _build_original_baseline(
         self,
         qid: str,
-        cleaned_query: str,
+        source_query: str,
         hits_docids: Sequence[str],
-        source_query: str | None,
-    ) -> RewardBreakdown:
+    ) -> OriginalBaseline:
         relevant_docids = self.qrels.get(str(qid), set())
         mrr, hit_rank = compute_mrr_at_k(hits_docids, relevant_docids, topk=self.mrr_k)
         recall, retrieved_relevant_count, relevant_total = compute_recall_at_k(
@@ -682,11 +836,67 @@ class Rewarder:
             relevant_docids,
             topk=self.recall_k,
         )
-        recall_dense, _, _ = compute_recall_at_k(
+        recall_aux, _, _ = compute_recall_at_k(
             hits_docids,
             relevant_docids,
             topk=self.recall_dense_k,
         )
+        return OriginalBaseline(
+            query=source_query,
+            mrr=mrr,
+            recall=recall,
+            recall_aux=recall_aux,
+            rank_bonus=compute_rank_bonus(hit_rank),
+            hit_rank=hit_rank,
+            retrieved_relevant_count=retrieved_relevant_count,
+            relevant_total=relevant_total,
+        )
+
+    def _get_original_baseline(self, qid: str, source_query: str | None) -> OriginalBaseline | None:
+        normalized_source = _normalize_query_text(source_query or "")
+        if not normalized_source:
+            return None
+
+        cache_key = (str(qid), normalized_source)
+        cached = self.original_baseline_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        hits_docids = self._search_docids(normalized_source)
+        baseline = self._build_original_baseline(qid, normalized_source, hits_docids)
+        self.original_baseline_cache[cache_key] = baseline
+        return baseline
+
+    def _score_one(
+        self,
+        qid: str,
+        cleaned_query: str,
+        hits_docids: Sequence[str],
+        source_query: str | None,
+        *,
+        original_baseline: OriginalBaseline | None = None,
+    ) -> RewardBreakdown:
+        relevant_docids = self.qrels.get(str(qid), set())
+        if original_baseline is not None and cleaned_query == original_baseline.query:
+            mrr = original_baseline.mrr
+            hit_rank = original_baseline.hit_rank
+            recall = original_baseline.recall
+            recall_dense = original_baseline.recall_aux
+            retrieved_relevant_count = original_baseline.retrieved_relevant_count
+            relevant_total = original_baseline.relevant_total
+        else:
+            mrr, hit_rank = compute_mrr_at_k(hits_docids, relevant_docids, topk=self.mrr_k)
+            recall, retrieved_relevant_count, relevant_total = compute_recall_at_k(
+                hits_docids,
+                relevant_docids,
+                topk=self.recall_k,
+            )
+            recall_dense, _, _ = compute_recall_at_k(
+                hits_docids,
+                relevant_docids,
+                topk=self.recall_dense_k,
+            )
+        rank_bonus = compute_rank_bonus(hit_rank)
         overlap = compute_lexical_overlap(source_query or "", cleaned_query) if source_query else 0.0
         if source_query:
             keyword_preserve = compute_keyword_preserve(source_query, cleaned_query)
@@ -699,12 +909,43 @@ class Rewarder:
             keyword_preserve = 1.0
             locked_term_preserve = 1.0
             term_preserve, number_preserve, acronym_preserve, negation_preserve = (1.0, 1.0, 1.0, 1.0)
+
         length_score = compute_length_score(cleaned_query, self.cfg)
         bad_format_penalty = compute_bad_format_penalty(cleaned_query, self.cfg)
         clean_format = compute_clean_format_score(bad_format_penalty)
         unsafe_copy_penalty = (
             compute_unsafe_copy_penalty(source_query or "", cleaned_query) if source_query else 0.0
         )
+        overedit_penalty = (
+            compute_overedit_penalty(keyword_preserve, self.cfg) if source_query else 0.0
+        )
+
+        orig_mrr = original_baseline.mrr if original_baseline is not None else 0.0
+        orig_recall = original_baseline.recall if original_baseline is not None else 0.0
+        orig_recall_aux = original_baseline.recall_aux if original_baseline is not None else 0.0
+        orig_rank_bonus = original_baseline.rank_bonus if original_baseline is not None else 0.0
+        delta_mrr = mrr - orig_mrr
+        delta_recall = recall - orig_recall
+        delta_recall_aux = recall_dense - orig_recall_aux
+        delta_rank_bonus = rank_bonus - orig_rank_bonus
+
+        if getattr(self.cfg, "reward_mode", "legacy") == "top20_delta":
+            main_reward = (
+                self.cfg.w_mrr * delta_mrr
+                + self.cfg.w_recall * delta_recall
+                + self.cfg.w_recall_dense * delta_recall_aux
+                + self.cfg.w_rank_bonus * delta_rank_bonus
+            )
+        else:
+            main_reward = (
+                self.cfg.w_mrr * mrr
+                + self.cfg.w_recall * recall
+                + self.cfg.w_recall_dense * recall_dense
+                + self.cfg.w_term_preserve * term_preserve
+                + self.cfg.w_length_score * length_score
+                + self.cfg.w_clean_format * clean_format
+            )
+
         total = compose_reward(
             mrr=mrr,
             recall=recall,
@@ -714,6 +955,12 @@ class Rewarder:
             clean_format=clean_format,
             bad_format_penalty=bad_format_penalty,
             unsafe_copy_penalty=unsafe_copy_penalty,
+            rank_bonus=rank_bonus,
+            orig_mrr=orig_mrr,
+            orig_recall=orig_recall,
+            orig_recall_aux=orig_recall_aux,
+            orig_rank_bonus=orig_rank_bonus,
+            overedit_penalty=overedit_penalty,
             cfg=self.cfg,
         )
         return RewardBreakdown(
@@ -721,6 +968,7 @@ class Rewarder:
             mrr=mrr,
             recall=recall,
             recall_dense=recall_dense,
+            rank_bonus=rank_bonus,
             overlap=overlap,
             term_preserve=term_preserve,
             keyword_preserve=keyword_preserve,
@@ -730,6 +978,16 @@ class Rewarder:
             negation_preserve=negation_preserve,
             length_score=length_score,
             clean_format=clean_format,
+            main_reward=main_reward,
+            orig_mrr=orig_mrr,
+            orig_recall=orig_recall,
+            orig_recall_aux=orig_recall_aux,
+            orig_rank_bonus=orig_rank_bonus,
+            delta_mrr=delta_mrr,
+            delta_recall=delta_recall,
+            delta_recall_aux=delta_recall_aux,
+            delta_rank_bonus=delta_rank_bonus,
+            overedit_penalty=overedit_penalty,
             bad_format_penalty=bad_format_penalty,
             unsafe_copy_penalty=unsafe_copy_penalty,
             hit_rank=hit_rank,
@@ -740,8 +998,9 @@ class Rewarder:
 
     def score(self, qid: str, rewritten_query: str, source_query: str | None = None) -> RewardBreakdown:
         query = clean_rewritten_query((rewritten_query or "").strip(), source_query=source_query)
-        hits_docids = self._search_docids(query)
-        return self._score_one(qid, query, hits_docids, source_query)
+        original_baseline = self._get_original_baseline(qid, source_query)
+        hits_docids = [] if original_baseline is not None and query == original_baseline.query else self._search_docids(query)
+        return self._score_one(qid, query, hits_docids, source_query, original_baseline=original_baseline)
 
     def score_batch(
         self,
@@ -752,8 +1011,26 @@ class Rewarder:
         cleaned_queries = [
             clean_rewritten_query((text or "").strip(), source_query=source_query) for text in rewritten_queries
         ]
-        hits_docids_batch = self._search_docids_batch(cleaned_queries)
+        original_baseline = self._get_original_baseline(qid, source_query)
+        hits_docids_batch: list[list[str]] = [[] for _ in cleaned_queries]
+        search_positions = [
+            idx
+            for idx, query in enumerate(cleaned_queries)
+            if query and not (original_baseline is not None and query == original_baseline.query)
+        ]
+        if search_positions:
+            searched_hits = self._search_docids_batch([cleaned_queries[idx] for idx in search_positions])
+            for idx, hits_docids in zip(search_positions, searched_hits):
+                hits_docids_batch[idx] = hits_docids
         outputs: list[RewardBreakdown] = []
         for query, hits_docids in zip(cleaned_queries, hits_docids_batch):
-            outputs.append(self._score_one(qid, query, hits_docids, source_query))
+            outputs.append(
+                self._score_one(
+                    qid,
+                    query,
+                    hits_docids,
+                    source_query,
+                    original_baseline=original_baseline,
+                )
+            )
         return outputs

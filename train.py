@@ -15,15 +15,16 @@ import os
 import random
 from datetime import datetime, timezone
 from pathlib import Path
-from statistics import fmean
+from collections import deque
 from typing import Iterable, Sequence
 
 import torch
 
-from app_config import AppConfig, ensure_runtime_dirs, get_default_config
+from app_config import AppConfig, apply_reward_mode_prompt_defaults, ensure_runtime_dirs, get_default_config
 from core.grpo_engine import GRPOEngine
 from core.model_wrapper import ModelWrapper
-from core.reward_func import Rewarder, is_retrieval_ready_query, stabilize_generated_rewrite
+from core.reward_func import Rewarder, is_retrieval_ready_query, stabilize_generated_rewrite, summarize_reward_breakdowns
+from data.curriculum import ensure_curriculum_metadata, filter_curriculum_train_queries, sample_curriculum_queries
 from data.loader import QueryExample, maybe_limit, load_topics_qrels, split_queries
 
 
@@ -93,15 +94,25 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--reward-mrr-k", type=int, default=None, help="MRR@k reward cutoff, e.g. 50.")
     parser.add_argument("--reward-recall-k", type=int, default=None, help="Recall@k reward cutoff, e.g. 50.")
     parser.add_argument("--reward-recall-dense-k", type=int, default=None, help="Dense Recall@k reward cutoff, e.g. 100.")
+    parser.add_argument(
+        "--reward-mode",
+        type=str,
+        choices=("legacy", "top20_delta"),
+        default=None,
+        help="Reward composition mode.",
+    )
     parser.add_argument("--search-threads", type=int, default=None, help="Pyserini batch_search thread count.")
     parser.add_argument("--reward-w-mrr", type=float, default=None, help="Weight for MRR reward term.")
     parser.add_argument("--reward-w-recall", type=float, default=None, help="Weight for Recall reward term.")
     parser.add_argument("--reward-w-recall-dense", type=float, default=None, help="Weight for dense Recall reward term.")
+    parser.add_argument("--reward-w-rank-bonus", type=float, default=None, help="Weight for rank-bonus reward term.")
     parser.add_argument("--reward-w-term-preserve", type=float, default=None, help="Weight for term-preserve reward term.")
     parser.add_argument("--reward-w-length-score", type=float, default=None, help="Weight for length-score reward term.")
     parser.add_argument("--reward-w-clean-format", type=float, default=None, help="Weight for clean-format reward term.")
     parser.add_argument("--reward-w-bad-format", type=float, default=None, help="Weight for bad-format penalty term.")
     parser.add_argument("--reward-w-unsafe-copy", type=float, default=None, help="Weight for unsafe-copy penalty term.")
+    parser.add_argument("--reward-w-overedit", type=float, default=None, help="Weight for overedit penalty term.")
+    parser.add_argument("--overedit-tau", type=float, default=None, help="Keyword preserve threshold before overedit penalty applies.")
     parser.add_argument("--length-score-min-terms", type=int, default=None, help="Token count where length score starts above zero.")
     parser.add_argument("--length-score-ideal-min-terms", type=int, default=None, help="Lower bound of the ideal token-count plateau.")
     parser.add_argument("--length-score-ideal-max-terms", type=int, default=None, help="Upper bound of the ideal token-count plateau.")
@@ -124,6 +135,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-steps", type=int, default=None)
     parser.add_argument("--max-train-queries", type=int, default=None)
     parser.add_argument("--max-val-queries", type=int, default=None)
+    parser.add_argument("--curriculum-enable", action="store_true", help="Enable A/B/C bucket curriculum sampling.")
+    parser.add_argument(
+        "--curriculum-phase",
+        type=str,
+        choices=("phase1", "phase2"),
+        default=None,
+        help="Curriculum phase controls bucket mix and phase-specific metadata reuse.",
+    )
+    parser.add_argument(
+        "--curriculum-metadata-path",
+        type=str,
+        default=None,
+        help="Optional cache path for curriculum query metadata JSONL.",
+    )
     parser.add_argument("--save-dir", type=str, default=None)
     parser.add_argument("--log-path", type=str, default=None)
     parser.add_argument("--group-trace-log-path", type=str, default=None)
@@ -196,6 +221,12 @@ def apply_overrides(config: AppConfig, args: argparse.Namespace) -> AppConfig:
         config.data.max_train_queries = args.max_train_queries
     if args.max_val_queries is not None:
         config.data.max_val_queries = args.max_val_queries
+    if args.curriculum_enable:
+        config.train.curriculum_enable = True
+    if args.curriculum_phase is not None:
+        config.train.curriculum_phase = args.curriculum_phase
+    if args.curriculum_metadata_path is not None:
+        config.train.curriculum_metadata_path = args.curriculum_metadata_path
 
     if args.num_epochs is not None:
         config.train.num_epochs = args.num_epochs
@@ -243,6 +274,8 @@ def apply_overrides(config: AppConfig, args: argparse.Namespace) -> AppConfig:
         config.reward.recall_k = args.reward_recall_k
     if args.reward_recall_dense_k is not None:
         config.reward.recall_dense_k = args.reward_recall_dense_k
+    if args.reward_mode is not None:
+        config.reward.reward_mode = args.reward_mode
     if args.search_threads is not None:
         config.reward.search_threads = max(1, args.search_threads)
     if args.reward_w_mrr is not None:
@@ -251,6 +284,8 @@ def apply_overrides(config: AppConfig, args: argparse.Namespace) -> AppConfig:
         config.reward.w_recall = args.reward_w_recall
     if args.reward_w_recall_dense is not None:
         config.reward.w_recall_dense = args.reward_w_recall_dense
+    if args.reward_w_rank_bonus is not None:
+        config.reward.w_rank_bonus = args.reward_w_rank_bonus
     if args.reward_w_term_preserve is not None:
         config.reward.w_term_preserve = args.reward_w_term_preserve
     if args.reward_w_length_score is not None:
@@ -261,6 +296,10 @@ def apply_overrides(config: AppConfig, args: argparse.Namespace) -> AppConfig:
         config.reward.w_bad_format = args.reward_w_bad_format
     if args.reward_w_unsafe_copy is not None:
         config.reward.w_unsafe_copy = args.reward_w_unsafe_copy
+    if args.reward_w_overedit is not None:
+        config.reward.w_overedit = args.reward_w_overedit
+    if args.overedit_tau is not None:
+        config.reward.overedit_tau = args.overedit_tau
     if args.length_score_min_terms is not None:
         config.reward.length_score_min_terms = args.length_score_min_terms
     if args.length_score_ideal_min_terms is not None:
@@ -518,17 +557,7 @@ def evaluate_policy(
     """评估当前 actor 策略在验证集上的效果。"""
 
     eval_queries = list(queries[:max_queries]) if max_queries is not None else list(queries)
-    rewards: list[float] = []
-    mrr_scores: list[float] = []
-    recall_scores: list[float] = []
-    recall_dense_scores: list[float] = []
-    term_preserve_scores: list[float] = []
-    keyword_preserve_scores: list[float] = []
-    locked_term_preserve_scores: list[float] = []
-    length_scores: list[float] = []
-    clean_format_scores: list[float] = []
-    bad_format_penalties: list[float] = []
-    unsafe_copy_penalties: list[float] = []
+    scored_values = []
 
     actor_model = getattr(model, "actor_model", None)
     previous_mode = getattr(actor_model, "training", None)
@@ -566,42 +595,14 @@ def evaluate_policy(
                     guardrail_cfg=guardrail_cfg,
                     reward_cfg=rewarder.cfg,
                 )
-                score = rewarder.score(query.qid, stabilized.final_query, source_query=query.text)
-                keyword_preserve = getattr(score, "keyword_preserve", getattr(score, "term_preserve", 1.0))
-                locked_term_preserve = getattr(
-                    score,
-                    "locked_term_preserve",
-                    getattr(score, "term_preserve", 1.0),
+                scored_values.append(
+                    rewarder.score(query.qid, stabilized.final_query, source_query=query.text)
                 )
-                rewards.append(score.total)
-                mrr_scores.append(score.mrr)
-                recall_scores.append(score.recall)
-                recall_dense_scores.append(score.recall_dense)
-                term_preserve_scores.append(score.term_preserve)
-                keyword_preserve_scores.append(keyword_preserve)
-                locked_term_preserve_scores.append(locked_term_preserve)
-                length_scores.append(score.length_score)
-                clean_format_scores.append(score.clean_format)
-                bad_format_penalties.append(score.bad_format_penalty)
-                unsafe_copy_penalties.append(score.unsafe_copy_penalty)
     finally:
         if actor_model is not None and previous_mode is not None:
             actor_model.train(previous_mode)
 
-    return {
-        "reward_mean": fmean(rewards) if rewards else 0.0,
-        "mrr_mean": fmean(mrr_scores) if mrr_scores else 0.0,
-        "recall_mean": fmean(recall_scores) if recall_scores else 0.0,
-        "recall_dense_mean": fmean(recall_dense_scores) if recall_dense_scores else 0.0,
-        "term_preserve_mean": fmean(term_preserve_scores) if term_preserve_scores else 0.0,
-        "keyword_preserve_mean": fmean(keyword_preserve_scores) if keyword_preserve_scores else 0.0,
-        "locked_term_preserve_mean": fmean(locked_term_preserve_scores) if locked_term_preserve_scores else 0.0,
-        "length_score_mean": fmean(length_scores) if length_scores else 0.0,
-        "clean_format_mean": fmean(clean_format_scores) if clean_format_scores else 0.0,
-        "bad_format_penalty_mean": fmean(bad_format_penalties) if bad_format_penalties else 0.0,
-        "unsafe_copy_penalty_mean": fmean(unsafe_copy_penalties) if unsafe_copy_penalties else 0.0,
-        "count": float(len(eval_queries)),
-    }
+    return summarize_reward_breakdowns(scored_values)
 
 
 def resolve_eval_decode_settings(config: AppConfig, args: argparse.Namespace) -> dict[str, float | int]:
@@ -641,11 +642,8 @@ def evaluate_original(
     """评估原始 query（不重写）基线。"""
 
     eval_queries = list(queries[:max_queries]) if max_queries is not None else list(queries)
-    mrr_scores = [rewarder.score(q.qid, q.text, source_query=q.text).mrr for q in eval_queries]
-    return {
-        "mrr_mean": fmean(mrr_scores) if mrr_scores else 0.0,
-        "count": float(len(eval_queries)),
-    }
+    scored_values = [rewarder.score(q.qid, q.text, source_query=q.text) for q in eval_queries]
+    return summarize_reward_breakdowns(scored_values)
 
 
 def main() -> int:
@@ -658,6 +656,7 @@ def main() -> int:
         config = apply_low_mem_mode(config)
     config = apply_overrides(config, args)
     config = apply_runtime_mode_adjustments(config, args)
+    config = apply_reward_mode_prompt_defaults(config)
 
     # 2) 准备运行目录和随机种子。
     ensure_runtime_dirs(config)
@@ -684,21 +683,42 @@ def main() -> int:
     # 3) 加载数据并切分 train/val。
     queries, qrels = load_topics_qrels(config.data.topic_name)
     train_queries, val_queries = split_queries(queries, train_ratio=config.data.train_ratio, seed=config.data.seed)
-    train_queries, skipped_retrieval_ready = filter_retrieval_ready_train_queries(train_queries)
     train_queries = maybe_limit(train_queries, config.data.max_train_queries)
     val_queries = maybe_limit(val_queries, config.data.max_val_queries)
-
-    print(
-        f"[data] train_queries={len(train_queries)}, val_queries={len(val_queries)}, "
-        f"qrels_qids={len(qrels)}, filtered_retrieval_ready_train_queries={skipped_retrieval_ready}"
-    )
-
-    # 4) 初始化奖励器与模型组件。
+    skipped_retrieval_ready = 0
     rewarder = Rewarder(
         qrels=qrels,
         prebuilt_index=config.data.prebuilt_index,
         reward_cfg=config.reward,
     )
+    curriculum_bucket_counts: dict[str, int] | None = None
+    if config.train.curriculum_enable:
+        metadata_path = Path(
+            config.train.curriculum_metadata_path
+            or (Path(config.train.save_dir).resolve().parent / "curriculum_query_metadata.jsonl")
+        )
+        config.train.curriculum_metadata_path = str(metadata_path)
+        metadata_by_qid = ensure_curriculum_metadata(
+            train_queries,
+            rewarder,
+            metadata_path=metadata_path,
+        )
+        train_queries, curriculum_bucket_counts = filter_curriculum_train_queries(train_queries, metadata_by_qid)
+        print(
+            f"[curriculum] enabled phase={config.train.curriculum_phase} "
+            f"metadata={metadata_path} bucket_counts={curriculum_bucket_counts}"
+        )
+    else:
+        train_queries, skipped_retrieval_ready = filter_retrieval_ready_train_queries(train_queries)
+        metadata_by_qid = {}
+
+    print(
+        f"[data] train_queries={len(train_queries)}, val_queries={len(val_queries)}, "
+        f"qrels_qids={len(qrels)}, filtered_retrieval_ready_train_queries={skipped_retrieval_ready}, "
+        f"curriculum_enabled={config.train.curriculum_enable}"
+    )
+
+    # 4) 初始化奖励器与模型组件。
     mrr_label = f"MRR@{config.reward.mrr_k}"
 
     # 5) 基线评估（原始 query）。
@@ -754,10 +774,21 @@ def main() -> int:
     global_step = 0
     best_val_mrr = float("-inf")
     should_stop = False
+    eval_history: deque[dict[str, float]] = deque(maxlen=max(1, int(config.train.early_stop_patience)))
 
     for epoch in range(1, config.train.num_epochs + 1):
-        random.Random(config.data.seed + epoch).shuffle(train_queries)
-        for batch in iter_batches(train_queries, config.train.batch_size):
+        if config.train.curriculum_enable:
+            epoch_queries = sample_curriculum_queries(
+                train_queries,
+                metadata_by_qid,
+                phase=config.train.curriculum_phase,
+                seed=config.data.seed,
+                epoch=epoch,
+            )
+        else:
+            epoch_queries = list(train_queries)
+            random.Random(config.data.seed + epoch).shuffle(epoch_queries)
+        for batch in iter_batches(epoch_queries, config.train.batch_size):
             global_step += 1
             metrics = engine.train_step(batch, collect_best_queries=args.print_best_query)
             best_query_pairs = metrics.pop("best_query_pairs", [])
@@ -793,13 +824,19 @@ def main() -> int:
                 f"kl={metrics['loss_kl']:.4f} "
                 f"kl_dom={metrics.get('kl_dominance_ratio', 0.0):.3f} "
                 f"reward={metrics['reward_mean']:.4f} mrr={metrics['mrr_mean']:.4f} "
+                f"orig_mrr20={metrics.get('orig_mrr20_mean', 0.0):.4f} "
+                f"rewrite_mrr20={metrics.get('rewrite_mrr20_mean', 0.0):.4f} "
                 f"recall={metrics.get('recall_mean', 0.0):.4f} "
                 f"recall_dense={metrics.get('recall_dense_mean', 0.0):.4f} "
+                f"main_reward={metrics.get('main_reward_mean', 0.0):.4f} "
+                f"nonzero_mrr20_ratio={metrics.get('nonzero_mrr20_ratio', 0.0):.4f} "
+                f"delta_mrr20_pos_ratio={metrics.get('delta_mrr20_positive_ratio', 0.0):.4f} "
                 f"term_preserve={metrics.get('term_preserve_mean', 0.0):.4f} "
                 f"keyword_preserve={metrics.get('keyword_preserve_mean', 0.0):.4f} "
                 f"locked_term_preserve={metrics.get('locked_term_preserve_mean', 0.0):.4f} "
                 f"length_score={metrics.get('length_score_mean', 0.0):.4f} "
                 f"clean_format={metrics.get('clean_format_mean', 0.0):.4f} "
+                f"overedit_penalty={metrics.get('overedit_penalty_mean', 0.0):.4f} "
                 f"bad_format_penalty={metrics.get('bad_format_penalty_mean', 0.0):.4f} "
                 f"unsafe_copy_penalty={metrics.get('unsafe_copy_penalty_mean', 0.0):.4f} "
                 f"unique_final_query_mean={metrics.get('unique_final_query_mean', 0.0):.4f} "
@@ -811,7 +848,10 @@ def main() -> int:
                 f"max_group_size_hit_ratio={metrics.get('max_group_size_hit_ratio', 0.0):.4f} "
                 f"collapsed_group_ratio={metrics.get('collapsed_group_ratio', 0.0):.4f} "
                 f"all_same_final_query_ratio={metrics.get('all_same_final_query_ratio', 0.0):.4f} "
-                f"flat_reward_group_ratio={metrics.get('flat_reward_group_ratio', 0.0):.4f}"
+                f"flat_reward_group_ratio={metrics.get('flat_reward_group_ratio', 0.0):.4f} "
+                f"flat_mrr20_group_ratio={metrics.get('flat_mrr20_group_ratio', 0.0):.4f} "
+                f"flat_main_reward_group_ratio={metrics.get('flat_main_reward_group_ratio', 0.0):.4f} "
+                f"best_reward_hit_best_mrr20_ratio={metrics.get('best_reward_hit_best_mrr20_ratio', 0.0):.4f}"
             )
             if args.print_best_query and best_query_pairs:
                 for pair in best_query_pairs:
@@ -845,22 +885,70 @@ def main() -> int:
                 append_jsonl(log_path, eval_metrics)
                 print(
                     f"[eval] step={global_step} val_mrr={eval_metrics['mrr_mean']:.4f} "
+                    f"val_orig_mrr20={eval_metrics.get('orig_mrr20_mean', 0.0):.4f} "
+                    f"val_rewrite_mrr20={eval_metrics.get('rewrite_mrr20_mean', 0.0):.4f} "
                     f"val_reward={eval_metrics['reward_mean']:.4f} "
+                    f"val_main_reward={eval_metrics.get('main_reward_mean', 0.0):.4f} "
+                    f"val_nonzero_mrr20_ratio={eval_metrics.get('nonzero_mrr20_ratio', 0.0):.4f} "
+                    f"val_delta_mrr20_pos_ratio={eval_metrics.get('delta_mrr20_positive_ratio', 0.0):.4f} "
                     f"val_recall_dense={eval_metrics.get('recall_dense_mean', 0.0):.4f} "
                     f"val_term_preserve={eval_metrics.get('term_preserve_mean', 0.0):.4f} "
                     f"val_keyword_preserve={eval_metrics.get('keyword_preserve_mean', 0.0):.4f} "
                     f"val_locked_term_preserve={eval_metrics.get('locked_term_preserve_mean', 0.0):.4f} "
                     f"val_length_score={eval_metrics.get('length_score_mean', 0.0):.4f} "
                     f"val_clean_format={eval_metrics.get('clean_format_mean', 0.0):.4f} "
+                    f"val_overedit_penalty={eval_metrics.get('overedit_penalty_mean', 0.0):.4f} "
                     f"val_bad_format_penalty={eval_metrics.get('bad_format_penalty_mean', 0.0):.4f} "
                     f"val_unsafe_copy_penalty={eval_metrics.get('unsafe_copy_penalty_mean', 0.0):.4f}"
                 )
 
                 model.save_adapter(str(latest_path))
-                if eval_metrics["mrr_mean"] > best_val_mrr:
-                    best_val_mrr = eval_metrics["mrr_mean"]
+                current_eval_mrr = float(eval_metrics.get("rewrite_mrr20_mean", eval_metrics["mrr_mean"]))
+                if current_eval_mrr > best_val_mrr:
+                    best_val_mrr = current_eval_mrr
                     model.save_adapter(str(best_path))
                     print(f"[ckpt] best updated: mrr={best_val_mrr:.4f} -> {best_path}")
+
+                eval_history.append(
+                    {
+                        "rewrite_mrr20_mean": current_eval_mrr,
+                        "flat_main_reward_group_ratio": float(
+                            metrics.get("flat_main_reward_group_ratio", metrics.get("flat_reward_group_ratio", 0.0))
+                        ),
+                        "kl_dominance_ratio": float(metrics.get("kl_dominance_ratio", 0.0)),
+                        "delta_mrr20_positive_ratio": float(metrics.get("delta_mrr20_positive_ratio", 0.0)),
+                    }
+                )
+                if len(eval_history) >= max(1, int(config.train.early_stop_patience)):
+                    history_rows = list(eval_history)
+                    mrr_stalled = all(
+                        history_rows[idx]["rewrite_mrr20_mean"] <= history_rows[idx - 1]["rewrite_mrr20_mean"]
+                        for idx in range(1, len(history_rows))
+                    )
+                    flat_stalled = all(
+                        history_rows[idx]["flat_main_reward_group_ratio"]
+                        >= history_rows[idx - 1]["flat_main_reward_group_ratio"]
+                        for idx in range(1, len(history_rows))
+                    )
+                    kl_bad = all(
+                        history_rows[idx]["kl_dominance_ratio"] >= history_rows[idx - 1]["kl_dominance_ratio"]
+                        for idx in range(1, len(history_rows))
+                    ) and all(
+                        history_rows[idx]["delta_mrr20_positive_ratio"]
+                        <= history_rows[idx - 1]["delta_mrr20_positive_ratio"]
+                        for idx in range(1, len(history_rows))
+                    )
+                    if mrr_stalled or flat_stalled or kl_bad:
+                        reason = (
+                            "rewrite_mrr20_stalled"
+                            if mrr_stalled
+                            else "flat_main_reward_not_improving"
+                            if flat_stalled
+                            else "kl_up_without_delta_mrr_gain"
+                        )
+                        print(f"[early-stop] step={global_step} reason={reason}")
+                        should_stop = True
+                        break
 
             if config.train.max_steps is not None and global_step >= config.train.max_steps:
                 should_stop = True

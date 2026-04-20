@@ -24,7 +24,7 @@ if __package__ is None or __package__ == "":
     if str(repo_root) not in sys.path:
         sys.path.insert(0, str(repo_root))
 
-from app_config import AppConfig, get_default_config
+from app_config import AppConfig, apply_reward_mode_prompt_defaults, get_default_config
 from core.model_wrapper import ModelWrapper
 from core.reward_func import (
     RewardBreakdown,
@@ -32,6 +32,7 @@ from core.reward_func import (
     clean_rewritten_query,
     compute_format_penalty,
     compute_lexical_overlap,
+    summarize_reward_breakdowns,
     stabilize_generated_rewrite as shared_stabilize_generated_rewrite,
 )
 from data.loader import QueryExample, load_topics_qrels, split_queries
@@ -176,14 +177,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--reward-mrr-k", type=int, default=None)
     parser.add_argument("--reward-recall-k", type=int, default=None)
     parser.add_argument("--reward-recall-dense-k", type=int, default=None)
+    parser.add_argument("--reward-mode", type=str, choices=("legacy", "top20_delta"), default=None)
     parser.add_argument("--reward-w-mrr", type=float, default=None)
     parser.add_argument("--reward-w-recall", type=float, default=None)
     parser.add_argument("--reward-w-recall-dense", type=float, default=None)
+    parser.add_argument("--reward-w-rank-bonus", type=float, default=None)
     parser.add_argument("--reward-w-term-preserve", type=float, default=None)
     parser.add_argument("--reward-w-length-score", type=float, default=None)
     parser.add_argument("--reward-w-clean-format", type=float, default=None)
     parser.add_argument("--reward-w-bad-format", type=float, default=None)
     parser.add_argument("--reward-w-unsafe-copy", type=float, default=None)
+    parser.add_argument("--reward-w-overedit", type=float, default=None)
+    parser.add_argument("--overedit-tau", type=float, default=None)
     parser.add_argument(
         "--progress-every",
         type=int,
@@ -271,12 +276,16 @@ def apply_overrides(config: AppConfig, args: argparse.Namespace) -> AppConfig:
         config.reward.recall_k = max(1, args.reward_recall_k)
     if args.reward_recall_dense_k is not None:
         config.reward.recall_dense_k = max(1, args.reward_recall_dense_k)
+    if args.reward_mode is not None:
+        config.reward.reward_mode = args.reward_mode
     if args.reward_w_mrr is not None:
         config.reward.w_mrr = args.reward_w_mrr
     if args.reward_w_recall is not None:
         config.reward.w_recall = args.reward_w_recall
     if args.reward_w_recall_dense is not None:
         config.reward.w_recall_dense = args.reward_w_recall_dense
+    if args.reward_w_rank_bonus is not None:
+        config.reward.w_rank_bonus = args.reward_w_rank_bonus
     if args.reward_w_term_preserve is not None:
         config.reward.w_term_preserve = args.reward_w_term_preserve
     if args.reward_w_length_score is not None:
@@ -287,6 +296,10 @@ def apply_overrides(config: AppConfig, args: argparse.Namespace) -> AppConfig:
         config.reward.w_bad_format = args.reward_w_bad_format
     if args.reward_w_unsafe_copy is not None:
         config.reward.w_unsafe_copy = args.reward_w_unsafe_copy
+    if args.reward_w_overedit is not None:
+        config.reward.w_overedit = args.reward_w_overedit
+    if args.overedit_tau is not None:
+        config.reward.overedit_tau = args.overedit_tau
     return config
 
 
@@ -579,14 +592,15 @@ def _aggregate_prompt_metrics(
         per_qid[query.qid] = (record.final_query, score)
 
     values = [item[1] for item in per_qid.values()]
-    mrr_value = fmean(v.mrr for v in values) if values else 0.0
-    recall_value = fmean(v.recall for v in values) if values else 0.0
+    summary = summarize_reward_breakdowns(values, mrr_key="mrr_mean", recall_key="recall_mean", recall_aux_key="recall_dense_mean")
+    mrr_value = summary["mrr_mean"]
+    recall_value = summary["recall_mean"]
     metrics = {
         "mrr": mrr_value,
         f"mrr@{rewarder.mrr_k}": mrr_value,
         "recall": recall_value,
         f"recall@{rewarder.recall_k}": recall_value,
-        "reward_mean": fmean(v.total for v in values) if values else 0.0,
+        **summary,
     }
     diagnostics = _summarize_rewrite_records(sampled_queries, rewrites_by_qid)
     return metrics, per_qid, diagnostics
@@ -671,6 +685,7 @@ def _build_report_payload(
                 "locked_terms_scored_softly": True,
             },
             "reward": {
+                "reward_mode": config.reward.reward_mode,
                 "mrr_k": config.reward.mrr_k,
                 "recall_k": config.reward.recall_k,
                 "recall_dense_k": config.reward.recall_dense_k,
@@ -678,11 +693,14 @@ def _build_report_payload(
                 "w_mrr": config.reward.w_mrr,
                 "w_recall": config.reward.w_recall,
                 "w_recall_dense": config.reward.w_recall_dense,
+                "w_rank_bonus": config.reward.w_rank_bonus,
                 "w_term_preserve": config.reward.w_term_preserve,
                 "w_length_score": config.reward.w_length_score,
                 "w_clean_format": config.reward.w_clean_format,
                 "w_bad_format": config.reward.w_bad_format,
                 "w_unsafe_copy": config.reward.w_unsafe_copy,
+                "w_overedit": config.reward.w_overedit,
+                "overedit_tau": config.reward.overedit_tau,
             },
         },
         "sample_info": {
@@ -749,7 +767,7 @@ def append_history_entry(history_path: Path, report_path: Path, final_report: di
 
 def main() -> int:
     args = parse_args()
-    config = apply_overrides(get_default_config(), args)
+    config = apply_reward_mode_prompt_defaults(apply_overrides(get_default_config(), args))
     report_path = resolve_report_path(args.report_path, seed=args.seed, sample_size=args.sample_size)
     history_path = resolve_history_path(args.history_path, report_path=report_path)
 

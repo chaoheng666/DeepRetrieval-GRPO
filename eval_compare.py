@@ -11,14 +11,13 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from statistics import fmean
-from typing import Sequence
+from typing import Any, Sequence
 
 import torch
 
-from app_config import AppConfig, get_default_config
+from app_config import AppConfig, apply_reward_mode_prompt_defaults, get_default_config
 from core.model_wrapper import ModelWrapper
-from core.reward_func import RewardBreakdown, Rewarder, stabilize_generated_rewrite
+from core.reward_func import RewardBreakdown, Rewarder, stabilize_generated_rewrite, summarize_reward_breakdowns
 from data.loader import QueryExample, load_topics_qrels, maybe_limit, split_queries
 
 
@@ -47,14 +46,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--reward-mrr-k", type=int, default=None)
     parser.add_argument("--reward-recall-k", type=int, default=None)
     parser.add_argument("--reward-recall-dense-k", type=int, default=None)
+    parser.add_argument("--reward-mode", type=str, choices=("legacy", "top20_delta"), default=None)
     parser.add_argument("--reward-w-mrr", type=float, default=None)
     parser.add_argument("--reward-w-recall", type=float, default=None)
     parser.add_argument("--reward-w-recall-dense", type=float, default=None)
+    parser.add_argument("--reward-w-rank-bonus", type=float, default=None)
     parser.add_argument("--reward-w-term-preserve", type=float, default=None)
     parser.add_argument("--reward-w-length-score", type=float, default=None)
     parser.add_argument("--reward-w-clean-format", type=float, default=None)
     parser.add_argument("--reward-w-bad-format", type=float, default=None)
     parser.add_argument("--reward-w-unsafe-copy", type=float, default=None)
+    parser.add_argument("--reward-w-overedit", type=float, default=None)
+    parser.add_argument("--overedit-tau", type=float, default=None)
     parser.add_argument("--length-score-min-terms", type=int, default=None)
     parser.add_argument("--length-score-ideal-min-terms", type=int, default=None)
     parser.add_argument("--length-score-ideal-max-terms", type=int, default=None)
@@ -119,12 +122,16 @@ def apply_overrides(config: AppConfig, args: argparse.Namespace) -> AppConfig:
         config.reward.recall_k = max(1, args.reward_recall_k)
     if args.reward_recall_dense_k is not None:
         config.reward.recall_dense_k = max(1, args.reward_recall_dense_k)
+    if args.reward_mode is not None:
+        config.reward.reward_mode = args.reward_mode
     if args.reward_w_mrr is not None:
         config.reward.w_mrr = args.reward_w_mrr
     if args.reward_w_recall is not None:
         config.reward.w_recall = args.reward_w_recall
     if args.reward_w_recall_dense is not None:
         config.reward.w_recall_dense = args.reward_w_recall_dense
+    if args.reward_w_rank_bonus is not None:
+        config.reward.w_rank_bonus = args.reward_w_rank_bonus
     if args.reward_w_term_preserve is not None:
         config.reward.w_term_preserve = args.reward_w_term_preserve
     if args.reward_w_length_score is not None:
@@ -135,6 +142,10 @@ def apply_overrides(config: AppConfig, args: argparse.Namespace) -> AppConfig:
         config.reward.w_bad_format = args.reward_w_bad_format
     if args.reward_w_unsafe_copy is not None:
         config.reward.w_unsafe_copy = args.reward_w_unsafe_copy
+    if args.reward_w_overedit is not None:
+        config.reward.w_overedit = args.reward_w_overedit
+    if args.overedit_tau is not None:
+        config.reward.overedit_tau = args.overedit_tau
     if args.length_score_min_terms is not None:
         config.reward.length_score_min_terms = max(0, args.length_score_min_terms)
     if args.length_score_ideal_min_terms is not None:
@@ -179,6 +190,61 @@ def validate_adapter_path(adapter_path: str) -> dict:
         return json.load(f)
 
 
+def reward_breakdown_to_report_dict(score: RewardBreakdown) -> dict[str, Any]:
+    return {
+        "total": getattr(score, "total", 0.0),
+        "mrr": getattr(score, "mrr", 0.0),
+        "recall": getattr(score, "recall", 0.0),
+        "recall_dense": getattr(score, "recall_dense", 0.0),
+        "rank_bonus": getattr(score, "rank_bonus", 0.0),
+        "orig_mrr": getattr(score, "orig_mrr", 0.0),
+        "orig_recall": getattr(score, "orig_recall", 0.0),
+        "orig_recall_aux": getattr(score, "orig_recall_aux", 0.0),
+        "orig_rank_bonus": getattr(score, "orig_rank_bonus", 0.0),
+        "delta_mrr": getattr(score, "delta_mrr", 0.0),
+        "delta_recall": getattr(score, "delta_recall", 0.0),
+        "delta_recall_aux": getattr(score, "delta_recall_aux", 0.0),
+        "delta_rank_bonus": getattr(score, "delta_rank_bonus", 0.0),
+        "main_reward": getattr(score, "main_reward", 0.0),
+        "overedit_penalty": getattr(score, "overedit_penalty", 0.0),
+        "bad_format_penalty": getattr(score, "bad_format_penalty", 0.0),
+        "unsafe_copy_penalty": getattr(score, "unsafe_copy_penalty", 0.0),
+        "hit_rank": getattr(score, "hit_rank", None),
+        "retrieved_relevant_count": getattr(score, "retrieved_relevant_count", 0),
+        "relevant_total": getattr(score, "relevant_total", 0),
+    }
+
+
+def build_per_qid_rows(
+    queries: Sequence[QueryExample],
+    original_by_qid: dict[str, RewardBreakdown],
+    zero_by_qid: dict[str, tuple[str, RewardBreakdown]],
+    rl_by_qid: dict[str, tuple[str, RewardBreakdown]],
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for query in queries:
+        qid = query.qid
+        zero_rewrite, zero_score = zero_by_qid[qid]
+        rl_rewrite, rl_score = rl_by_qid[qid]
+        original_score = original_by_qid[qid]
+        rows.append(
+            {
+                "qid": qid,
+                "original_query": query.text,
+                "zero_rewrite": zero_rewrite,
+                "rl_rewrite": rl_rewrite,
+                "original": reward_breakdown_to_report_dict(original_score),
+                "zero_shot": reward_breakdown_to_report_dict(zero_score),
+                "rl": reward_breakdown_to_report_dict(rl_score),
+            }
+        )
+    return rows
+
+
+def select_sample_cases(per_qid_rows: Sequence[dict[str, Any]], sample_count: int) -> list[dict[str, Any]]:
+    return list(per_qid_rows[: max(0, int(sample_count))])
+
+
 def evaluate_original(
     queries: Sequence[QueryExample],
     rewarder: Rewarder,
@@ -196,9 +262,10 @@ def evaluate_original(
             print(f"[progress] stage=original {idx}/{total}")
 
     values = list(per_qid.values())
-    mrr_value = fmean(v.mrr for v in values) if values else 0.0
-    recall_value = fmean(v.recall for v in values) if values else 0.0
-    recall_dense_value = fmean(v.recall_dense for v in values) if values else 0.0
+    metrics = summarize_reward_breakdowns(values, mrr_key="mrr_mean", recall_key="recall_mean", recall_aux_key="recall_dense_mean")
+    mrr_value = metrics["mrr_mean"]
+    recall_value = metrics["recall_mean"]
+    recall_dense_value = metrics["recall_dense_mean"]
     return (
         {
             "mrr": mrr_value,
@@ -207,7 +274,7 @@ def evaluate_original(
             f"recall@{rewarder.recall_k}": recall_value,
             "recall_dense": recall_dense_value,
             f"recall@{rewarder.recall_dense_k}": recall_dense_value,
-            "reward_mean": fmean(v.total for v in values) if values else 0.0,
+            **metrics,
         },
         per_qid,
     )
@@ -288,9 +355,10 @@ def evaluate_with_model(
             print(f"[progress] stage={stage_name} {processed}/{total}")
 
     values = [item[1] for item in per_qid.values()]
-    mrr_value = fmean(v.mrr for v in values) if values else 0.0
-    recall_value = fmean(v.recall for v in values) if values else 0.0
-    recall_dense_value = fmean(v.recall_dense for v in values) if values else 0.0
+    metrics = summarize_reward_breakdowns(values, mrr_key="mrr_mean", recall_key="recall_mean", recall_aux_key="recall_dense_mean")
+    mrr_value = metrics["mrr_mean"]
+    recall_value = metrics["recall_mean"]
+    recall_dense_value = metrics["recall_dense_mean"]
     return (
         {
             "mrr": mrr_value,
@@ -299,7 +367,7 @@ def evaluate_with_model(
             f"recall@{rewarder.recall_k}": recall_value,
             "recall_dense": recall_dense_value,
             f"recall@{rewarder.recall_dense_k}": recall_dense_value,
-            "reward_mean": fmean(v.total for v in values) if values else 0.0,
+            **metrics,
         },
         per_qid,
     )
@@ -312,7 +380,7 @@ def main() -> int:
     adapter_cfg = validate_adapter_path(args.rl_adapter_path)
     adapter_base_model = str(adapter_cfg.get("base_model_name_or_path", "")).strip() or None
 
-    config = apply_overrides(get_default_config(), args)
+    config = apply_reward_mode_prompt_defaults(apply_overrides(get_default_config(), args))
     if args.model_name is None and adapter_base_model:
         # 默认优先使用 adapter 对应的 base model，避免错配。
         config.model.model_name = adapter_base_model
@@ -323,6 +391,7 @@ def main() -> int:
         "[config] "
         f"model={config.model.model_name}, "
         f"index={config.data.prebuilt_index}, "
+        f"reward_mode={config.reward.reward_mode}, "
         f"mrr_k={config.reward.mrr_k}, "
         f"recall_k={config.reward.recall_k}, "
         f"query_batch_size={max(1, args.query_batch_size)}, "
@@ -424,20 +493,26 @@ def main() -> int:
     print(f"Zero-shot: {zero_metrics['recall']:.4f}")
     print(f"RL       : {rl_metrics['recall']:.4f}")
 
+    per_qid_rows = build_per_qid_rows(
+        val_queries,
+        original_by_qid,
+        zero_by_qid,
+        rl_by_qid,
+    )
+
     print("\n=== Sample Cases ===")
-    sample_count = max(0, args.sample_print)
-    for query in val_queries[:sample_count]:
-        qid = query.qid
-        zero_rewrite, zero_score = zero_by_qid[qid]
-        rl_rewrite, rl_score = rl_by_qid[qid]
-        original_score = original_by_qid[qid]
-        print(f"[{qid}]")
-        print(f"  original_query : {query.text}")
-        print(f"  zero_rewrite   : {zero_rewrite}")
-        print(f"  rl_rewrite     : {rl_rewrite}")
+    sample_cases = select_sample_cases(per_qid_rows, args.sample_print)
+    for row in sample_cases:
+        original_score = row["original"]
+        zero_score = row["zero_shot"]
+        rl_score = row["rl"]
+        print(f"[{row['qid']}]")
+        print(f"  original_query : {row['original_query']}")
+        print(f"  zero_rewrite   : {row['zero_rewrite']}")
+        print(f"  rl_rewrite     : {row['rl_rewrite']}")
         print(
             f"  mrr(original/zero/rl): "
-            f"{original_score.mrr:.4f}/{zero_score.mrr:.4f}/{rl_score.mrr:.4f}"
+            f"{float(original_score['mrr']):.4f}/{float(zero_score['mrr']):.4f}/{float(rl_score['mrr']):.4f}"
         )
 
     report = {
@@ -446,11 +521,16 @@ def main() -> int:
         "original": original_metrics,
         "zero_shot": zero_metrics,
         "rl": rl_metrics,
+        "per_qid": per_qid_rows,
         "deltas": {
             "zero_minus_original": delta_zero,
             "rl_minus_original": delta_rl,
             "rl_minus_zero": delta_rl_vs_zero,
+            "zero_reward_minus_original": zero_metrics.get("reward_mean", 0.0) - original_metrics.get("reward_mean", 0.0),
+            "rl_reward_minus_original": rl_metrics.get("reward_mean", 0.0) - original_metrics.get("reward_mean", 0.0),
+            "rl_main_reward_minus_zero": rl_metrics.get("main_reward_mean", 0.0) - zero_metrics.get("main_reward_mean", 0.0),
         },
+        "samples": sample_cases,
     }
     report_path = Path(args.report_path)
     report_path.parent.mkdir(parents=True, exist_ok=True)

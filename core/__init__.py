@@ -11,9 +11,12 @@ from .reward_func import (
     compute_length_score,
     compute_locked_term_preserve,
     compute_mrr_at_k,
+    compute_rank_bonus,
     compute_recall_at_k,
     compute_term_preserve,
+    compute_overedit_penalty,
     compute_unsafe_copy_penalty,
+    summarize_reward_breakdowns,
 )
 
 __all__ = [
@@ -31,9 +34,12 @@ __all__ = [
     "compute_length_score",
     "compute_locked_term_preserve",
     "compute_mrr_at_k",
+    "compute_overedit_penalty",
+    "compute_rank_bonus",
     "compute_recall_at_k",
     "compute_term_preserve",
     "compute_unsafe_copy_penalty",
     "normalize_advantages",
     "ppo_clipped_objective",
+    "summarize_reward_breakdowns",
 ]

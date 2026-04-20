@@ -130,3 +130,14 @@ python eval_compare.py `
 - `ARTIFACT_ROOT`：修改根目录
 - `EXP_NAME`：修改实验名（默认 `4b`）
 - `PYTHON_BIN`：修改 Python 命令（如 `python3`）
+- Top20 Delta Curriculum wrappers
+
+  - Linux / macOS: `./run_train_then_full_eval_4b_top20_delta_curriculum.sh`
+  - Windows PowerShell: `.\run_train_then_full_eval_4b_top20_delta_curriculum.ps1`
+  - metadata path: `<run_root>/curriculum_query_metadata.jsonl`
+  - phase1 output: `<run_root>/phase1/`
+  - phase2 output: `<run_root>/phase2/`
+  - eval output: `<run_root>/eval/`
+  - reward mode: `top20_delta`
+  - cutoffs: `MRR@20`, `Recall@20`, `Recall@50`
+  - phase2 always warm-starts from `phase1/checkpoints/best`
