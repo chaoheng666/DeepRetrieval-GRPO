@@ -78,6 +78,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-regen-rounds", type=int, default=None)
     parser.add_argument("--reward-gap-threshold", type=float, default=None)
     parser.add_argument("--gap-sampling-temperature-delta", type=float, default=None)
+    parser.add_argument(
+        "--actor-chunk-size",
+        type=int,
+        default=None,
+        help="Actor logprob recompute chunk size during GRPO backward.",
+    )
+    parser.add_argument(
+        "--projection-chunk-size",
+        type=int,
+        default=None,
+        help="lm_head projection chunk size during batched logprob recomputation.",
+    )
     parser.add_argument("--reward-mrr-k", type=int, default=None, help="MRR@k reward cutoff, e.g. 50.")
     parser.add_argument("--reward-recall-k", type=int, default=None, help="Recall@k reward cutoff, e.g. 50.")
     parser.add_argument("--reward-recall-dense-k", type=int, default=None, help="Dense Recall@k reward cutoff, e.g. 100.")
@@ -148,6 +160,8 @@ def apply_low_mem_mode(config: AppConfig) -> AppConfig:
     config.train.top_p = 0.95
     config.train.reward_gap_threshold = 0.10
     config.train.gap_sampling_temperature_delta = 0.15
+    config.train.actor_chunk_size = 1
+    config.model.projection_chunk_size = 32
     config.train.eval_every_steps = 10
     config.train.max_steps = 50
     config.train.num_epochs = 1
@@ -219,6 +233,10 @@ def apply_overrides(config: AppConfig, args: argparse.Namespace) -> AppConfig:
         config.train.reward_gap_threshold = args.reward_gap_threshold
     if args.gap_sampling_temperature_delta is not None:
         config.train.gap_sampling_temperature_delta = args.gap_sampling_temperature_delta
+    if args.actor_chunk_size is not None:
+        config.train.actor_chunk_size = args.actor_chunk_size
+    if args.projection_chunk_size is not None:
+        config.model.projection_chunk_size = args.projection_chunk_size
     if args.reward_mrr_k is not None:
         config.reward.mrr_k = args.reward_mrr_k
     if args.reward_recall_k is not None:
@@ -368,6 +386,16 @@ def apply_runtime_mode_adjustments(config: AppConfig, args: argparse.Namespace) 
             f"group_size={config.train.group_size}; auto-adjusting to {config.train.group_size}."
         )
         config.train.max_group_size = config.train.group_size
+
+    if config.train.actor_chunk_size < 1:
+        print(f"[warn] actor_chunk_size={config.train.actor_chunk_size} is invalid; auto-adjusting to 1.")
+        config.train.actor_chunk_size = 1
+
+    if config.model.projection_chunk_size < 1:
+        print(
+            f"[warn] projection_chunk_size={config.model.projection_chunk_size} is invalid; auto-adjusting to 1."
+        )
+        config.model.projection_chunk_size = 1
 
     if config.train.reward_gap_threshold < 0.0:
         print(
@@ -711,6 +739,7 @@ def main() -> int:
         regen_temperature_delta=config.train.regen_temperature_delta,
         reward_gap_threshold=config.train.reward_gap_threshold,
         gap_sampling_temperature_delta=config.train.gap_sampling_temperature_delta,
+        actor_chunk_size=config.train.actor_chunk_size,
         parallel_group_generate=args.parallel_group_generate,
     )
 

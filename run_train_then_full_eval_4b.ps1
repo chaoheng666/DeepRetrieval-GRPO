@@ -29,9 +29,11 @@ try {
   $autoGitCommit = if ($env:AUTO_GIT_COMMIT) { $env:AUTO_GIT_COMMIT } else { "1" }
   $autoGitPush = if ($env:AUTO_GIT_PUSH) { $env:AUTO_GIT_PUSH } else { "1" }
   $searchThreads = if ($env:SEARCH_THREADS) { $env:SEARCH_THREADS } else { "16" }
-  $trainBatchSize = if ($env:TRAIN_BATCH_SIZE) { $env:TRAIN_BATCH_SIZE } else { "24" }
+  $trainBatchSize = if ($env:TRAIN_BATCH_SIZE) { $env:TRAIN_BATCH_SIZE } else { "16" }
   $trainGroupSize = if ($env:TRAIN_GROUP_SIZE) { $env:TRAIN_GROUP_SIZE } else { "8" }
   $trainMaxGroupSize = if ($env:TRAIN_MAX_GROUP_SIZE) { $env:TRAIN_MAX_GROUP_SIZE } else { "12" }
+  $actorChunkSize = if ($env:ACTOR_CHUNK_SIZE) { $env:ACTOR_CHUNK_SIZE } else { "4" }
+  $projectionChunkSize = if ($env:PROJECTION_CHUNK_SIZE) { $env:PROJECTION_CHUNK_SIZE } else { "64" }
   $trainLearningRate = if ($env:TRAIN_LEARNING_RATE) { $env:TRAIN_LEARNING_RATE } else { "1.5e-5" }
   $trainClipRange = if ($env:TRAIN_CLIP_RANGE) { $env:TRAIN_CLIP_RANGE } else { "0.2" }
   $trainKlBeta = if ($env:TRAIN_KL_BETA) { $env:TRAIN_KL_BETA } else { "0.03" }
@@ -103,7 +105,7 @@ try {
     $env:PYTORCH_CUDA_ALLOC_CONF = "expandable_segments:True"
   }
 
-  Write-Host "[preset] batch=$trainBatchSize group=$trainGroupSize max_group=$trainMaxGroupSize train_decode=($trainMaxNewTokens,$trainTemperature,$trainTopP) eval_decode=($evalMaxNewTokens,$evalTemperature,$evalTopP) eval_query_batch_size=$evalQueryBatchSize strides=($trainGroupTemperatureStride,$trainGroupTopPStride) unique=$trainMinUniqueFinalQueries regen=$trainMaxRegenRounds gap=$trainRewardGapThreshold delta=$trainGapSamplingTemperatureDelta reward=(mrr=$rewardMrrK recall=$rewardRecallK recall_dense=$rewardRecallDenseK)"
+  Write-Host "[preset] batch=$trainBatchSize group=$trainGroupSize max_group=$trainMaxGroupSize actor_chunk=$actorChunkSize projection_chunk=$projectionChunkSize train_decode=($trainMaxNewTokens,$trainTemperature,$trainTopP) eval_decode=($evalMaxNewTokens,$evalTemperature,$evalTopP) eval_query_batch_size=$evalQueryBatchSize strides=($trainGroupTemperatureStride,$trainGroupTopPStride) unique=$trainMinUniqueFinalQueries regen=$trainMaxRegenRounds gap=$trainRewardGapThreshold delta=$trainGapSamplingTemperatureDelta reward=(mrr=$rewardMrrK recall=$rewardRecallK recall_dense=$rewardRecallDenseK)"
 
   Write-Host "[1/3] Training 4B experiment..."
   & $pythonBin train.py `
@@ -130,6 +132,8 @@ try {
     --max-regen-rounds $trainMaxRegenRounds `
     --reward-gap-threshold $trainRewardGapThreshold `
     --gap-sampling-temperature-delta $trainGapSamplingTemperatureDelta `
+    --actor-chunk-size $actorChunkSize `
+    --projection-chunk-size $projectionChunkSize `
     --eval-every-steps $trainEvalEverySteps `
     --max-val-queries $trainMaxValQueries `
     --max-steps $trainMaxSteps `

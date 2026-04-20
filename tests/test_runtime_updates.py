@@ -48,9 +48,11 @@ class RuntimeConfigTests(unittest.TestCase):
         cfg.train.max_new_tokens = 0
         cfg.train.group_size = 1
         cfg.train.max_group_size = 1
+        cfg.train.actor_chunk_size = 0
         cfg.train.reward_gap_threshold = -0.5
         cfg.train.gap_sampling_temperature_delta = -0.25
         cfg.train.max_steps = 0
+        cfg.model.projection_chunk_size = 0
         cfg.reward.mrr_k = 0
         cfg.reward.recall_k = 0
         cfg.data.max_train_queries = -1
@@ -66,9 +68,11 @@ class RuntimeConfigTests(unittest.TestCase):
         self.assertEqual(adjusted.train.max_new_tokens, 1)
         self.assertEqual(adjusted.train.group_size, 2)
         self.assertEqual(adjusted.train.max_group_size, 2)
+        self.assertEqual(adjusted.train.actor_chunk_size, 1)
         self.assertEqual(adjusted.train.reward_gap_threshold, 0.0)
         self.assertEqual(adjusted.train.gap_sampling_temperature_delta, 0.0)
         self.assertEqual(adjusted.train.max_steps, 1)
+        self.assertEqual(adjusted.model.projection_chunk_size, 1)
         self.assertEqual(adjusted.reward.mrr_k, 1)
         self.assertEqual(adjusted.reward.recall_k, 1)
         self.assertEqual(adjusted.data.max_train_queries, 0)
@@ -282,6 +286,7 @@ class EngineTraceTests(unittest.TestCase):
             temperature=0.8,
             top_p=0.95,
             reward_gap_threshold=0.0,
+            actor_chunk_size=2,
         )
 
         engine.train_step([QueryExample(qid="q1", text="input query")], collect_best_queries=False)

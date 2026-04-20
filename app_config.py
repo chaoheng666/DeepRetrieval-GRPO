@@ -112,6 +112,9 @@ class ModelConfig:
     bnb_4bit_quant_type: str = "nf4"
     bnb_4bit_compute_dtype: str = "float16"
     bnb_4bit_use_double_quant: bool = True
+    # Chunk the final lm_head projection during logprob recomputation to
+    # trade a little extra VRAM for fewer small matmul launches.
+    projection_chunk_size: int = 64
     actor_device_map: str = "auto"
     ref_device_map: str = "auto"
     # Ref 精度模式：
@@ -171,6 +174,9 @@ class TrainConfig:
     reward_gap_threshold: float = 0.08
     # Only adaptive extra samples use a higher temperature.
     gap_sampling_temperature_delta: float = 0.15
+    # Recompute actor logprobs in small sample chunks to balance throughput
+    # against VRAM usage during backward.
+    actor_chunk_size: int = 4
     # 每隔多少个 step 在验证集上评估一次。
     eval_every_steps: int = 20
     # 可选总步数上限（用于快速调试）。

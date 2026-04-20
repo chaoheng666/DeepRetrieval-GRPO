@@ -120,10 +120,12 @@ class DefaultPromptConfigTests(unittest.TestCase):
 
         self.assertEqual(config.train.group_size, 10)
         self.assertEqual(config.train.max_group_size, 14)
+        self.assertEqual(config.train.actor_chunk_size, 4)
         self.assertEqual(config.train.kl_beta, 0.03)
         self.assertEqual(config.train.max_new_tokens, 12)
         self.assertEqual(config.train.temperature, 0.85)
         self.assertEqual(config.train.top_p, 0.95)
+        self.assertEqual(config.model.projection_chunk_size, 64)
 
     def test_reward_defaults_use_dense_three_layer_formula(self):
         config = get_default_config()

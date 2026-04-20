@@ -102,6 +102,7 @@ class ModelWrapper:
         self.train_mode = train_mode
         self.enable_lora = enable_lora
         self.adapter_path = adapter_path
+        self.projection_chunk_size = max(1, int(getattr(model_cfg, "projection_chunk_size", 64)))
         self.ref_precision_used: str | None = None
         self.ref_dtype_used: torch.dtype | None = None
         self.actor_device_map = self._resolve_runtime_device_map(model_cfg.actor_device_map, model_role="actor")
@@ -1209,6 +1210,7 @@ class ModelWrapper:
                 lm_head=lm_head,
                 selected_hidden_states=flat_hidden_states,
                 target_ids=flat_target_ids,
+                projection_chunk_size=self.projection_chunk_size,
             )
 
         offset = 0

@@ -20,6 +20,8 @@ SEARCH_THREADS="${SEARCH_THREADS:-16}"
 TRAIN_BATCH_SIZE="${TRAIN_BATCH_SIZE:-16}"
 TRAIN_GROUP_SIZE="${TRAIN_GROUP_SIZE:-8}"
 TRAIN_MAX_GROUP_SIZE="${TRAIN_MAX_GROUP_SIZE:-12}"
+ACTOR_CHUNK_SIZE="${ACTOR_CHUNK_SIZE:-4}"
+PROJECTION_CHUNK_SIZE="${PROJECTION_CHUNK_SIZE:-64}"
 TRAIN_MAX_NEW_TOKENS="${TRAIN_MAX_NEW_TOKENS:-12}"
 TRAIN_TEMPERATURE="${TRAIN_TEMPERATURE:-0.85}"
 TRAIN_TOP_P="${TRAIN_TOP_P:-0.95}"
@@ -109,7 +111,7 @@ print(f"[env] cuda device count: {torch.cuda.device_count()}")
 PY
 fi
 
-echo "[preset] 4B stable config: batch=${TRAIN_BATCH_SIZE} group=${TRAIN_GROUP_SIZE} max_group=${TRAIN_MAX_GROUP_SIZE} train_decode=(${TRAIN_MAX_NEW_TOKENS},${TRAIN_TEMPERATURE},${TRAIN_TOP_P}) eval_decode=(${EVAL_MAX_NEW_TOKENS},${EVAL_TEMPERATURE},${EVAL_TOP_P}) eval_query_batch_size=${EVAL_QUERY_BATCH_SIZE} group_temperature_stride=0.07 group_top_p_stride=0.015 min_unique_final_queries=4 max_regen_rounds=2 reward_gap_threshold=0.08 gap_sampling_temperature_delta=0.15 ref_precision=4bit reward=(mrr@50, recall@50, recall_dense@100) max_val_queries=${TRAIN_MAX_VAL_QUERIES} search_threads=${SEARCH_THREADS}"
+echo "[preset] 4B stable config: batch=${TRAIN_BATCH_SIZE} group=${TRAIN_GROUP_SIZE} max_group=${TRAIN_MAX_GROUP_SIZE} actor_chunk=${ACTOR_CHUNK_SIZE} projection_chunk=${PROJECTION_CHUNK_SIZE} train_decode=(${TRAIN_MAX_NEW_TOKENS},${TRAIN_TEMPERATURE},${TRAIN_TOP_P}) eval_decode=(${EVAL_MAX_NEW_TOKENS},${EVAL_TEMPERATURE},${EVAL_TOP_P}) eval_query_batch_size=${EVAL_QUERY_BATCH_SIZE} group_temperature_stride=0.07 group_top_p_stride=0.015 min_unique_final_queries=4 max_regen_rounds=2 reward_gap_threshold=0.08 gap_sampling_temperature_delta=0.15 ref_precision=4bit reward=(mrr@50, recall@50, recall_dense@100) max_val_queries=${TRAIN_MAX_VAL_QUERIES} search_threads=${SEARCH_THREADS}"
 
 echo "[2/4] Training 4B experiment..."
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
@@ -137,6 +139,8 @@ export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:T
   --max-regen-rounds 2 \
   --reward-gap-threshold 0.08 \
   --gap-sampling-temperature-delta 0.15 \
+  --actor-chunk-size "$ACTOR_CHUNK_SIZE" \
+  --projection-chunk-size "$PROJECTION_CHUNK_SIZE" \
   --eval-every-steps 50 \
   --max-val-queries "$TRAIN_MAX_VAL_QUERIES" \
   --max-steps 500 \

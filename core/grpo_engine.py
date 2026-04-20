@@ -90,6 +90,7 @@ class GRPOEngine:
         regen_temperature_delta: float = 0.15,
         reward_gap_threshold: float = 0.08,
         gap_sampling_temperature_delta: float = 0.15,
+        actor_chunk_size: int = 4,
         parallel_group_generate: bool = False,
     ) -> None:
         self.model_wrapper = model_wrapper
@@ -110,6 +111,7 @@ class GRPOEngine:
         self.regen_temperature_delta = max(0.0, float(regen_temperature_delta))
         self.reward_gap_threshold = max(0.0, float(reward_gap_threshold))
         self.gap_sampling_temperature_delta = max(0.0, float(gap_sampling_temperature_delta))
+        self.actor_chunk_size = max(1, int(actor_chunk_size))
         self.parallel_group_generate = parallel_group_generate
 
     def _stabilize_generated_sample(self, source_query: str, generated_sample) -> object:
@@ -556,7 +558,7 @@ class GRPOEngine:
 
                     # Keep actor recompute in small chunks so we do not retain the
                     # full group's autograd graph in VRAM at once.
-                    actor_chunk_size = len(valid_group_samples) if len(valid_group_samples) <= 2 else 2
+                    actor_chunk_size = min(self.actor_chunk_size, len(valid_group_samples))
                     for chunk_start in range(0, len(valid_group_samples), actor_chunk_size):
                         chunk_samples = valid_group_samples[chunk_start : chunk_start + actor_chunk_size]
                         chunk_prompts = prompts[chunk_start : chunk_start + actor_chunk_size]
