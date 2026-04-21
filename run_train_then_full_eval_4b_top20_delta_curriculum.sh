@@ -4,49 +4,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-PYTHON_BIN="${PYTHON_BIN:-/root/miniconda3/bin/python}"
-ARTIFACT_ROOT="${ARTIFACT_ROOT:-train_and_eval_data_model_0420}"
-EXP_NAME="${EXP_NAME:-4b_top20_delta_curriculum}"
-LOG_DIR="${LOG_DIR:-log}"
-MODEL_NAME="${MODEL_NAME:-/root/autodl-tmp/hf_models/Qwen3-4B-Instruct-2507}"
-SEARCH_THREADS="${SEARCH_THREADS:-16}"
-TRAIN_MAX_VAL_QUERIES="${TRAIN_MAX_VAL_QUERIES:-400}"
-EVAL_QUERY_BATCH_SIZE="${EVAL_QUERY_BATCH_SIZE:-8}"
-PHASE1_BATCH_SIZE="${PHASE1_BATCH_SIZE:-24}"
-PHASE1_GROUP_SIZE="${PHASE1_GROUP_SIZE:-8}"
-PHASE1_MAX_GROUP_SIZE="${PHASE1_MAX_GROUP_SIZE:-12}"
-PHASE1_LR="${PHASE1_LR:-1.0e-5}"
-PHASE1_KL_BETA="${PHASE1_KL_BETA:-0.040}"
-PHASE1_TEMPERATURE="${PHASE1_TEMPERATURE:-0.82}"
-PHASE1_TOP_P="${PHASE1_TOP_P:-0.93}"
-PHASE1_MAX_NEW_TOKENS="${PHASE1_MAX_NEW_TOKENS:-10}"
-PHASE1_EVAL_EVERY_STEPS="${PHASE1_EVAL_EVERY_STEPS:-20}"
-PHASE1_MAX_STEPS="${PHASE1_MAX_STEPS:-100}"
-PHASE2_BATCH_SIZE="${PHASE2_BATCH_SIZE:-24}"
-PHASE2_GROUP_SIZE="${PHASE2_GROUP_SIZE:-8}"
-PHASE2_MAX_GROUP_SIZE="${PHASE2_MAX_GROUP_SIZE:-12}"
-PHASE2_LR="${PHASE2_LR:-6.0e-6}"
-PHASE2_KL_BETA="${PHASE2_KL_BETA:-0.055}"
-PHASE2_TEMPERATURE="${PHASE2_TEMPERATURE:-0.80}"
-PHASE2_TOP_P="${PHASE2_TOP_P:-0.92}"
-PHASE2_MAX_NEW_TOKENS="${PHASE2_MAX_NEW_TOKENS:-10}"
-PHASE2_EVAL_EVERY_STEPS="${PHASE2_EVAL_EVERY_STEPS:-20}"
-PHASE2_MAX_STEPS="${PHASE2_MAX_STEPS:-60}"
-ACTOR_CHUNK_SIZE="${ACTOR_CHUNK_SIZE:-2}"
-PROJECTION_CHUNK_SIZE="${PROJECTION_CHUNK_SIZE:-64}"
-GROUP_TEMPERATURE_STRIDE="${GROUP_TEMPERATURE_STRIDE:-0.08}"
-GROUP_TOP_P_STRIDE="${GROUP_TOP_P_STRIDE:-0.02}"
-MIN_UNIQUE_FINAL_QUERIES="${MIN_UNIQUE_FINAL_QUERIES:-5}"
-MAX_REGEN_ROUNDS="${MAX_REGEN_ROUNDS:-3}"
-REWARD_GAP_THRESHOLD="${REWARD_GAP_THRESHOLD:-0.12}"
-GAP_SAMPLING_TEMPERATURE_DELTA="${GAP_SAMPLING_TEMPERATURE_DELTA:-0.18}"
-FORMAT_MAX_TOKENS="${FORMAT_MAX_TOKENS:-12}"
-FORMAT_MIN_ENGLISH_RATIO="${FORMAT_MIN_ENGLISH_RATIO:-0.85}"
-FORMAT_MAX_UNREADABLE_RATIO="${FORMAT_MAX_UNREADABLE_RATIO:-0.20}"
-RECALL_DROP_LAMBDA="${RECALL_DROP_LAMBDA:-0.8}"
-ANCHOR_BONUS_VALUE="${ANCHOR_BONUS_VALUE:-0.05}"
-
-RUN_ROOT="${ARTIFACT_ROOT}/artifacts_${EXP_NAME}"
+PYTHON_BIN="/root/miniconda3/bin/python"
+LOG_DIR="log"
+RUN_ROOT="train_and_eval_data_model_0421/artifacts_4b_top20_delta_curriculum"
 PHASE1_DIR="${RUN_ROOT}/phase1"
 PHASE2_DIR="${RUN_ROOT}/phase2"
 EVAL_DIR="${RUN_ROOT}/eval"
@@ -71,26 +31,25 @@ fi
 
 echo "[log] command output is also saved to: $RUN_LOG_PATH"
 echo "[env] python: $("$PYTHON_BIN" --version 2>&1)"
-echo "[env] model: $MODEL_NAME"
-echo "[env] search_threads: $SEARCH_THREADS"
+echo "[env] model: /root/autodl-tmp/hf_models/Qwen3-4B-Instruct-2507"
+echo "[env] search_threads: 16"
 echo "[env] curriculum_metadata: $CURRICULUM_METADATA_PATH"
 
 COMMON_TRAIN_ARGS=(
-  --model-name "$MODEL_NAME"
-  --num-epochs 1
+  --model-name "/root/autodl-tmp/hf_models/Qwen3-4B-Instruct-2507"
   --clip-range 0.2
   --ref-precision-mode 4bit
-  --search-threads "$SEARCH_THREADS"
-  --eval-query-batch-size "$EVAL_QUERY_BATCH_SIZE"
-  --group-temperature-stride "$GROUP_TEMPERATURE_STRIDE"
-  --group-top-p-stride "$GROUP_TOP_P_STRIDE"
-  --min-unique-final-queries "$MIN_UNIQUE_FINAL_QUERIES"
-  --max-regen-rounds "$MAX_REGEN_ROUNDS"
-  --reward-gap-threshold "$REWARD_GAP_THRESHOLD"
-  --gap-sampling-temperature-delta "$GAP_SAMPLING_TEMPERATURE_DELTA"
-  --actor-chunk-size "$ACTOR_CHUNK_SIZE"
-  --projection-chunk-size "$PROJECTION_CHUNK_SIZE"
-  --max-val-queries "$TRAIN_MAX_VAL_QUERIES"
+  --search-threads 16
+  --eval-query-batch-size 8
+  --group-temperature-stride 0.08
+  --group-top-p-stride 0.02
+  --min-unique-final-queries 5
+  --max-regen-rounds 3
+  --reward-gap-threshold 0.12
+  --gap-sampling-temperature-delta 0.18
+  --actor-chunk-size 2
+  --projection-chunk-size 64
+  --max-val-queries 400
   --reward-mode top20_delta
   --reward-mrr-k 20
   --reward-recall-k 20
@@ -99,32 +58,33 @@ COMMON_TRAIN_ARGS=(
   --reward-w-unsafe-copy 0.14
   --reward-w-overedit 0.08
   --overedit-tau 0.45
-  --recall-drop-lambda "$RECALL_DROP_LAMBDA"
-  --anchor-bonus-value "$ANCHOR_BONUS_VALUE"
-  --format-max-tokens "$FORMAT_MAX_TOKENS"
-  --format-min-english-ratio "$FORMAT_MIN_ENGLISH_RATIO"
-  --format-max-unreadable-ratio "$FORMAT_MAX_UNREADABLE_RATIO"
+  --recall-drop-lambda 0.8
+  --anchor-bonus-value 0.05
+  --format-max-tokens 12
+  --format-min-english-ratio 0.85
+  --format-max-unreadable-ratio 0.20
   --curriculum-enable
   --curriculum-metadata-path "$CURRICULUM_METADATA_PATH"
 )
 
-echo "[phase1] batch=${PHASE1_BATCH_SIZE} group=${PHASE1_GROUP_SIZE} max_group=${PHASE1_MAX_GROUP_SIZE} lr=${PHASE1_LR} kl=${PHASE1_KL_BETA} decode=(${PHASE1_MAX_NEW_TOKENS},${PHASE1_TEMPERATURE},${PHASE1_TOP_P}) reward=(0.40,0.28,0.22,0.10)"
+echo "[phase1] epochs=2 batch=24 group=8 max_group=12 lr=1.0e-5 kl=0.040 decode=(10,0.82,0.93) reward=(0.40,0.28,0.22,0.10)"
 "$PYTHON_BIN" train.py \
   "${COMMON_TRAIN_ARGS[@]}" \
   --curriculum-phase phase1 \
-  --batch-size "$PHASE1_BATCH_SIZE" \
-  --group-size "$PHASE1_GROUP_SIZE" \
-  --max-group-size "$PHASE1_MAX_GROUP_SIZE" \
-  --learning-rate "$PHASE1_LR" \
-  --kl-beta "$PHASE1_KL_BETA" \
-  --max-new-tokens "$PHASE1_MAX_NEW_TOKENS" \
-  --temperature "$PHASE1_TEMPERATURE" \
-  --top-p "$PHASE1_TOP_P" \
-  --eval-max-new-tokens "$PHASE1_MAX_NEW_TOKENS" \
-  --eval-temperature "$PHASE1_TEMPERATURE" \
-  --eval-top-p "$PHASE1_TOP_P" \
-  --eval-every-steps "$PHASE1_EVAL_EVERY_STEPS" \
-  --max-steps "$PHASE1_MAX_STEPS" \
+  --num-epochs 2 \
+  --batch-size 24 \
+  --group-size 8 \
+  --max-group-size 12 \
+  --learning-rate 1.0e-5 \
+  --kl-beta 0.040 \
+  --max-new-tokens 10 \
+  --temperature 0.82 \
+  --top-p 0.93 \
+  --eval-max-new-tokens 10 \
+  --eval-temperature 0.82 \
+  --eval-top-p 0.93 \
+  --eval-every-steps 20 \
+  --max-steps 100 \
   --reward-w-mrr 0.40 \
   --reward-w-recall 0.28 \
   --reward-w-recall-dense 0.22 \
@@ -139,24 +99,25 @@ if [[ ! -d "$PHASE1_BEST" ]]; then
   exit 1
 fi
 
-echo "[phase2] batch=${PHASE2_BATCH_SIZE} group=${PHASE2_GROUP_SIZE} max_group=${PHASE2_MAX_GROUP_SIZE} lr=${PHASE2_LR} kl=${PHASE2_KL_BETA} decode=(${PHASE2_MAX_NEW_TOKENS},${PHASE2_TEMPERATURE},${PHASE2_TOP_P}) reward=(0.52,0.22,0.16,0.10)"
+echo "[phase2] epochs=1 batch=24 group=8 max_group=12 lr=6.0e-6 kl=0.055 decode=(10,0.80,0.92) reward=(0.52,0.22,0.16,0.10)"
 "$PYTHON_BIN" train.py \
   "${COMMON_TRAIN_ARGS[@]}" \
   --curriculum-phase phase2 \
   --adapter-path "$PHASE1_BEST" \
-  --batch-size "$PHASE2_BATCH_SIZE" \
-  --group-size "$PHASE2_GROUP_SIZE" \
-  --max-group-size "$PHASE2_MAX_GROUP_SIZE" \
-  --learning-rate "$PHASE2_LR" \
-  --kl-beta "$PHASE2_KL_BETA" \
-  --max-new-tokens "$PHASE2_MAX_NEW_TOKENS" \
-  --temperature "$PHASE2_TEMPERATURE" \
-  --top-p "$PHASE2_TOP_P" \
-  --eval-max-new-tokens "$PHASE2_MAX_NEW_TOKENS" \
-  --eval-temperature "$PHASE2_TEMPERATURE" \
-  --eval-top-p "$PHASE2_TOP_P" \
-  --eval-every-steps "$PHASE2_EVAL_EVERY_STEPS" \
-  --max-steps "$PHASE2_MAX_STEPS" \
+  --num-epochs 1 \
+  --batch-size 24 \
+  --group-size 8 \
+  --max-group-size 12 \
+  --learning-rate 6.0e-6 \
+  --kl-beta 0.055 \
+  --max-new-tokens 10 \
+  --temperature 0.80 \
+  --top-p 0.92 \
+  --eval-max-new-tokens 10 \
+  --eval-temperature 0.80 \
+  --eval-top-p 0.92 \
+  --eval-every-steps 20 \
+  --max-steps 60 \
   --reward-w-mrr 0.52 \
   --reward-w-recall 0.22 \
   --reward-w-recall-dense 0.16 \
@@ -171,17 +132,17 @@ if [[ ! -d "$PHASE2_BEST" ]]; then
   exit 1
 fi
 
-echo "[eval] adapter=${PHASE2_BEST} query_batch_size=${EVAL_QUERY_BATCH_SIZE}"
+echo "[eval] adapter=${PHASE2_BEST} query_batch_size=8"
 "$PYTHON_BIN" eval_compare.py \
   --rl-adapter-path "$PHASE2_BEST" \
-  --model-name "$MODEL_NAME" \
+  --model-name "/root/autodl-tmp/hf_models/Qwen3-4B-Instruct-2507" \
   --strict-tokenizer-model-match \
   --max-eval-queries 1000000 \
-  --search-threads "$SEARCH_THREADS" \
-  --max-new-tokens "$PHASE2_MAX_NEW_TOKENS" \
-  --temperature "$PHASE2_TEMPERATURE" \
-  --top-p "$PHASE2_TOP_P" \
-  --query-batch-size "$EVAL_QUERY_BATCH_SIZE" \
+  --search-threads 16 \
+  --max-new-tokens 10 \
+  --temperature 0.80 \
+  --top-p 0.92 \
+  --query-batch-size 8 \
   --reward-mode top20_delta \
   --reward-mrr-k 20 \
   --reward-recall-k 20 \
@@ -194,11 +155,11 @@ echo "[eval] adapter=${PHASE2_BEST} query_batch_size=${EVAL_QUERY_BATCH_SIZE}"
   --reward-w-unsafe-copy 0.14 \
   --reward-w-overedit 0.08 \
   --overedit-tau 0.45 \
-  --recall-drop-lambda "$RECALL_DROP_LAMBDA" \
-  --anchor-bonus-value "$ANCHOR_BONUS_VALUE" \
-  --format-max-tokens "$FORMAT_MAX_TOKENS" \
-  --format-min-english-ratio "$FORMAT_MIN_ENGLISH_RATIO" \
-  --format-max-unreadable-ratio "$FORMAT_MAX_UNREADABLE_RATIO" \
+  --recall-drop-lambda 0.8 \
+  --anchor-bonus-value 0.05 \
+  --format-max-tokens 12 \
+  --format-min-english-ratio 0.85 \
+  --format-max-unreadable-ratio 0.20 \
   --sample-print 20 \
   --report-path "$EVAL_REPORT_PATH"
 
