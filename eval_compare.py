@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-"""三路对比评估脚本。
+"""Top20_delta full eval：Original / Zero-shot / RL adapter 三路对比。
 
-在同一验证集上比较：
-1. Original（原始 query）
-2. Zero-shot（基础模型重写）
-3. RL（基础模型 + LoRA adapter 重写）
+评估只做推理和检索打分，不训练：
+1. original：原 query 直接 BM25；
+2. zero-shot：基座模型按 prompt 改写；
+3. RL：加载训练出的 LoRA adapter 改写；
+4. 汇总 per-qid 明细和整体 delta，写入 JSON 报告。
 """
 
 import argparse
@@ -22,90 +23,51 @@ from data.loader import QueryExample, load_topics_qrels, maybe_limit, split_quer
 
 
 def parse_args() -> argparse.Namespace:
-    """解析评估命令行参数。"""
-
-    parser = argparse.ArgumentParser(description="Compare Original vs Zero-shot vs RL-rewritten query MRR@k.")
-    parser.add_argument("--rl-adapter-path", type=str, required=True, help="Path to trained LoRA adapter.")
-    parser.add_argument("--model-name", type=str, default=None, help="Override base model name for evaluation.")
-    parser.add_argument(
-        "--disable-4bit",
-        action="store_true",
-        help="Disable 4-bit quantization for evaluation model loading.",
-    )
-    parser.add_argument(
-        "--strict-tokenizer-model-match",
-        action="store_true",
-        help="Fail fast if tokenizer/model (or adapter base model) mismatch is detected.",
-    )
+    parser = argparse.ArgumentParser(description="Compare Original, zero-shot, and top20_delta RL rewrites.")
+    parser.add_argument("--rl-adapter-path", type=str, required=True)
+    parser.add_argument("--model-name", type=str, default=None)
+    parser.add_argument("--strict-tokenizer-model-match", action="store_true")
     parser.add_argument("--topic-name", type=str, default=None)
     parser.add_argument("--prebuilt-index", type=str, default=None)
     parser.add_argument("--train-ratio", type=float, default=None)
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--max-eval-queries", type=int, default=None)
-    parser.add_argument("--search-threads", type=int, default=None, help="Pyserini batch_search thread count.")
+    parser.add_argument("--search-threads", type=int, default=None)
     parser.add_argument("--reward-mrr-k", type=int, default=None)
     parser.add_argument("--reward-recall-k", type=int, default=None)
     parser.add_argument("--reward-recall-dense-k", type=int, default=None)
-    parser.add_argument("--reward-mode", type=str, choices=("legacy", "top20_delta"), default=None)
     parser.add_argument("--reward-w-mrr", type=float, default=None)
     parser.add_argument("--reward-w-recall", type=float, default=None)
     parser.add_argument("--reward-w-recall-dense", type=float, default=None)
     parser.add_argument("--reward-w-rank-bonus", type=float, default=None)
-    parser.add_argument("--reward-w-term-preserve", type=float, default=None)
-    parser.add_argument("--reward-w-length-score", type=float, default=None)
-    parser.add_argument("--reward-w-clean-format", type=float, default=None)
     parser.add_argument("--reward-w-bad-format", type=float, default=None)
     parser.add_argument("--reward-w-unsafe-copy", type=float, default=None)
     parser.add_argument("--reward-w-overedit", type=float, default=None)
     parser.add_argument("--overedit-tau", type=float, default=None)
     parser.add_argument("--recall-drop-lambda", type=float, default=None)
     parser.add_argument("--anchor-bonus-value", type=float, default=None)
-    parser.add_argument("--length-score-min-terms", type=int, default=None)
-    parser.add_argument("--length-score-ideal-min-terms", type=int, default=None)
-    parser.add_argument("--length-score-ideal-max-terms", type=int, default=None)
-    parser.add_argument("--length-score-max-terms", type=int, default=None)
     parser.add_argument("--format-max-tokens", type=int, default=None)
     parser.add_argument("--format-min-english-ratio", type=float, default=None)
     parser.add_argument("--format-max-unreadable-ratio", type=float, default=None)
     parser.add_argument("--bad-format-cap", type=float, default=None)
-    parser.add_argument("--sample-print", type=int, default=5)
-    parser.add_argument("--progress-every", type=int, default=20, help="Print progress every N queries per stage.")
-    parser.add_argument(
-        "--query-batch-size",
-        type=int,
-        default=5,
-        help="Batch size for model rewrite generation (increase to raise GPU utilization).",
-    )
+    parser.add_argument("--sample-print", type=int, default=20)
+    parser.add_argument("--progress-every", type=int, default=20)
+    parser.add_argument("--query-batch-size", type=int, default=8)
     parser.add_argument(
         "--report-path",
         type=str,
-        default="train_and_eval_data_model/artifacts_default_eval/eval_compare_report.json",
+        default="train_and_eval_data_model_0421/artifacts_4b_top20_delta_curriculum/eval/eval_compare_report_full.json",
     )
     parser.add_argument("--max-new-tokens", type=int, default=None)
     parser.add_argument("--temperature", type=float, default=None)
     parser.add_argument("--top-p", type=float, default=None)
-    parser.add_argument(
-        "--low-mem-mode",
-        action="store_true",
-        help="Use low-memory evaluation preset (0.5B model + slim index + smaller eval set).",
-    )
     return parser.parse_args()
 
 
 def apply_overrides(config: AppConfig, args: argparse.Namespace) -> AppConfig:
-    """应用评估配置覆盖参数。"""
-
-    if args.low_mem_mode:
-        config.model.model_name = "Qwen/Qwen2.5-0.5B-Instruct"
-        config.data.prebuilt_index = "msmarco-v1-passage-slim"
-        config.data.max_val_queries = 100
-        config.prompt.max_new_tokens = min(config.prompt.max_new_tokens, 16)
-        config.reward.recall_k = 50
-
+    # eval 入口保留必要覆盖项，但固定 top20_delta 和 4bit 主线。
     if args.model_name is not None:
         config.model.model_name = args.model_name
-    if args.disable_4bit:
-        config.model.load_in_4bit = False
     if args.topic_name is not None:
         config.data.topic_name = args.topic_name
     if args.prebuilt_index is not None:
@@ -124,8 +86,6 @@ def apply_overrides(config: AppConfig, args: argparse.Namespace) -> AppConfig:
         config.reward.recall_k = max(1, args.reward_recall_k)
     if args.reward_recall_dense_k is not None:
         config.reward.recall_dense_k = max(1, args.reward_recall_dense_k)
-    if args.reward_mode is not None:
-        config.reward.reward_mode = args.reward_mode
     if args.reward_w_mrr is not None:
         config.reward.w_mrr = args.reward_w_mrr
     if args.reward_w_recall is not None:
@@ -134,12 +94,6 @@ def apply_overrides(config: AppConfig, args: argparse.Namespace) -> AppConfig:
         config.reward.w_recall_dense = args.reward_w_recall_dense
     if args.reward_w_rank_bonus is not None:
         config.reward.w_rank_bonus = args.reward_w_rank_bonus
-    if args.reward_w_term_preserve is not None:
-        config.reward.w_term_preserve = args.reward_w_term_preserve
-    if args.reward_w_length_score is not None:
-        config.reward.w_length_score = args.reward_w_length_score
-    if args.reward_w_clean_format is not None:
-        config.reward.w_clean_format = args.reward_w_clean_format
     if args.reward_w_bad_format is not None:
         config.reward.w_bad_format = args.reward_w_bad_format
     if args.reward_w_unsafe_copy is not None:
@@ -152,14 +106,6 @@ def apply_overrides(config: AppConfig, args: argparse.Namespace) -> AppConfig:
         config.reward.recall_drop_lambda = max(0.0, args.recall_drop_lambda)
     if args.anchor_bonus_value is not None:
         config.reward.anchor_bonus_value = max(0.0, args.anchor_bonus_value)
-    if args.length_score_min_terms is not None:
-        config.reward.length_score_min_terms = max(0, args.length_score_min_terms)
-    if args.length_score_ideal_min_terms is not None:
-        config.reward.length_score_ideal_min_terms = max(0, args.length_score_ideal_min_terms)
-    if args.length_score_ideal_max_terms is not None:
-        config.reward.length_score_ideal_max_terms = max(0, args.length_score_ideal_max_terms)
-    if args.length_score_max_terms is not None:
-        config.reward.length_score_max_terms = max(0, args.length_score_max_terms)
     if args.format_max_tokens is not None:
         config.reward.format_max_tokens = max(1, args.format_max_tokens)
     if args.format_min_english_ratio is not None:
@@ -174,18 +120,17 @@ def apply_overrides(config: AppConfig, args: argparse.Namespace) -> AppConfig:
         config.prompt.temperature = args.temperature
     if args.top_p is not None:
         config.prompt.top_p = args.top_p
+
+    config.reward.reward_mode = "top20_delta"
+    config.model.ref_precision_mode = "4bit"
     return config
 
 
 def validate_adapter_path(adapter_path: str) -> dict:
-    """校验 adapter 路径并读取 adapter_config.json。"""
-
+    # RL 评估必须显式给 adapter；这里提前验证目录和 adapter_config。
     adapter_dir = Path(adapter_path)
     if not adapter_dir.exists():
-        raise FileNotFoundError(
-            f"Adapter path does not exist: {adapter_dir}. "
-            "Use the correct folder like train_and_eval_data_model/artifacts_lowmem_train/checkpoints/best."
-        )
+        raise FileNotFoundError(f"Adapter path does not exist: {adapter_dir}")
     if not adapter_dir.is_dir():
         raise NotADirectoryError(f"Adapter path is not a directory: {adapter_dir}")
 
@@ -197,6 +142,7 @@ def validate_adapter_path(adapter_path: str) -> dict:
 
 
 def reward_breakdown_to_report_dict(score: RewardBreakdown) -> dict[str, Any]:
+    # 报告里保留足够的 reward 拆解，方便定位是 MRR、recall 还是 penalty 在变化。
     return {
         "total": getattr(score, "total", 0.0),
         "mrr": getattr(score, "mrr", 0.0),
@@ -229,6 +175,7 @@ def build_per_qid_rows(
     zero_by_qid: dict[str, tuple[str, RewardBreakdown]],
     rl_by_qid: dict[str, tuple[str, RewardBreakdown]],
 ) -> list[dict[str, Any]]:
+    # 每个 qid 保留三路 query 和三路 reward，方便后续人工抽样检查。
     rows: list[dict[str, Any]] = []
     for query in queries:
         qid = query.qid
@@ -259,8 +206,7 @@ def evaluate_original(
     *,
     progress_every: int,
 ) -> tuple[dict[str, float], dict[str, RewardBreakdown]]:
-    """评估原始 query 基线。"""
-
+    # 原 query baseline：不经过模型，直接检索打分。
     per_qid: dict[str, RewardBreakdown] = {}
     total = len(queries)
     step = max(1, progress_every)
@@ -271,17 +217,14 @@ def evaluate_original(
 
     values = list(per_qid.values())
     metrics = summarize_reward_breakdowns(values, mrr_key="mrr_mean", recall_key="recall_mean", recall_aux_key="recall_dense_mean")
-    mrr_value = metrics["mrr_mean"]
-    recall_value = metrics["recall_mean"]
-    recall_dense_value = metrics["recall_dense_mean"]
     return (
         {
-            "mrr": mrr_value,
-            f"mrr@{rewarder.mrr_k}": mrr_value,
-            "recall": recall_value,
-            f"recall@{rewarder.recall_k}": recall_value,
-            "recall_dense": recall_dense_value,
-            f"recall@{rewarder.recall_dense_k}": recall_dense_value,
+            "mrr": metrics["mrr_mean"],
+            f"mrr@{rewarder.mrr_k}": metrics["mrr_mean"],
+            "recall": metrics["recall_mean"],
+            f"recall@{rewarder.recall_k}": metrics["recall_mean"],
+            "recall_dense": metrics["recall_dense_mean"],
+            f"recall@{rewarder.recall_dense_k}": metrics["recall_dense_mean"],
             **metrics,
         },
         per_qid,
@@ -303,8 +246,7 @@ def evaluate_with_model(
     stage_name: str,
     progress_every: int,
 ) -> tuple[dict[str, float], dict[str, tuple[str, RewardBreakdown]]]:
-    """评估模型重写结果。"""
-
+    # zero-shot/RL 共用这条路径：批量生成 -> 截断/guardrail -> BM25 reward。
     def _postprocess_generated_query(text: str) -> str:
         cleaned = (text or "").strip()
         if stop_on:
@@ -343,6 +285,7 @@ def evaluate_with_model(
                 )
                 for query in batch
             ]
+
         for query, raw_rewritten in zip(batch, batch_rewrites):
             rewritten = _postprocess_generated_query(raw_rewritten)
             final_query = rewritten
@@ -354,27 +297,21 @@ def evaluate_with_model(
                     reward_cfg=rewarder.cfg,
                 )
                 final_query = stabilized.final_query
-            per_qid[query.qid] = (
-                final_query,
-                rewarder.score(query.qid, final_query, source_query=query.text),
-            )
+            per_qid[query.qid] = (final_query, rewarder.score(query.qid, final_query, source_query=query.text))
             processed += 1
         if processed % step == 0 or processed == total:
             print(f"[progress] stage={stage_name} {processed}/{total}")
 
     values = [item[1] for item in per_qid.values()]
     metrics = summarize_reward_breakdowns(values, mrr_key="mrr_mean", recall_key="recall_mean", recall_aux_key="recall_dense_mean")
-    mrr_value = metrics["mrr_mean"]
-    recall_value = metrics["recall_mean"]
-    recall_dense_value = metrics["recall_dense_mean"]
     return (
         {
-            "mrr": mrr_value,
-            f"mrr@{rewarder.mrr_k}": mrr_value,
-            "recall": recall_value,
-            f"recall@{rewarder.recall_k}": recall_value,
-            "recall_dense": recall_dense_value,
-            f"recall@{rewarder.recall_dense_k}": recall_dense_value,
+            "mrr": metrics["mrr_mean"],
+            f"mrr@{rewarder.mrr_k}": metrics["mrr_mean"],
+            "recall": metrics["recall_mean"],
+            f"recall@{rewarder.recall_k}": metrics["recall_mean"],
+            "recall_dense": metrics["recall_dense_mean"],
+            f"recall@{rewarder.recall_dense_k}": metrics["recall_dense_mean"],
             **metrics,
         },
         per_qid,
@@ -382,26 +319,22 @@ def evaluate_with_model(
 
 
 def main() -> int:
-    """执行完整三路评估并输出报告。"""
-
     args = parse_args()
+    # 1) adapter_config 里通常记录了基座模型路径；未显式传 model-name 时复用它。
     adapter_cfg = validate_adapter_path(args.rl_adapter_path)
     adapter_base_model = str(adapter_cfg.get("base_model_name_or_path", "")).strip() or None
 
     config = apply_reward_mode_prompt_defaults(apply_overrides(get_default_config(), args))
     if args.model_name is None and adapter_base_model:
-        # 默认优先使用 adapter 对应的 base model，避免错配。
         config.model.model_name = adapter_base_model
 
-    if args.low_mem_mode:
-        print("[mode] low-mem eval preset enabled.")
     print(
         "[config] "
         f"model={config.model.model_name}, "
         f"index={config.data.prebuilt_index}, "
-        f"reward_mode={config.reward.reward_mode}, "
         f"mrr_k={config.reward.mrr_k}, "
         f"recall_k={config.reward.recall_k}, "
+        f"recall_dense_k={config.reward.recall_dense_k}, "
         f"query_batch_size={max(1, args.query_batch_size)}, "
         f"prompt_id={config.prompt.prompt_id}, "
         f"eval_max_new_tokens={config.prompt.max_new_tokens}, "
@@ -411,17 +344,15 @@ def main() -> int:
         f"adapter_base={adapter_base_model or '-'}"
     )
 
+    # 2) 数据只取 validation split，和训练入口保持同一切分逻辑。
     queries, qrels = load_topics_qrels(config.data.topic_name)
     _, val_queries = split_queries(queries, train_ratio=config.data.train_ratio, seed=config.data.seed)
     val_queries = maybe_limit(val_queries, config.data.max_val_queries)
     print(f"[data] eval_queries={len(val_queries)}")
 
-    rewarder = Rewarder(
-        qrels=qrels,
-        prebuilt_index=config.data.prebuilt_index,
-        reward_cfg=config.reward,
-    )
+    rewarder = Rewarder(qrels=qrels, prebuilt_index=config.data.prebuilt_index, reward_cfg=config.reward)
 
+    # 3) 三路评估：original -> zero-shot -> RL adapter。
     print("[stage] evaluating original queries...")
     original_metrics, original_by_qid = evaluate_original(
         val_queries,
@@ -454,9 +385,9 @@ def main() -> int:
         progress_every=args.progress_every,
     )
 
-    # 显式释放 zero-shot 模型，减少后续加载 RL 模型时的显存峰值。
     del zero_shot_model
     if torch.cuda.is_available():
+        # 先释放 zero-shot 模型显存，再加载 RL adapter。
         torch.cuda.empty_cache()
 
     print("[stage] loading RL model...")
@@ -485,11 +416,12 @@ def main() -> int:
         progress_every=args.progress_every,
     )
 
+    # 4) 汇总核心 delta，并写出完整 per-qid 报告。
     mrr_label = f"mrr@{config.reward.mrr_k}"
+    recall_label = f"recall@{config.reward.recall_k}"
     delta_zero = zero_metrics["mrr"] - original_metrics["mrr"]
     delta_rl = rl_metrics["mrr"] - original_metrics["mrr"]
     delta_rl_vs_zero = rl_metrics["mrr"] - zero_metrics["mrr"]
-    recall_label = f"recall@{config.reward.recall_k}"
 
     print(f"\n=== {mrr_label} Comparison ===")
     print(f"Original : {original_metrics['mrr']:.4f}")
@@ -501,15 +433,9 @@ def main() -> int:
     print(f"Zero-shot: {zero_metrics['recall']:.4f}")
     print(f"RL       : {rl_metrics['recall']:.4f}")
 
-    per_qid_rows = build_per_qid_rows(
-        val_queries,
-        original_by_qid,
-        zero_by_qid,
-        rl_by_qid,
-    )
-
-    print("\n=== Sample Cases ===")
+    per_qid_rows = build_per_qid_rows(val_queries, original_by_qid, zero_by_qid, rl_by_qid)
     sample_cases = select_sample_cases(per_qid_rows, args.sample_print)
+    print("\n=== Sample Cases ===")
     for row in sample_cases:
         original_score = row["original"]
         zero_score = row["zero_shot"]

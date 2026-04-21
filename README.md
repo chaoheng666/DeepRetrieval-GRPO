@@ -492,3 +492,19 @@ python train.py `
 次要效果	Recall@50 不下降（或下降 ≤ 0.01）；Zero-shot 基线必须显著低于最佳系统
 工程可用性	格式通过率 ≥ 98%；平均输出词项数 ≤ 12；平均延迟与 token 成本不超过预算
 鲁棒性	至少 3 个 seed 下结论一致；不同 query 类型切片上无明显劣化
+
+
+# 默认：p1 从头训，p2 从 phase1 best 训
+bash run_train_then_full_eval_4b_top20_delta_curriculum.sh
+
+# p2 从 phase1 latest 训
+bash run_train_then_full_eval_4b_top20_delta_curriculum.sh --phase2-start-from latest
+
+# p1 从指定 checkpoint 继续训
+bash run_train_then_full_eval_4b_top20_delta_curriculum.sh \
+  --phase1-checkpoint-path /path/to/checkpoints/best
+
+# 两个一起用
+bash run_train_then_full_eval_4b_top20_delta_curriculum.sh \
+  --phase1-checkpoint-path /path/to/checkpoints/latest \
+  --phase2-start-from latest

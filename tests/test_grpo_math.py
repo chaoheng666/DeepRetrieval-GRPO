@@ -169,7 +169,7 @@ class RewardMathTests(unittest.TestCase):
 
     def test_overedit_penalty_uses_keyword_threshold(self):
         cfg = RewardConfig()
-        self.assertAlmostEqual(compute_overedit_penalty(0.10, cfg), 0.30)
+        self.assertAlmostEqual(compute_overedit_penalty(0.10, cfg), 0.35)
         self.assertEqual(compute_overedit_penalty(0.45, cfg), 0.0)
 
     def test_recall_drop_penalty_only_applies_to_recall20_drop(self):
@@ -185,28 +185,29 @@ class RewardMathTests(unittest.TestCase):
         self.assertEqual(compute_anchor_bonus(0.2, 0.3, 0.2, 0.4, cfg), 0.0)
         self.assertEqual(compute_anchor_bonus(0.1, 0.4, 0.2, 0.4, cfg), 0.0)
 
-    def test_total_reward_formula(self):
+    def test_default_reward_formula_is_top20_delta(self):
         cfg = RewardConfig()
         total = compose_reward(
             mrr=0.5,
             recall=0.4,
             recall_dense=0.7,
-            term_preserve=0.8,
-            length_score=1.0,
-            clean_format=1.0,
+            rank_bonus=0.3,
+            orig_mrr=0.2,
+            orig_recall=0.3,
             bad_format_penalty=0.25,
             unsafe_copy_penalty=1.0,
+            overedit_penalty=0.1,
             cfg=cfg,
         )
         expected = (
-            0.40 * 0.5
-            + 0.20 * 0.4
-            + 0.15 * 0.7
-            + 0.10 * 0.8
-            + 0.08 * 1.0
-            + 0.07 * 1.0
-            - 0.15 * 0.25
-            - 0.08 * 1.0
+            0.52 * 0.3
+            + 0.22 * 0.4
+            + 0.16 * 0.7
+            + 0.10 * 0.3
+            + 0.05
+            - 0.18 * 0.25
+            - 0.14 * 1.0
+            - 0.08 * 0.1
         )
         self.assertAlmostEqual(total, expected)
 

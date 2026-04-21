@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-"""模型包装层：统一管理 Actor/Ref 策略与 token 级 logprob 接口。
+"""模型封装层：负责 actor/ref 加载、生成、logprob 重算。
 
-核心功能：
-1. 按配置加载 tokenizer、actor、ref（支持 4bit/全精度/自动回退）
-2. 统一生成接口（可选返回 rollout 阶段 old logprob）
-3. 对固定 response 重新计算 actor/ref 的 token 级 logprob
+训练主线只需要三类能力：
+1. 用 actor 生成 rewrite，并记录采样时的 old logprob；
+2. 用 frozen ref 计算 KL 参考 logprob；
+3. 用当前 actor 重算 new logprob，供 PPO/GRPO loss 使用。
 """
 
 from contextlib import nullcontext
@@ -24,16 +24,20 @@ PolicyName = Literal["actor", "ref"]
 
 @dataclass(frozen=True, slots=True)
 class GeneratedSample:
-    """单条采样结果（文本 + token + old logprob）。"""
+    """一次生成结果，包含文本、token 和采样时 logprob。"""
 
+    # 清洗截断后的模型输出。
     response_text: str
+    # 与 response_text 对齐的 token ids；后续重算 logprob 只看这些 token。
     response_token_ids: list[int]
+    # 采样时 actor 对 response_token_ids 的 token-level logprob。
     logprob_old: torch.Tensor
+    # 原始解码文本，保留给 trace 诊断模型是否输出了多余内容。
     raw_response_text: str = ""
 
 
 def _str_to_dtype(dtype_name: str) -> torch.dtype:
-    """将字符串精度映射到 torch dtype。"""
+    """Internal helper."""
 
     mapping = {
         "float16": torch.float16,
@@ -88,15 +92,12 @@ class ModelWrapper:
         adapter_path: str | None = None,
         strict_tokenizer_model_match: bool = False,
     ) -> None:
-        """初始化模型组件。
-
-        - train_mode=True 时 actor 以训练模式创建
-        - load_ref_model=True 时额外加载冻结 ref 模型用于 KL 项
-        """
+        """初始化 actor，并按需加载 frozen reference model。"""
 
         from peft import LoraConfig, PeftModel, get_peft_model, prepare_model_for_kbit_training
         from transformers import AutoModelForCausalLM, AutoTokenizer
 
+        # 1) 解析模型路径：支持普通路径，也支持 Hugging Face cache root。
         self.model_cfg = model_cfg
         self.prompt_cfg = prompt_cfg
         self.train_mode = train_mode
@@ -119,20 +120,19 @@ class ModelWrapper:
             print("[warn] CUDA is unavailable; disabling 4-bit quantization and loading full precision on CPU.")
             model_cfg.load_in_4bit = False
 
-        # 4bit + bf16 在部分运行环境不稳定，这里做安全回退。
         if model_cfg.load_in_4bit and model_cfg.bnb_4bit_compute_dtype.lower() == "bfloat16":
             bf16_supported = bool(torch.cuda.is_available() and torch.cuda.is_bf16_supported())
             if not bf16_supported:
                 print("[warn] bfloat16 4-bit compute dtype is unsupported on this runtime; fallback to float16.")
                 model_cfg.bnb_4bit_compute_dtype = "float16"
 
+        # 2) tokenizer 必须和基座模型对齐；pad_token 缺失时用 eos 兜底。
         self.tokenizer = AutoTokenizer.from_pretrained(
             self.model_source,
             trust_remote_code=model_cfg.trust_remote_code,
             use_fast=False,
             local_files_only=self.local_model_only,
         )
-        # 保证 decoder-only 模型有 pad_token，避免 batch/generate 报错。
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
@@ -142,9 +142,10 @@ class ModelWrapper:
             if model_cfg.load_in_4bit
             else self._preferred_full_precision_dtype()
         )
-        # CPU 环境下统一用 float32，避免无意义的半精度设置。
         if not torch.cuda.is_available():
             actor_dtype = torch.float32
+
+        # 3) 加载 actor 基座。训练主线默认 4bit + LoRA。
         base_actor = AutoModelForCausalLM.from_pretrained(
             self.model_source,
             trust_remote_code=model_cfg.trust_remote_code,
@@ -163,14 +164,12 @@ class ModelWrapper:
 
         if enable_lora:
             if train_mode:
-                # k-bit 训练前的标准准备流程（PEFT 推荐）。
                 base_actor = prepare_model_for_kbit_training(base_actor)
 
+            # phase2/eval 会从已有 adapter 热启动；phase1 则新建 LoRA。
             if adapter_path:
-                # 从已有 adapter 恢复（续训或评估）。
                 self.actor_model = PeftModel.from_pretrained(base_actor, adapter_path, is_trainable=train_mode)
             else:
-                # 新建 LoRA adapter。
                 lora_cfg = LoraConfig(
                     r=model_cfg.lora_r,
                     lora_alpha=model_cfg.lora_alpha,
@@ -189,7 +188,7 @@ class ModelWrapper:
 
         self.ref_model = None
         if load_ref_model:
-            # ref 模型始终冻结，只作为 KL anchor。
+            # ref 只参与 KL，不训练；保持 eval 模式并冻结所有参数。
             self.ref_model = self._load_ref_model(AutoModelForCausalLM)
             self.ref_model.eval()
             if hasattr(self.ref_model, "config"):
@@ -198,7 +197,7 @@ class ModelWrapper:
                 param.requires_grad = False
 
     def _build_4bit_config(self, *, enabled: bool):
-        """按需构建 bitsandbytes 4bit 配置。"""
+        """Internal helper."""
 
         if not enabled:
             return None
@@ -213,14 +212,14 @@ class ModelWrapper:
 
     @staticmethod
     def _is_cuda_oom_error(exc: BaseException) -> bool:
-        """判断异常是否属于 CUDA OOM。"""
+        """Internal helper."""
 
         text = str(exc).lower()
         return "out of memory" in text and ("cuda" in text or "cublas" in text)
 
     @staticmethod
     def _preferred_full_precision_dtype() -> torch.dtype:
-        """全精度优先策略：CUDA 上优先 bf16，其次 fp16。"""
+        """Internal helper."""
 
         if torch.cuda.is_available():
             return torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
@@ -236,7 +235,7 @@ class ModelWrapper:
 
     @staticmethod
     def _to_device_from_map_value(value: Any) -> torch.device | None:
-        """将 hf_device_map 的值转换为 torch.device。"""
+        """Internal helper."""
 
         if isinstance(value, torch.device):
             return value
@@ -252,7 +251,7 @@ class ModelWrapper:
 
     @classmethod
     def _extract_hf_device_map(cls, model: torch.nn.Module) -> dict[str, Any] | None:
-        """从模型或其嵌套基类中提取 hf_device_map。"""
+        """Internal helper."""
 
         direct = getattr(model, "hf_device_map", None)
         if isinstance(direct, dict):
@@ -273,7 +272,7 @@ class ModelWrapper:
 
     @classmethod
     def _summarize_device_map(cls, model: torch.nn.Module) -> dict[str, int]:
-        """统计模型分片落在哪些设备上（用于日志）。"""
+        """Internal helper."""
 
         device_map = cls._extract_hf_device_map(model)
         if not device_map:
@@ -290,59 +289,22 @@ class ModelWrapper:
         return summary
 
     def _load_ref_model(self, auto_model_cls):
-        """加载 ref 模型，支持 auto/full/4bit 三种精度模式。
+        """加载 top20 curriculum 主线的 frozen KL reference model。"""
 
-        auto 策略：
-        1) 先尝试全精度（bf16/fp16）
-        2) 若 CUDA OOM，则自动回退到 4bit（保持 GPU 路径）
-        """
-
-        mode = str(getattr(self.model_cfg, "ref_precision_mode", "auto")).strip().lower()
-        if mode not in {"auto", "full", "4bit"}:
-            raise ValueError(f"Unsupported ref_precision_mode: {self.model_cfg.ref_precision_mode}")
-
-        full_dtype = self._preferred_full_precision_dtype()
-        quant_dtype = _str_to_dtype(self.model_cfg.bnb_4bit_compute_dtype)
-        load_kwargs = {
-            "trust_remote_code": self.model_cfg.trust_remote_code,
-            "device_map": self.ref_device_map,
-            "local_files_only": self.local_model_only,
-        }
-
-        def _load(*, use_4bit: bool, dtype: torch.dtype):
-            # use_4bit=True 时传入 4bit 量化配置，否则走全精度加载。
-            quant_cfg = self._build_4bit_config(enabled=use_4bit)
-            return auto_model_cls.from_pretrained(
-                self.model_source,
-                quantization_config=quant_cfg,
-                torch_dtype=dtype,
-                **load_kwargs,
-            )
-
-        if mode == "4bit":
-            ref_model = _load(use_4bit=True, dtype=quant_dtype)
-            self.ref_precision_used = "4bit"
-            self.ref_dtype_used = quant_dtype
-        elif mode == "full":
-            ref_model = _load(use_4bit=False, dtype=full_dtype)
-            self.ref_precision_used = "full"
-            self.ref_dtype_used = full_dtype
-        else:
-            try:
-                ref_model = _load(use_4bit=False, dtype=full_dtype)
-                self.ref_precision_used = "full"
-                self.ref_dtype_used = full_dtype
-            except RuntimeError as exc:
-                if torch.cuda.is_available() and self._is_cuda_oom_error(exc):
-                    # 仅在 CUDA OOM 时回退，其他错误继续抛出便于定位。
-                    print("[warn] ref full-precision load hit CUDA OOM; fallback to 4-bit on GPU path.")
-                    gc.collect()
-                    torch.cuda.empty_cache()
-                    ref_model = _load(use_4bit=True, dtype=quant_dtype)
-                    self.ref_precision_used = "4bit"
-                    self.ref_dtype_used = quant_dtype
-                else:
-                    raise
+        # ref 默认跟 actor 一样走 4bit，避免再引入 auto/full 分支。
+        use_4bit = bool(self.model_cfg.load_in_4bit)
+        dtype = _str_to_dtype(self.model_cfg.bnb_4bit_compute_dtype) if use_4bit else self._preferred_full_precision_dtype()
+        quant_cfg = self._build_4bit_config(enabled=use_4bit)
+        ref_model = auto_model_cls.from_pretrained(
+            self.model_source,
+            trust_remote_code=self.model_cfg.trust_remote_code,
+            quantization_config=quant_cfg,
+            device_map=self.ref_device_map,
+            torch_dtype=dtype,
+            local_files_only=self.local_model_only,
+        )
+        self.ref_precision_used = "4bit" if use_4bit else "full"
+        self.ref_dtype_used = dtype
 
         print(
             "[ref] loaded: "
@@ -354,7 +316,7 @@ class ModelWrapper:
 
     @classmethod
     def _infer_model_device(cls, model: torch.nn.Module) -> torch.device:
-        """推断执行设备：优先依据 hf_device_map，其次参数设备。"""
+        """Internal helper."""
 
         device_map = cls._extract_hf_device_map(model)
         if isinstance(device_map, dict) and device_map:
@@ -423,9 +385,8 @@ class ModelWrapper:
             backbone = getattr(candidate, "model", None)
             lm_head = getattr(candidate, "lm_head", None)
             if isinstance(backbone, torch.nn.Module) and isinstance(lm_head, torch.nn.Module):
-                # Some PEFT wrappers expose a full *ForCausalLM module as `.model`.
-                # Walk through nested causal-LM wrappers until we reach the true
-                # decoder backbone that returns `last_hidden_state`.
+                # PEFT 包装层可能把完整 *ForCausalLM 放在 `.model` 里；
+                # 这里一路向内找到真正返回 hidden_states 的 decoder backbone。
                 while True:
                     nested_backbone = getattr(backbone, "model", None)
                     nested_lm_head = getattr(backbone, "lm_head", None)
@@ -449,7 +410,7 @@ class ModelWrapper:
         target_ids: torch.Tensor,
         projection_chunk_size: int = 32,
     ) -> torch.Tensor:
-        """Project only the target positions through lm_head to keep VRAM bounded."""
+        """只投影 response token 位置，避免全 vocab projection 撑爆显存。"""
 
         if selected_hidden_states.numel() == 0:
             return torch.empty(0, dtype=torch.float32, device=selected_hidden_states.device)
@@ -468,13 +429,13 @@ class ModelWrapper:
 
     @staticmethod
     def _normalize_model_id(name: str) -> str:
-        """标准化模型 ID（路径分隔符与大小写）。"""
+        """Internal helper."""
 
         return name.replace("\\", "/").rstrip("/").lower()
 
     @classmethod
     def _same_model_id(cls, lhs: str, rhs: str) -> bool:
-        """宽松判断两个模型标识是否可视为同一模型。"""
+        """Internal helper."""
 
         left = cls._normalize_model_id(lhs)
         right = cls._normalize_model_id(rhs)
@@ -495,7 +456,7 @@ class ModelWrapper:
         adapter_path: str | None,
         strict: bool,
     ) -> None:
-        """校验 tokenizer/model 兼容性与 adapter 基模型匹配。"""
+        """Internal helper."""
 
         tok_name = str(getattr(tokenizer, "name_or_path", ""))
         cfg_name = str(getattr(getattr(model, "config", None), "_name_or_path", "")) or model_name
@@ -553,7 +514,7 @@ class ModelWrapper:
         )
 
     def build_prompt(self, query: str) -> str:
-        """构建重写 prompt，先压缩输入空白字符。"""
+        """把原始 query 填进 top20 prompt 模板。"""
 
         query_clean = " ".join(query.strip().split())
         return f"{self.prompt_cfg.system_prompt}\n\n{self.prompt_cfg.template.format(query=query_clean)}"
@@ -588,6 +549,7 @@ class ModelWrapper:
         return self._dedupe_keep_order(stop_strings)
 
     def _truncate_generated_text(self, text: str) -> str:
+        # 模型可能继续生成下一段示例或标签；这里按 stop strings 截断到第一行 query。
         raw = text or ""
         if not raw:
             return ""
@@ -681,6 +643,8 @@ class ModelWrapper:
         sequence_index: int,
         with_logprob: bool,
     ) -> GeneratedSample:
+        # generate 返回的是完整序列；这里切掉 prompt，只保留 response，
+        # 并把 token logprob 对齐到截断后的 response_text。
         raw_response_text = self.tokenizer.decode(response_ids, skip_special_tokens=True).strip()
         response_text = self._truncate_generated_text(raw_response_text)
         prefix_len = self._aligned_prefix_length(response_ids, response_text)
@@ -719,7 +683,7 @@ class ModelWrapper:
         )
 
     def _policy_model(self, policy: PolicyName) -> torch.nn.Module:
-        """按策略名选择 actor 或 ref 模型。"""
+        """Internal helper."""
 
         if policy == "actor":
             return self.actor_model
@@ -737,7 +701,7 @@ class ModelWrapper:
         top_p: float,
         with_logprob: bool,
     ) -> GeneratedSample:
-        """执行生成，并可选返回 rollout 阶段 old logprob。"""
+        """执行一次生成；with_logprob=True 时同时收集 old policy logprob。"""
 
         inputs = self.tokenizer(prompt, return_tensors="pt")
         device = self._infer_model_device(model)
@@ -770,7 +734,7 @@ class ModelWrapper:
         temperature: float,
         top_p: float,
     ) -> GeneratedSample:
-        """从 actor 采样，返回 old-policy token logprob。"""
+        """Internal helper."""
 
         return self._generate(
             self.actor_model,
@@ -790,7 +754,7 @@ class ModelWrapper:
         temperature: float,
         top_p: float,
     ) -> list[GeneratedSample]:
-        """从 actor 一次采样返回一组样本，减少 group 内串行生成开销。"""
+        """Internal helper."""
 
         requested = max(1, int(num_return_sequences))
         if requested == 1:
@@ -803,7 +767,6 @@ class ModelWrapper:
                 )
             ]
 
-        # 贪心时多样本意义不大且常需 beam 配置；保持与旧行为一致，逐条生成。
         if temperature <= 0.0:
             return [
                 self.generate_with_logprob(
@@ -870,7 +833,7 @@ class ModelWrapper:
         temperature: float,
         top_p: float,
     ) -> str:
-        """使用指定策略生成重写文本。"""
+        """Internal helper."""
 
         model = self._policy_model(policy)
         prompt = self.build_prompt(query)
@@ -1229,7 +1192,7 @@ class ModelWrapper:
         policy: PolicyName = "actor",
         no_grad: bool = False,
     ) -> list[torch.Tensor]:
-        """Batch version of compute_logprob with OOM-safe split fallback."""
+        """批量重算 logprob；遇到 CUDA OOM 会自动二分降批。"""
 
         prompt_list = list(prompts)
         response_list = [list(token_ids) for token_ids in response_token_ids_batch]
@@ -1273,7 +1236,7 @@ class ModelWrapper:
         policy: PolicyName = "actor",
         no_grad: bool = False,
     ) -> torch.Tensor:
-        """对固定 response 重算 token 级 logprob。"""
+        """Internal helper."""
 
         return self.compute_logprob_batch(
             [prompt],
@@ -1283,12 +1246,12 @@ class ModelWrapper:
         )[0]
 
     def trainable_parameters(self) -> list[torch.nn.Parameter]:
-        """返回可训练参数（通常是 LoRA 参数）。"""
+        """Internal helper."""
 
         return [p for p in self.actor_model.parameters() if p.requires_grad]
 
     def save_adapter(self, output_dir: str) -> None:
-        """保存 actor adapter 与 tokenizer。"""
+        """Internal helper."""
 
         path = Path(output_dir)
         path.mkdir(parents=True, exist_ok=True)

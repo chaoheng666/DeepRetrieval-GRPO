@@ -1,4 +1,3 @@
-import argparse
 from pathlib import Path
 from types import SimpleNamespace
 import tempfile
@@ -12,34 +11,10 @@ from core.grpo_engine import GRPOEngine
 from core.model_wrapper import GeneratedSample, ModelWrapper
 from core.reward_func import RewardBreakdown
 from data.loader import QueryExample
-from train import apply_low_mem_mode, apply_runtime_mode_adjustments
+from train import apply_runtime_mode_adjustments
 
 
 class RuntimeConfigTests(unittest.TestCase):
-    def test_disable4bit_lowmem_no_auto_downscale(self):
-        cfg = apply_low_mem_mode(get_default_config())
-        original_group = cfg.train.group_size
-        original_tokens = cfg.train.max_new_tokens
-        original_ref_map = cfg.model.ref_device_map
-
-        args = argparse.Namespace(low_mem_mode=True, disable_4bit=True)
-        with patch("torch.cuda.is_available", return_value=True):
-            adjusted = apply_runtime_mode_adjustments(cfg, args)
-
-        self.assertEqual(adjusted.train.group_size, original_group)
-        self.assertEqual(adjusted.train.max_new_tokens, original_tokens)
-        self.assertEqual(adjusted.model.ref_device_map, original_ref_map)
-
-    def test_lowmem_cpu_runtime_forces_cpu_loading(self):
-        cfg = apply_low_mem_mode(get_default_config())
-        args = argparse.Namespace(low_mem_mode=True, disable_4bit=False)
-        with patch("torch.cuda.is_available", return_value=False):
-            adjusted = apply_runtime_mode_adjustments(cfg, args)
-
-        self.assertFalse(adjusted.model.load_in_4bit)
-        self.assertEqual(adjusted.model.actor_device_map, "cpu")
-        self.assertEqual(adjusted.model.ref_device_map, "cpu")
-
     def test_runtime_adjustments_clamp_invalid_numeric_values(self):
         cfg = get_default_config()
         cfg.train.num_epochs = 0
@@ -57,10 +32,9 @@ class RuntimeConfigTests(unittest.TestCase):
         cfg.reward.recall_k = 0
         cfg.data.max_train_queries = -1
         cfg.data.max_val_queries = -2
-        args = argparse.Namespace(low_mem_mode=False, disable_4bit=False)
 
         with patch("torch.cuda.is_available", return_value=True):
-            adjusted = apply_runtime_mode_adjustments(cfg, args)
+            adjusted = apply_runtime_mode_adjustments(cfg)
 
         self.assertEqual(adjusted.train.num_epochs, 1)
         self.assertEqual(adjusted.train.batch_size, 1)
@@ -81,41 +55,30 @@ class RuntimeConfigTests(unittest.TestCase):
     def test_runtime_adjustments_reject_invalid_train_ratio(self):
         cfg = get_default_config()
         cfg.data.train_ratio = 1.0
-        args = argparse.Namespace(low_mem_mode=False, disable_4bit=False)
 
         with patch("torch.cuda.is_available", return_value=True):
             with self.assertRaises(ValueError):
-                apply_runtime_mode_adjustments(cfg, args)
+                apply_runtime_mode_adjustments(cfg)
 
-    def test_runtime_adjustments_force_4bit_ref_on_24g_auto_mode(self):
+    def test_runtime_adjustments_force_top20_curriculum_invariants(self):
         cfg = get_default_config()
-        cfg.model.load_in_4bit = True
-        cfg.model.ref_precision_mode = "auto"
-        args = argparse.Namespace(low_mem_mode=False, disable_4bit=False)
+        cfg.train.curriculum_enable = False
+        cfg.reward.reward_mode = "legacy"
+        cfg.model.ref_precision_mode = "full"
 
-        fake_props = SimpleNamespace(total_memory=24 * 1024**3)
-        with patch.dict("os.environ", {}, clear=True), patch("torch.cuda.is_available", return_value=True), patch(
-            "torch.cuda.get_device_properties",
-            return_value=fake_props,
-        ):
-            adjusted = apply_runtime_mode_adjustments(cfg, args)
+        with patch("torch.cuda.is_available", return_value=True):
+            adjusted = apply_runtime_mode_adjustments(cfg)
 
+        self.assertTrue(adjusted.train.curriculum_enable)
+        self.assertEqual(adjusted.reward.reward_mode, "top20_delta")
         self.assertEqual(adjusted.model.ref_precision_mode, "4bit")
 
-    def test_runtime_adjustments_preserve_explicit_full_ref_mode(self):
+    def test_runtime_adjustments_reject_invalid_curriculum_phase(self):
         cfg = get_default_config()
-        cfg.model.load_in_4bit = True
-        cfg.model.ref_precision_mode = "full"
-        args = argparse.Namespace(low_mem_mode=False, disable_4bit=False)
+        cfg.train.curriculum_phase = "legacy"
 
-        fake_props = SimpleNamespace(total_memory=24 * 1024**3)
-        with patch("torch.cuda.is_available", return_value=True), patch(
-            "torch.cuda.get_device_properties",
-            return_value=fake_props,
-        ):
-            adjusted = apply_runtime_mode_adjustments(cfg, args)
-
-        self.assertEqual(adjusted.model.ref_precision_mode, "full")
+        with self.assertRaises(ValueError):
+            apply_runtime_mode_adjustments(cfg)
 
 
 class _ToyModelWrapper:
@@ -233,7 +196,6 @@ class EngineTraceTests(unittest.TestCase):
         self.assertEqual(len(summaries[0]["group_anchor_bonus"]), 2)
         self.assertEqual(len(summaries[0]["group_recall_drop_penalties"]), 2)
         self.assertEqual(len(summaries[0]["group_overedit_penalties"]), 2)
-        self.assertEqual(len(summaries[0]["group_term_preserve"]), 2)
         self.assertEqual(len(summaries[0]["group_bad_format_penalties"]), 2)
         self.assertGreaterEqual(metrics["bad_format_penalty_mean"], 0.0)
         self.assertIn("anchor_bonus_mean", metrics)
@@ -911,38 +873,6 @@ class AdaptiveGapSamplingTests(unittest.TestCase):
         self.assertEqual(summary["gap_sampling_rounds"], 2)
         self.assertTrue(summary["reward_gap_met"])
 
-    def test_parallel_initial_sampling_still_works_with_gap_resampling(self):
-        wrapper = _ParallelAdaptiveSamplingToyModelWrapper(
-            ["flat query", "flat query", "high query"]
-        )
-        rewarder = _MappedRewarder({"flat query": 0.1, "high query": 0.5})
-        optimizer = torch.optim.SGD(wrapper.trainable_parameters(), lr=1e-2)
-        engine = GRPOEngine(
-            model_wrapper=wrapper,
-            rewarder=rewarder,
-            optimizer=optimizer,
-            group_size=2,
-            max_group_size=3,
-            clip_range=0.2,
-            kl_beta=0.01,
-            grad_clip_norm=1.0,
-            max_new_tokens=8,
-            temperature=0.8,
-            top_p=0.95,
-            reward_gap_threshold=0.2,
-            gap_sampling_temperature_delta=0.15,
-            max_regen_rounds=0,
-            parallel_group_generate=True,
-        )
-
-        metrics = engine.train_step([QueryExample(qid="q1", text="input query")], collect_best_queries=False)
-        summary = metrics["group_query_summaries"][0]
-
-        self.assertEqual(wrapper.parallel_calls, [(2, 0.8)])
-        self.assertEqual(summary["generated_sample_count"], 3)
-        self.assertTrue(summary["reward_gap_met"])
-
-
 class _FakeTokenizer:
     def __init__(self):
         self.pad_token = None
@@ -974,24 +904,19 @@ class _FakeModel(torch.nn.Module):
 
 
 class RefPrecisionFallbackTests(unittest.TestCase):
-    def test_ref_auto_fallback_from_full_to_4bit_on_oom(self):
+    def test_ref_model_uses_4bit_when_actor_uses_4bit(self):
         calls: list[dict] = []
 
         def _fake_from_pretrained(*args, **kwargs):
             calls.append(kwargs)
-            if len(calls) == 1:
-                return _FakeModel("dummy/model")
-            if len(calls) == 2:
-                raise RuntimeError("CUDA out of memory.")
             return _FakeModel("dummy/model")
 
         cfg = ModelConfig(
             model_name="dummy/model",
             trust_remote_code=False,
-            load_in_4bit=False,
+            load_in_4bit=True,
             actor_device_map="auto",
             ref_device_map="auto",
-            ref_precision_mode="auto",
         )
         prompt_cfg = PromptConfig()
 
@@ -1009,12 +934,11 @@ class RefPrecisionFallbackTests(unittest.TestCase):
                 load_ref_model=True,
             )
 
-        self.assertEqual(len(calls), 3)
+        self.assertEqual(len(calls), 2)
         self.assertEqual(calls[0]["device_map"], "auto")
         self.assertEqual(calls[1]["device_map"], "auto")
-        self.assertEqual(calls[2]["device_map"], "auto")
-        self.assertIsNone(calls[1]["quantization_config"])
-        self.assertIsNotNone(calls[2]["quantization_config"])
+        self.assertIsNotNone(calls[0]["quantization_config"])
+        self.assertIsNotNone(calls[1]["quantization_config"])
         self.assertEqual(wrapper.ref_precision_used, "4bit")
         self.assertEqual(wrapper._infer_model_device(wrapper.ref_model), torch.device("cuda:0"))
 

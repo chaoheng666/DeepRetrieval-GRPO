@@ -1,6 +1,13 @@
 from __future__ import annotations
 
-"""Dense reward for BM25 query rewriting."""
+"""BM25 query rewrite 的 top20_delta 奖励模块。
+
+主线奖励只围绕检索结果本身：
+- rewrite 相对原 query 的 MRR@20 增量；
+- rewrite 的 Recall@20 / Recall@50；
+- 首个相关文档排名 bonus；
+- anchor bonus 和若干安全惩罚。
+"""
 
 import os
 import re
@@ -108,11 +115,16 @@ POLLUTION_RE = re.compile(
 
 @dataclass(frozen=True, slots=True)
 class RewardBreakdown:
+    """一次 query 打分的完整拆解，训练日志和 eval 报告都会使用。"""
+
+    # total 是最终进入 GRPO 的 scalar reward。
     total: float
+    # rewrite 本身的检索指标。
     mrr: float
     recall: float
     recall_dense: float = 0.0
     rank_bonus: float = 0.0
+    # 下面这些 preserve/format 字段部分是旁路兼容，主线主要看 keyword_preserve 和 penalties。
     overlap: float = 0.0
     term_preserve: float = 1.0
     keyword_preserve: float = 1.0
@@ -450,34 +462,26 @@ def compose_reward(
     overedit_penalty: float = 0.0,
     cfg: RewardConfig,
 ) -> float:
-    if getattr(cfg, "reward_mode", "legacy") == "top20_delta":
-        delta_mrr = float(mrr) - float(orig_mrr)
-        main_reward = (
-            cfg.w_mrr * delta_mrr
-            + cfg.w_recall * float(recall)
-            + cfg.w_recall_dense * float(recall_dense)
-            + cfg.w_rank_bonus * float(rank_bonus)
-        )
-        anchor_bonus = compute_anchor_bonus(mrr, recall, orig_mrr, orig_recall, cfg)
-        recall_drop_penalty = compute_recall_drop_penalty(recall, orig_recall, cfg)
-        return (
-            main_reward
-            + anchor_bonus
-            - cfg.w_bad_format * bad_format_penalty
-            - cfg.w_unsafe_copy * unsafe_copy_penalty
-            - cfg.w_overedit * overedit_penalty
-            - recall_drop_penalty
-        )
-
+    # top20_delta 固定公式：
+    # reward = delta_mrr20 + recall20 + recall50 + rank_bonus
+    #          + anchor_bonus - format/copy/overedit/recall_drop penalties
+    del term_preserve, length_score, clean_format, orig_recall_aux, orig_rank_bonus
+    delta_mrr = float(mrr) - float(orig_mrr)
+    main_reward = (
+        cfg.w_mrr * delta_mrr
+        + cfg.w_recall * float(recall)
+        + cfg.w_recall_dense * float(recall_dense)
+        + cfg.w_rank_bonus * float(rank_bonus)
+    )
+    anchor_bonus = compute_anchor_bonus(mrr, recall, orig_mrr, orig_recall, cfg)
+    recall_drop_penalty = compute_recall_drop_penalty(recall, orig_recall, cfg)
     return (
-        cfg.w_mrr * mrr
-        + cfg.w_recall * recall
-        + cfg.w_recall_dense * recall_dense
-        + cfg.w_term_preserve * term_preserve
-        + cfg.w_length_score * length_score
-        + cfg.w_clean_format * clean_format
+        main_reward
+        + anchor_bonus
         - cfg.w_bad_format * bad_format_penalty
         - cfg.w_unsafe_copy * unsafe_copy_penalty
+        - cfg.w_overedit * overedit_penalty
+        - recall_drop_penalty
     )
 
 
@@ -531,7 +535,7 @@ def stabilize_generated_rewrite(
     guardrail_cfg: object,
     reward_cfg: RewardConfig,
 ) -> StabilizedRewrite:
-    """Clean model output and fall back to the source query when the rewrite is unsafe."""
+    """清洗模型输出；如果清洗后为空，就回退到原 query，保证检索链路不断。"""
 
     source_clean = _normalize_query_text(source_query)
     raw_clean = (raw_query or "").strip()
@@ -643,6 +647,7 @@ def _candidate_rank_key(candidate: str, source_query: str | None, index: int) ->
 
 
 def clean_rewritten_query(text: str, source_query: str | None = None) -> str:
+    # 模型偶尔会输出标签、示例、解释或多行文本；这里抽取最像 query 的候选。
     raw = (text or "").strip()
     if not raw:
         return ""
@@ -683,11 +688,7 @@ def summarize_reward_breakdowns(
             "delta_rank_bonus_mean": 0.0,
             "main_reward_mean": 0.0,
             "anchor_bonus_mean": 0.0,
-            "term_preserve_mean": 0.0,
             "keyword_preserve_mean": 0.0,
-            "locked_term_preserve_mean": 0.0,
-            "length_score_mean": 0.0,
-            "clean_format_mean": 0.0,
             "bad_format_penalty_mean": 0.0,
             "unsafe_copy_penalty_mean": 0.0,
             "recall_drop_penalty_mean": 0.0,
@@ -719,11 +720,7 @@ def summarize_reward_breakdowns(
         "delta_rank_bonus_mean": fmean(get(item, "delta_rank_bonus") for item in items),
         "main_reward_mean": fmean(get(item, "main_reward") for item in items),
         "anchor_bonus_mean": fmean(get(item, "anchor_bonus") for item in items),
-        "term_preserve_mean": fmean(get(item, "term_preserve", 1.0) for item in items),
         "keyword_preserve_mean": fmean(get(item, "keyword_preserve", get(item, "term_preserve", 1.0)) for item in items),
-        "locked_term_preserve_mean": fmean(get(item, "locked_term_preserve", get(item, "term_preserve", 1.0)) for item in items),
-        "length_score_mean": fmean(get(item, "length_score") for item in items),
-        "clean_format_mean": fmean(get(item, "clean_format") for item in items),
         "bad_format_penalty_mean": fmean(get(item, "bad_format_penalty") for item in items),
         "unsafe_copy_penalty_mean": fmean(get(item, "unsafe_copy_penalty") for item in items),
         "recall_drop_penalty_mean": fmean(get(item, "recall_drop_penalty") for item in items),
@@ -757,6 +754,7 @@ class Rewarder:
         prebuilt_index: str,
         reward_cfg: RewardConfig,
     ) -> None:
+        # Rewarder 负责把 rewrite 送入 Pyserini BM25，再把检索结果拆成 top20_delta 奖励。
         from pyserini.search.lucene import LuceneSearcher
 
         patch_pyserini_prebuilt_index_urls()
@@ -855,6 +853,7 @@ class Rewarder:
         source_query: str,
         hits_docids: Sequence[str],
     ) -> OriginalBaseline:
+        # 原 query 的检索效果是 delta reward 的锚点；每个 qid/source_query 会被缓存。
         relevant_docids = self.qrels.get(str(qid), set())
         mrr, hit_rank = compute_mrr_at_k(hits_docids, relevant_docids, topk=self.mrr_k)
         recall, retrieved_relevant_count, relevant_total = compute_recall_at_k(
@@ -902,6 +901,7 @@ class Rewarder:
         *,
         original_baseline: OriginalBaseline | None = None,
     ) -> RewardBreakdown:
+        # 先计算 rewrite 的检索指标，再和 original baseline 做 delta。
         relevant_docids = self.qrels.get(str(qid), set())
         if original_baseline is not None and cleaned_query == original_baseline.query:
             mrr = original_baseline.mrr
@@ -930,15 +930,13 @@ class Rewarder:
                 source_query,
                 cleaned_query,
             )
-            term_preserve = _combine_term_preserve(keyword_preserve, locked_term_preserve)
         else:
             keyword_preserve = 1.0
             locked_term_preserve = 1.0
-            term_preserve, number_preserve, acronym_preserve, negation_preserve = (1.0, 1.0, 1.0, 1.0)
+            number_preserve, acronym_preserve, negation_preserve = (1.0, 1.0, 1.0)
 
-        length_score = compute_length_score(cleaned_query, self.cfg)
         bad_format_penalty = compute_bad_format_penalty(cleaned_query, self.cfg)
-        clean_format = compute_clean_format_score(bad_format_penalty)
+        # 安全项不直接奖励“像原 query”，只惩罚明显不安全的复制或过度删词。
         unsafe_copy_penalty = (
             compute_unsafe_copy_penalty(source_query or "", cleaned_query) if source_query else 0.0
         )
@@ -957,30 +955,17 @@ class Rewarder:
         anchor_bonus = compute_anchor_bonus(mrr, recall, orig_mrr, orig_recall, self.cfg)
         recall_drop_penalty = compute_recall_drop_penalty(recall, orig_recall, self.cfg)
 
-        if getattr(self.cfg, "reward_mode", "legacy") == "top20_delta":
-            main_reward = (
-                self.cfg.w_mrr * delta_mrr
-                + self.cfg.w_recall * recall
-                + self.cfg.w_recall_dense * recall_dense
-                + self.cfg.w_rank_bonus * rank_bonus
-            )
-        else:
-            main_reward = (
-                self.cfg.w_mrr * mrr
-                + self.cfg.w_recall * recall
-                + self.cfg.w_recall_dense * recall_dense
-                + self.cfg.w_term_preserve * term_preserve
-                + self.cfg.w_length_score * length_score
-                + self.cfg.w_clean_format * clean_format
-            )
+        main_reward = (
+            self.cfg.w_mrr * delta_mrr
+            + self.cfg.w_recall * recall
+            + self.cfg.w_recall_dense * recall_dense
+            + self.cfg.w_rank_bonus * rank_bonus
+        )
 
         total = compose_reward(
             mrr=mrr,
             recall=recall,
             recall_dense=recall_dense,
-            term_preserve=term_preserve,
-            length_score=length_score,
-            clean_format=clean_format,
             bad_format_penalty=bad_format_penalty,
             unsafe_copy_penalty=unsafe_copy_penalty,
             rank_bonus=rank_bonus,
@@ -998,14 +983,11 @@ class Rewarder:
             recall_dense=recall_dense,
             rank_bonus=rank_bonus,
             overlap=overlap,
-            term_preserve=term_preserve,
             keyword_preserve=keyword_preserve,
             locked_term_preserve=locked_term_preserve,
             number_preserve=number_preserve,
             acronym_preserve=acronym_preserve,
             negation_preserve=negation_preserve,
-            length_score=length_score,
-            clean_format=clean_format,
             main_reward=main_reward,
             orig_mrr=orig_mrr,
             orig_recall=orig_recall,
@@ -1038,6 +1020,7 @@ class Rewarder:
         rewritten_queries: Sequence[str],
         source_query: str | None = None,
     ) -> list[RewardBreakdown]:
+        # 组内批量打分：先清洗、去掉原 query 的重复检索，再批量搜索。
         cleaned_queries = [
             clean_rewritten_query((text or "").strip(), source_query=source_query) for text in rewritten_queries
         ]

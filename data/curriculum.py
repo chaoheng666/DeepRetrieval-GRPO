@@ -10,6 +10,10 @@ from typing import Iterable, Sequence
 from core.reward_func import compute_mrr_at_k, compute_recall_at_k
 from data.loader import QueryExample
 
+# Curriculum 的核心思想：
+# A 桶：原 query 在 Recall@100 能找到相关文档，但 MRR@20 不好，最适合学习 top20 改写；
+# B 桶：原 query 几乎找不到相关文档，但文本质量还可以，用来扩大探索；
+# C 桶：原 query 已经较强，少量保留，避免模型只学会激进改写。
 TOKEN_RE = re.compile(r"\w+", flags=re.UNICODE)
 ACRONYM_RE = re.compile(r"\b[A-Z]{2,}\b")
 NUMERIC_RE = re.compile(r"\b\d+(?:\.\d+)?(?:%|[a-z]+)?\b", flags=re.IGNORECASE)
@@ -74,10 +78,16 @@ PHASE_BUCKET_WEIGHTS: dict[str, dict[str, float]] = {
     "phase1": {"A": 0.80, "C": 0.15, "B": 0.05},
     "phase2": {"A": 0.60, "B": 0.20, "C": 0.20},
 }
+PHASE_SEED_OFFSETS: dict[str, int] = {
+    "phase1": 0,
+    "phase2": 50021,
+}
 
 
 @dataclass(frozen=True, slots=True)
 class CurriculumQueryMetadata:
+    """单个训练 query 的原始检索难度元数据。"""
+
     qid: str
     text: str
     orig_mrr20: float
@@ -156,6 +166,7 @@ def _looks_like_bucket_b_candidate(query: str) -> bool:
 
 
 def bucket_for_query(*, orig_mrr20: float, orig_recall100: float, query_text: str) -> str:
+    # A: 有可召回相关文档但 top20 排名差；B: 原检索失败但 query 文本可靠；C: 原 query 已经较好。
     if orig_recall100 > 0.0 and orig_mrr20 < 0.35:
         return "A"
     if orig_mrr20 >= 0.35:
@@ -205,6 +216,7 @@ def build_curriculum_metadata(
     batch_size: int = 128,
     progress_every: int = 1000,
 ) -> list[CurriculumQueryMetadata]:
+    # 首次训练会扫描 train split 的原 query 检索效果，并写入 jsonl 供后续 phase 复用。
     built: list[CurriculumQueryMetadata] = []
     step = max(1, int(progress_every))
     for start in range(0, len(queries), max(1, int(batch_size))):
@@ -243,6 +255,7 @@ def ensure_curriculum_metadata(
     batch_size: int = 128,
     progress_every: int = 1000,
 ) -> dict[str, CurriculumQueryMetadata]:
+    # metadata 存在且覆盖当前 train qid 时直接复用，否则重建。
     metadata_file = Path(metadata_path)
     loaded = load_curriculum_metadata(metadata_file)
     required_qids = {str(query.qid) for query in queries}
@@ -282,6 +295,7 @@ def filter_curriculum_train_queries(
     queries: Sequence[QueryExample],
     metadata_by_qid: dict[str, CurriculumQueryMetadata],
 ) -> tuple[list[QueryExample], dict[str, int]]:
+    # DROP 样本不进入主线训练，避免没有学习信号或文本质量太差的 query 干扰 reward。
     kept: list[QueryExample] = []
     counts = {"A": 0, "B": 0, "C": 0, "DROP": 0}
     for query in queries:
@@ -331,6 +345,7 @@ def sample_curriculum_queries(
     seed: int,
     epoch: int,
 ) -> list[QueryExample]:
+    # 每个 epoch 按 phase 权重重新采样并打乱，phase2 会比 phase1 多看 B/C 桶。
     phase_key = str(phase or "phase1").strip().lower()
     if phase_key not in PHASE_BUCKET_WEIGHTS:
         raise ValueError(f"Unsupported curriculum phase: {phase}")
@@ -356,7 +371,9 @@ def sample_curriculum_queries(
     total = sum(len(bucket_to_queries[bucket]) for bucket in active_weights)
     quotas = _compute_bucket_quotas(total, normalized_weights)
 
-    rng = random.Random(int(seed) + int(epoch) * 1009)
+    # Keep each phase deterministic, but avoid phase2 reusing the same prefix as phase1
+    # when max_steps cuts the epoch short.
+    rng = random.Random(int(seed) + int(epoch) * 1009 + PHASE_SEED_OFFSETS.get(phase_key, 0))
     bucket_schedule: list[str] = []
     for bucket, quota in quotas.items():
         bucket_schedule.extend([bucket] * quota)

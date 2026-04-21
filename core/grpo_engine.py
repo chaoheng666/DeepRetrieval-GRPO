@@ -1,6 +1,13 @@
 from __future__ import annotations
 
-"""Core GRPO training loop implemented with plain PyTorch."""
+"""GRPO 训练主循环。
+
+这里保留最核心的 top20_delta curriculum 训练流程：
+1. 每个 query 采样一组 rewrite；
+2. 清洗/兜底后用 BM25 奖励打分；
+3. 组内归一化 reward 得到 advantage；
+4. 用 PPO clipped objective + ref KL 做一次 LoRA 更新。
+"""
 
 from dataclasses import dataclass
 from statistics import fmean
@@ -12,43 +19,99 @@ from torch.nn.utils import clip_grad_norm_
 from core.reward_func import RewardBreakdown, stabilize_generated_rewrite
 from data.loader import QueryExample
 
+
 @dataclass(slots=True)
 class Sample:
-    """One sampled candidate used for PPO/GRPO loss computation."""
+    """单个采样候选，训练 loss、日志和诊断都会从这里取数。"""
 
+    # 数据集 query id，用来把采样、奖励、trace 和指标行关联起来。
     qid: str
+
+    # 送给 actor 的完整 prompt。
     prompt: str
+
+    # 模型原始解码结果，尚未应用兜底逻辑。
     response_text: str
+
+    # 从 response_text 中清洗出的候选检索 query。
     cleaned_query: str
+
+    # 实际送入检索器的 query；不安全时可能回退到原 query。
     final_query: str
+
+    # 生成回复的 token id，用来重算新策略/ref 策略 logprob。
     response_token_ids: list[int]
+
+    # 采样时 actor 的旧策略 logprob，是 PPO ratio 的分母。
     logprob_old: torch.Tensor
+
+    # 最终标量奖励，已经包含 top20 delta、bonus 和 penalty。
     reward: float
+
+    # rewrite 的 MRR@k，默认是 MRR@20。
     mrr: float
+
+    # rewrite 的 Recall@k，默认是 Recall@20。
     recall: float
+
+    # rewrite 的辅助 Recall@k，默认是 Recall@50。
     recall_dense: float
+
+    # 第一个相关文档命中位置带来的 rank bonus。
     rank_bonus: float
+
+    # 主奖励项：delta MRR + Recall@20 + Recall@50 + rank bonus 的加权和。
     main_reward: float
+
+    # 原 query 的 MRR@k 基线。
     orig_mrr: float
+
+    # 原 query 的 Recall@k 基线。
     orig_recall: float
+
+    # 原 query 的辅助 Recall@k 基线，默认 Recall@50。
     orig_recall_aux: float
+
+    # 原 query 的 rank bonus 基线。
     orig_rank_bonus: float
+
+    # rewrite MRR 减去原 query MRR。
     delta_mrr: float
+
+    # rewrite Recall@20 减去原 query Recall@20。
     delta_recall: float
+
+    # rewrite Recall@50 减去原 query Recall@50。
     delta_recall_aux: float
+
+    # rewrite rank bonus 减去原 query rank bonus。
     delta_rank_bonus: float
+
+    # 当 rewrite 同时不低于原 query 的 MRR 和 recall 时给的 anchor bonus。
     anchor_bonus: float
+
+    # recall 低于原 query 时的惩罚。
     recall_drop_penalty: float
-    term_preserve: float
+
+    # 源 query 中有意义关键词被保留的比例。
     keyword_preserve: float
-    locked_term_preserve: float
-    length_score: float
-    clean_format: float
+
+    # keyword_preserve 低于 overedit_tau 时的过度改写惩罚。
     overedit_penalty: float
+
+    # 格式惩罚：多行、解释文本、不可读字符、模板污染等。
     bad_format_penalty: float
+
+    # 原 query 明显需要改写但模型直接复制时的惩罚。
     unsafe_copy_penalty: float
+
+    # 是否触发兜底，把 final_query 替换回原 query。
     fallback_to_original: bool
+
+    # 兜底原因，例如 empty_after_clean。
     fallback_reasons: tuple[str, ...]
+
+    # 组内 reward 标准化后的 advantage，用于 PPO/GRPO policy loss。
     advantage: float = 0.0
 
 
@@ -104,7 +167,6 @@ class GRPOEngine:
         reward_gap_threshold: float = 0.08,
         gap_sampling_temperature_delta: float = 0.15,
         actor_chunk_size: int = 4,
-        parallel_group_generate: bool = False,
     ) -> None:
         self.model_wrapper = model_wrapper
         self.rewarder = rewarder
@@ -125,7 +187,6 @@ class GRPOEngine:
         self.reward_gap_threshold = max(0.0, float(reward_gap_threshold))
         self.gap_sampling_temperature_delta = max(0.0, float(gap_sampling_temperature_delta))
         self.actor_chunk_size = max(1, int(actor_chunk_size))
-        self.parallel_group_generate = parallel_group_generate
 
     def _stabilize_generated_sample(self, source_query: str, generated_sample) -> object:
         raw_text = generated_sample.raw_response_text or generated_sample.response_text
@@ -142,22 +203,10 @@ class GRPOEngine:
         *,
         num_samples: int,
         temperature: float,
-        allow_parallel: bool,
     ) -> list[object]:
+        # 同一个 query 会采样多个候选；temperature/top_p 逐个轻微拉开，
+        # 让组内既有差异，又不至于完全发散。
         requested = max(1, int(num_samples))
-        if (
-            allow_parallel
-            and requested > 1
-            and self.parallel_group_generate
-            and hasattr(self.model_wrapper, "generate_group_with_logprob")
-        ):
-            return self.model_wrapper.generate_group_with_logprob(
-                prompt,
-                num_return_sequences=requested,
-                max_new_tokens=self.max_new_tokens,
-                temperature=temperature,
-                top_p=self.top_p,
-            )
         rollout_schedule = self._build_group_sampling_schedule(
             requested,
             base_temperature=temperature,
@@ -200,7 +249,6 @@ class GRPOEngine:
             prompt,
             num_samples=self.group_size,
             temperature=self.temperature,
-            allow_parallel=True,
         )
 
     def _maybe_regenerate_group(
@@ -211,6 +259,8 @@ class GRPOEngine:
         generated_group: list[object],
         stabilized_group: list[object],
     ) -> tuple[list[object], list[object]]:
+        # 如果一组候选重复、污染或全是复制原 query，就追加几轮更高温采样，
+        # 目标是给 GRPO 一个有 reward 差异的比较组。
         if self.max_regen_rounds <= 0 or self.temperature <= 0.0 or len(stabilized_group) <= 1:
             return generated_group, stabilized_group
 
@@ -293,6 +343,7 @@ class GRPOEngine:
         final_queries: Sequence[str],
         reward_by_query: dict[str, RewardBreakdown],
     ) -> None:
+        # 同一组里经常会出现相同 final_query；先去重再检索，避免重复打分。
         missing_queries = [
             rewritten_query
             for rewritten_query in dict.fromkeys(final_queries)
@@ -336,67 +387,63 @@ class GRPOEngine:
         """Run one GRPO update on a mini-batch."""
 
         previous_mode = self.model_wrapper.actor_model.training
-        # Keep rollout/logprob passes deterministic by disabling dropout.
+        # 采样和 logprob 计算阶段关闭 dropout，避免同一个样本的 old/new logprob
+        # 被训练随机性污染。
         self.model_wrapper.actor_model.eval()
         try:
-            self.optimizer.zero_grad(set_to_none=True)
+            self.optimizer.zero_grad(set_to_none=True)  # 清空上一轮梯度；set_to_none=True 更省显存。
 
-            # We accumulate gradients per sample immediately to avoid keeping
-            # all computation graphs in memory until the end of the batch.
-            loss_values: list[float] = []
-            loss_pg_terms: list[float] = []
-            loss_kl_terms: list[float] = []
+            loss_values: list[float] = []  # 每个有效样本的总 loss，用于计算 loss 均值。
+            loss_pg_terms: list[float] = []  # policy gradient loss 部分，用于观察 PPO 主项大小。
+            loss_kl_terms: list[float] = []  # KL loss 部分，用于观察 ref 约束强度。
 
-            rewards: list[float] = []
-            mrr_scores: list[float] = []
-            recall_scores: list[float] = []
-            recall_dense_scores: list[float] = []
-            rank_bonus_scores: list[float] = []
-            main_reward_scores: list[float] = []
-            orig_mrr_scores: list[float] = []
-            orig_recall_scores: list[float] = []
-            orig_recall_aux_scores: list[float] = []
-            orig_rank_bonus_scores: list[float] = []
-            delta_mrr_scores: list[float] = []
-            delta_recall_scores: list[float] = []
-            delta_recall_aux_scores: list[float] = []
-            delta_rank_bonus_scores: list[float] = []
-            anchor_bonus_scores: list[float] = []
-            term_preserve_scores: list[float] = []
-            keyword_preserve_scores: list[float] = []
-            locked_term_preserve_scores: list[float] = []
-            length_scores: list[float] = []
-            clean_format_scores: list[float] = []
-            recall_drop_penalties: list[float] = []
-            overedit_penalties: list[float] = []
-            bad_format_penalties: list[float] = []
-            unsafe_copy_penalties: list[float] = []
-            all_advantages: list[float] = []
-            unique_final_query_counts: list[float] = []
-            generated_sample_counts: list[float] = []
-            reward_gap_raw_values: list[float] = []
-            flat_reward_group_count = 0
-            flat_mrr_group_count = 0
-            flat_main_reward_group_count = 0
-            collapsed_group_count = 0
-            all_same_final_query_group_count = 0
-            reward_gap_met_count = 0
-            max_group_size_hit_count = 0
-            extra_sample_count_total = 0
-            best_reward_hit_best_mrr20_count = 0
+            rewards: list[float] = []  # 每个采样候选的最终 reward，用于 reward_mean 和 advantage。
+            mrr_scores: list[float] = []  # 每个候选 rewrite 的 MRR@20，用于 rewrite_mrr20_mean。
+            recall_scores: list[float] = []  # 每个候选 rewrite 的 Recall@20，用于 rewrite_recall20_mean。
+            recall_dense_scores: list[float] = []  # 每个候选 rewrite 的 Recall@50，用于 rewrite_recall50_mean。
+            rank_bonus_scores: list[float] = []  # 每个候选的首个相关文档排名奖励，用于 rank_bonus_mean。
+            main_reward_scores: list[float] = []  # 不含 penalty/anchor 的主奖励，用于诊断 reward 主体。
+            orig_mrr_scores: list[float] = []  # 原 query 的 MRR@20 基线，用于和 rewrite 对比。
+            orig_recall_scores: list[float] = []  # 原 query 的 Recall@20 基线，用于计算 recall drop。
+            orig_recall_aux_scores: list[float] = []  # 原 query 的 Recall@50 基线，用于计算 delta_recall50。
+            orig_rank_bonus_scores: list[float] = []  # 原 query 的 rank bonus 基线，用于计算排名奖励增量。
+            delta_mrr_scores: list[float] = []  # rewrite MRR@20 - 原 query MRR@20，用于看是否真的提升。
+            delta_recall_scores: list[float] = []  # rewrite Recall@20 - 原 query Recall@20，用于看召回变化。
+            delta_recall_aux_scores: list[float] = []  # rewrite Recall@50 - 原 query Recall@50，用于看深召回变化。
+            delta_rank_bonus_scores: list[float] = []  # rewrite rank bonus - 原 query rank bonus，用于看排名改善。
+            anchor_bonus_scores: list[float] = []  # 达到“不低于原 query”条件时给的 anchor bonus。
+            keyword_preserve_scores: list[float] = []  # 源 query 关键词保留比例，用于监控过度改写。
+            recall_drop_penalties: list[float] = []  # Recall@20 低于原 query 时的惩罚，用于监控退化。
+            overedit_penalties: list[float] = []  # 关键词保留过低时的惩罚，用于监控语义漂移。
+            bad_format_penalties: list[float] = []  # 输出格式错误惩罚，用于监控多行/解释/污染输出。
+            unsafe_copy_penalties: list[float] = []  # 不安全复制原 query 的惩罚，用于监控偷懒复制。
+            all_advantages: list[float] = []  # 组内标准化后的 advantage，用于统计 adv_mean/adv_std。
+            unique_final_query_counts: list[float] = []  # 每组不同 final_query 数量，用于判断采样多样性。
+            generated_sample_counts: list[float] = []  # 每组最终生成候选数，包含补采样，用于看采样成本。
+            reward_gap_raw_values: list[float] = []  # 每组最高/最低 reward 差，用于判断组内信号是否拉开。
+            flat_reward_group_count = 0  # reward 全相同的组数；越高说明 reward 区分度越差。
+            flat_mrr_group_count = 0  # MRR@20 全相同的组数；用于诊断检索指标是否太稀疏。
+            flat_main_reward_group_count = 0  # main_reward 全相同的组数；用于诊断主奖励是否变平。
+            collapsed_group_count = 0  # final_query 全坍缩成同一个文本的组数。
+            all_same_final_query_group_count = 0  # 与 collapsed_group_count 同义保留项，用于日志兼容。
+            reward_gap_met_count = 0  # reward gap 达到阈值的组数，用于观察补采样是否成功。
+            max_group_size_hit_count = 0  # 补采样打到 max_group_size 仍没拉开 gap 的组数。
+            extra_sample_count_total = 0  # 额外补采样总数，用于计算 extra_sample_ratio。
+            best_reward_hit_best_mrr20_count = 0  # reward 最高样本是否也拿到组内最高 MRR@20 的计数。
 
-            best_query_pairs: list[dict[str, object]] = []
-            group_query_summaries: list[dict[str, object]] = []
+            best_query_pairs: list[dict[str, object]] = []  # 可选输出：每个 query 的组内最佳 rewrite。
+            group_query_summaries: list[dict[str, object]] = []  # 每个 query 组的详细 trace，写入 group_trace_log。
 
-            valid_samples = 0
-            sampled = 0
-            num_groups = 0
+            valid_samples = 0  # 参与反传的有效样本数；空 token/logprob 的样本不会计入。
+            sampled = 0  # 本 batch 总采样候选数，包含无效样本和补采样。
+            num_groups = 0  # 本 batch 的 query 组数，一个 query 对应一个 group。
 
             for query in batch_queries:
                 num_groups += 1
                 prompt = self.model_wrapper.build_prompt(query.text)
                 group_samples: list[Sample] = []
 
+                # 1) 生成一组候选 rewrite，并先过 guardrail 得到 final_query。
                 generated_group = self._generate_group_rollouts(prompt)
                 stabilized_group = [
                     self._stabilize_generated_sample(query.text, sample) for sample in generated_group
@@ -410,6 +457,7 @@ class GRPOEngine:
                 initial_group_size = len(generated_group)
                 reward_by_query: dict[str, RewardBreakdown] = {}
                 final_query_group = [record.final_query for record in stabilized_group]
+                # 2) 对组内唯一 final_query 检索打分，复用 reward cache。
                 self._update_reward_cache(
                     qid=query.qid,
                     source_query=query.text,
@@ -419,6 +467,7 @@ class GRPOEngine:
                 reward_gap_raw = self._compute_reward_gap_raw(final_query_group, reward_by_query)
                 gap_sampling_temperatures: list[float] = []
 
+                # 3) 如果组内 reward gap 太小，继续补采样；否则 advantage 近似全 0。
                 while reward_gap_raw < self.reward_gap_threshold and len(generated_group) < self.max_group_size:
                     extra_round_idx = len(gap_sampling_temperatures) + 1
                     extra_temperature = round(
@@ -433,7 +482,6 @@ class GRPOEngine:
                         prompt,
                         num_samples=1,
                         temperature=extra_temperature,
-                        allow_parallel=False,
                     )
                     extra_stabilized_group = [
                         self._stabilize_generated_sample(query.text, sample) for sample in extra_generated_group
@@ -463,14 +511,10 @@ class GRPOEngine:
                 unique_final_queries = list(dict.fromkeys(final_query_group))
                 group_collapsed = len(unique_final_queries) == 1
 
+                # 4) 把 reward breakdown 固化成 Sample，后面 loss 和日志都只读 Sample。
                 for generated, stabilized in zip(generated_group, stabilized_group):
                     reward = reward_by_query[stabilized.final_query]
                     keyword_preserve = getattr(reward, "keyword_preserve", getattr(reward, "term_preserve", 1.0))
-                    locked_term_preserve = getattr(
-                        reward,
-                        "locked_term_preserve",
-                        getattr(reward, "term_preserve", 1.0),
-                    )
                     group_samples.append(
                         Sample(
                             qid=query.qid,
@@ -496,11 +540,7 @@ class GRPOEngine:
                             delta_rank_bonus=getattr(reward, "delta_rank_bonus", 0.0),
                             anchor_bonus=getattr(reward, "anchor_bonus", 0.0),
                             recall_drop_penalty=getattr(reward, "recall_drop_penalty", 0.0),
-                            term_preserve=reward.term_preserve,
                             keyword_preserve=keyword_preserve,
-                            locked_term_preserve=locked_term_preserve,
-                            length_score=reward.length_score,
-                            clean_format=reward.clean_format,
                             overedit_penalty=getattr(reward, "overedit_penalty", 0.0),
                             bad_format_penalty=reward.bad_format_penalty,
                             unsafe_copy_penalty=reward.unsafe_copy_penalty,
@@ -562,11 +602,7 @@ class GRPOEngine:
                         "group_delta_rank_bonus": [sample.delta_rank_bonus for sample in group_samples],
                         "group_main_rewards": [sample.main_reward for sample in group_samples],
                         "group_anchor_bonus": [sample.anchor_bonus for sample in group_samples],
-                        "group_term_preserve": [sample.term_preserve for sample in group_samples],
                         "group_keyword_preserve": [sample.keyword_preserve for sample in group_samples],
-                        "group_locked_term_preserve": [sample.locked_term_preserve for sample in group_samples],
-                        "group_length_scores": [sample.length_score for sample in group_samples],
-                        "group_clean_format_scores": [sample.clean_format for sample in group_samples],
                         "group_recall_drop_penalties": [sample.recall_drop_penalty for sample in group_samples],
                         "group_overedit_penalties": [sample.overedit_penalty for sample in group_samples],
                         "group_bad_format_penalties": [sample.bad_format_penalty for sample in group_samples],
@@ -585,6 +621,7 @@ class GRPOEngine:
                         }
                     )
 
+                # 5) GRPO 的关键：只比较同一个 query 下的一组候选。
                 advantages = normalize_advantages([sample.reward for sample in group_samples]).tolist()
                 for sample, advantage in zip(group_samples, advantages):
                     sample.advantage = float(advantage)
@@ -604,11 +641,7 @@ class GRPOEngine:
                     delta_recall_aux_scores.append(sample.delta_recall_aux)
                     delta_rank_bonus_scores.append(sample.delta_rank_bonus)
                     anchor_bonus_scores.append(sample.anchor_bonus)
-                    term_preserve_scores.append(sample.term_preserve)
                     keyword_preserve_scores.append(sample.keyword_preserve)
-                    locked_term_preserve_scores.append(sample.locked_term_preserve)
-                    length_scores.append(sample.length_score)
-                    clean_format_scores.append(sample.clean_format)
                     recall_drop_penalties.append(sample.recall_drop_penalty)
                     overedit_penalties.append(sample.overedit_penalty)
                     bad_format_penalties.append(sample.bad_format_penalty)
@@ -633,8 +666,7 @@ class GRPOEngine:
                         no_grad=True,
                     )
 
-                    # Keep actor recompute in small chunks so we do not retain the
-                    # full group's autograd graph in VRAM at once.
+                    # 6) ref logprob 不需要梯度；actor logprob 分 chunk 重算并反传。
                     actor_chunk_size = min(self.actor_chunk_size, len(valid_group_samples))
                     for chunk_start in range(0, len(valid_group_samples), actor_chunk_size):
                         chunk_samples = valid_group_samples[chunk_start : chunk_start + actor_chunk_size]
@@ -728,96 +760,91 @@ class GRPOEngine:
 
             nonzero_reward_ratio = (sum(1 for value in rewards if value > 0.0) / len(rewards)) if rewards else 0.0
 
+            # 汇总训练日志：一部分看检索效果，一部分看采样是否坍缩、reward 是否拉开。
             metrics: dict[str, object] = {
-                "reward_mean": fmean(rewards) if rewards else 0.0,
-                "mrr_mean": fmean(mrr_scores) if mrr_scores else 0.0,
-                "recall_mean": fmean(recall_scores) if recall_scores else 0.0,
-                "recall_dense_mean": fmean(recall_dense_scores) if recall_dense_scores else 0.0,
-                "rank_bonus_mean": fmean(rank_bonus_scores) if rank_bonus_scores else 0.0,
-                "main_reward_mean": fmean(main_reward_scores) if main_reward_scores else 0.0,
-                "orig_mrr20_mean": fmean(orig_mrr_scores) if orig_mrr_scores else 0.0,
-                "rewrite_mrr20_mean": fmean(mrr_scores) if mrr_scores else 0.0,
-                "orig_recall20_mean": fmean(orig_recall_scores) if orig_recall_scores else 0.0,
-                "rewrite_recall20_mean": fmean(recall_scores) if recall_scores else 0.0,
-                "rewrite_recall50_mean": fmean(recall_dense_scores) if recall_dense_scores else 0.0,
-                "delta_mrr20_mean": fmean(delta_mrr_scores) if delta_mrr_scores else 0.0,
-                "delta_recall20_mean": fmean(delta_recall_scores) if delta_recall_scores else 0.0,
-                "delta_recall50_mean": fmean(delta_recall_aux_scores) if delta_recall_aux_scores else 0.0,
-                "orig_rank_bonus_mean": fmean(orig_rank_bonus_scores) if orig_rank_bonus_scores else 0.0,
-                "delta_rank_bonus_mean": fmean(delta_rank_bonus_scores) if delta_rank_bonus_scores else 0.0,
-                "anchor_bonus_mean": fmean(anchor_bonus_scores) if anchor_bonus_scores else 0.0,
-                "term_preserve_mean": fmean(term_preserve_scores) if term_preserve_scores else 0.0,
-                "keyword_preserve_mean": fmean(keyword_preserve_scores) if keyword_preserve_scores else 0.0,
-                "locked_term_preserve_mean": (
-                    fmean(locked_term_preserve_scores) if locked_term_preserve_scores else 0.0
-                ),
-                "length_score_mean": fmean(length_scores) if length_scores else 0.0,
-                "clean_format_mean": fmean(clean_format_scores) if clean_format_scores else 0.0,
-                "recall_drop_penalty_mean": (
+                "reward_mean": fmean(rewards) if rewards else 0.0,  # 平均最终 reward，直接反映本 batch 训练信号强弱。
+                "mrr_mean": fmean(mrr_scores) if mrr_scores else 0.0,  # rewrite 的平均 MRR@20，兼容通用 mrr_mean 字段。
+                "recall_mean": fmean(recall_scores) if recall_scores else 0.0,  # rewrite 的平均 Recall@20，兼容通用 recall_mean 字段。
+                "recall_dense_mean": fmean(recall_dense_scores) if recall_dense_scores else 0.0,  # rewrite 的平均 Recall@50。
+                "rank_bonus_mean": fmean(rank_bonus_scores) if rank_bonus_scores else 0.0,  # 平均首个相关文档排名 bonus。
+                "main_reward_mean": fmean(main_reward_scores) if main_reward_scores else 0.0,  # 不含惩罚/anchor 的主奖励均值。
+                "orig_mrr20_mean": fmean(orig_mrr_scores) if orig_mrr_scores else 0.0,  # 原 query 的平均 MRR@20 基线。
+                "rewrite_mrr20_mean": fmean(mrr_scores) if mrr_scores else 0.0,  # rewrite 的平均 MRR@20，训练主指标。
+                "orig_recall20_mean": fmean(orig_recall_scores) if orig_recall_scores else 0.0,  # 原 query 的平均 Recall@20。
+                "rewrite_recall20_mean": fmean(recall_scores) if recall_scores else 0.0,  # rewrite 的平均 Recall@20。
+                "rewrite_recall50_mean": fmean(recall_dense_scores) if recall_dense_scores else 0.0,  # rewrite 的平均 Recall@50。
+                "delta_mrr20_mean": fmean(delta_mrr_scores) if delta_mrr_scores else 0.0,  # rewrite 相对原 query 的 MRR@20 平均提升。
+                "delta_recall20_mean": fmean(delta_recall_scores) if delta_recall_scores else 0.0,  # rewrite 相对原 query 的 Recall@20 平均变化。
+                "delta_recall50_mean": fmean(delta_recall_aux_scores) if delta_recall_aux_scores else 0.0,  # rewrite 相对原 query 的 Recall@50 平均变化。
+                "orig_rank_bonus_mean": fmean(orig_rank_bonus_scores) if orig_rank_bonus_scores else 0.0,  # 原 query 的平均 rank bonus。
+                "delta_rank_bonus_mean": fmean(delta_rank_bonus_scores) if delta_rank_bonus_scores else 0.0,  # rewrite 相对原 query 的 rank bonus 平均变化。
+                "anchor_bonus_mean": fmean(anchor_bonus_scores) if anchor_bonus_scores else 0.0,  # 平均 anchor bonus，越高表示 rewrite 更常不低于原 query。
+                "keyword_preserve_mean": fmean(keyword_preserve_scores) if keyword_preserve_scores else 0.0,  # 关键词保留均值，用于观察是否过度改写。
+                "recall_drop_penalty_mean": (  # 平均 recall 下降惩罚，用于观察 rewrite 是否牺牲召回。
                     fmean(recall_drop_penalties) if recall_drop_penalties else 0.0
                 ),
-                "overedit_penalty_mean": fmean(overedit_penalties) if overedit_penalties else 0.0,
-                "bad_format_penalty_mean": fmean(bad_format_penalties) if bad_format_penalties else 0.0,
-                "unsafe_copy_penalty_mean": fmean(unsafe_copy_penalties) if unsafe_copy_penalties else 0.0,
-                "nonzero_reward_ratio": nonzero_reward_ratio,
-                "nonzero_mrr20_ratio": (
+                "overedit_penalty_mean": fmean(overedit_penalties) if overedit_penalties else 0.0,  # 平均过度改写惩罚。
+                "bad_format_penalty_mean": fmean(bad_format_penalties) if bad_format_penalties else 0.0,  # 平均格式惩罚。
+                "unsafe_copy_penalty_mean": fmean(unsafe_copy_penalties) if unsafe_copy_penalties else 0.0,  # 平均不安全复制惩罚。
+                "nonzero_reward_ratio": nonzero_reward_ratio,  # reward 大于 0 的候选比例，用于看有效正信号多少。
+                "nonzero_mrr20_ratio": (  # MRR@20 大于 0 的候选比例，用于看命中 top20 的覆盖率。
                     sum(1 for value in mrr_scores if value > 0.0) / len(mrr_scores)
                 ) if mrr_scores else 0.0,
-                "nonzero_recall20_ratio": (
+                "nonzero_recall20_ratio": (  # Recall@20 大于 0 的候选比例，用于看 top20 是否召回到相关文档。
                     sum(1 for value in recall_scores if value > 0.0) / len(recall_scores)
                 ) if recall_scores else 0.0,
-                "delta_mrr20_positive_ratio": (
+                "delta_mrr20_positive_ratio": (  # delta MRR@20 为正的候选比例，越高表示 rewrite 更常提升排序。
                     sum(1 for value in delta_mrr_scores if value > 0.0) / len(delta_mrr_scores)
                 ) if delta_mrr_scores else 0.0,
-                "delta_recall20_positive_ratio": (
+                "delta_recall20_positive_ratio": (  # delta Recall@20 为正的候选比例，越高表示 rewrite 更常提升召回。
                     sum(1 for value in delta_recall_scores if value > 0.0) / len(delta_recall_scores)
                 ) if delta_recall_scores else 0.0,
-                "anchor_hit_ratio": (
+                "anchor_hit_ratio": (  # 拿到 anchor bonus 的候选比例，即同时不低于原 query 的比例。
                     sum(1 for value in anchor_bonus_scores if value > 0.0) / len(anchor_bonus_scores)
                 ) if anchor_bonus_scores else 0.0,
-                "recall_drop_ratio": (
+                "recall_drop_ratio": (  # 出现 recall 下降惩罚的候选比例，用于监控退化风险。
                     sum(1 for value in recall_drop_penalties if value > 0.0) / len(recall_drop_penalties)
                 ) if recall_drop_penalties else 0.0,
-                "adv_mean": fmean(all_advantages) if all_advantages else 0.0,
-                "adv_std": float(torch.tensor(all_advantages).std(unbiased=False)) if all_advantages else 0.0,
-                "unique_final_query_mean": fmean(unique_final_query_counts) if unique_final_query_counts else 0.0,
-                "generated_sample_count_mean": fmean(generated_sample_counts) if generated_sample_counts else 0.0,
-                "generated_sample_count_max": float(max(generated_sample_counts)) if generated_sample_counts else 0.0,
-                "extra_sample_ratio": (extra_sample_count_total / sampled) if sampled else 0.0,
-                "reward_gap_raw_mean": fmean(reward_gap_raw_values) if reward_gap_raw_values else 0.0,
-                "reward_gap_met_ratio": (reward_gap_met_count / num_groups) if num_groups else 0.0,
-                "max_group_size_hit_ratio": (max_group_size_hit_count / num_groups) if num_groups else 0.0,
-                "collapsed_group_ratio": (collapsed_group_count / num_groups) if num_groups else 0.0,
-                "all_same_final_query_ratio": (all_same_final_query_group_count / num_groups) if num_groups else 0.0,
-                "flat_reward_group_ratio": (flat_reward_group_count / num_groups) if num_groups else 0.0,
-                "flat_mrr20_group_ratio": (flat_mrr_group_count / num_groups) if num_groups else 0.0,
-                "flat_main_reward_group_ratio": (
+                "adv_mean": fmean(all_advantages) if all_advantages else 0.0,  # 组内标准化 advantage 的均值，正常应接近 0。
+                "adv_std": float(torch.tensor(all_advantages).std(unbiased=False)) if all_advantages else 0.0,  # advantage 标准差，用于看组内 reward 是否有区分度。
+                "unique_final_query_mean": fmean(unique_final_query_counts) if unique_final_query_counts else 0.0,  # 每组不同 final_query 的平均数量。
+                "generated_sample_count_mean": fmean(generated_sample_counts) if generated_sample_counts else 0.0,  # 每组平均生成候选数，包含补采样。
+                "generated_sample_count_max": float(max(generated_sample_counts)) if generated_sample_counts else 0.0,  # 单组最大生成候选数。
+                "extra_sample_ratio": (extra_sample_count_total / sampled) if sampled else 0.0,  # 补采样占总采样的比例。
+                "reward_gap_raw_mean": fmean(reward_gap_raw_values) if reward_gap_raw_values else 0.0,  # 每组最高/最低 reward 差的均值。
+                "reward_gap_met_ratio": (reward_gap_met_count / num_groups) if num_groups else 0.0,  # reward gap 达到阈值的组比例。
+                "max_group_size_hit_ratio": (max_group_size_hit_count / num_groups) if num_groups else 0.0,  # 补到 max_group_size 仍没达标的组比例。
+                "collapsed_group_ratio": (collapsed_group_count / num_groups) if num_groups else 0.0,  # 组内 final_query 坍缩成一个文本的比例。
+                "all_same_final_query_ratio": (all_same_final_query_group_count / num_groups) if num_groups else 0.0,  # 与 collapsed_group_ratio 同义的兼容指标。
+                "flat_reward_group_ratio": (flat_reward_group_count / num_groups) if num_groups else 0.0,  # 组内 reward 全相同的比例。
+                "flat_mrr20_group_ratio": (flat_mrr_group_count / num_groups) if num_groups else 0.0,  # 组内 MRR@20 全相同的比例。
+                "flat_main_reward_group_ratio": (  # 组内 main_reward 全相同的比例，用于发现主奖励变平。
                     flat_main_reward_group_count / num_groups
                 ) if num_groups else 0.0,
-                "best_reward_hit_best_mrr20_ratio": (
+                "best_reward_hit_best_mrr20_ratio": (  # reward 最高样本同时也是组内最高 MRR@20 的比例。
                     best_reward_hit_best_mrr20_count / num_groups
                 ) if num_groups else 0.0,
-                "sampled": float(sampled),
-                "valid_samples": float(valid_samples),
-                "group_query_summaries": group_query_summaries,
+                "sampled": float(sampled),  # 本 batch 总采样候选数。
+                "valid_samples": float(valid_samples),  # 真正参与反传更新的有效样本数。
+                "group_query_summaries": group_query_summaries,  # 每个 query 组的详细 trace，调用方会写入 group_trace_log。
             }
 
             if valid_samples == 0:
                 metrics.update(
                     {
-                        "loss": 0.0,
-                        "loss_pg": 0.0,
-                        "loss_pg_abs_mean": 0.0,
-                        "loss_kl": 0.0,
-                        "kl_dominance_ratio": 0.0,
-                        "updated": 0.0,
+                        "loss": 0.0,  # 没有有效样本时总 loss 记 0，表示本步没有可反传信号。
+                        "loss_pg": 0.0,  # 没有有效样本时 policy gradient loss 记 0。
+                        "loss_pg_abs_mean": 0.0,  # 没有有效样本时 policy loss 绝对值均值记 0。
+                        "loss_kl": 0.0,  # 没有有效样本时 KL loss 记 0。
+                        "kl_dominance_ratio": 0.0,  # 没有有效样本时 KL 占比记 0，避免误判 KL 主导。
+                        "updated": 0.0,  # 标记本 train_step 没有执行 optimizer.step()。
                     }
                 )
                 if collect_best_queries:
-                    metrics["best_query_pairs"] = best_query_pairs
+                    metrics["best_query_pairs"] = best_query_pairs  # 可选调试字段：每组 reward 最高的 rewrite。
                 return metrics
 
-            # Convert accumulated sum-gradients into mean-gradients.
+            # 前面是“逐样本累计梯度”，这里除以有效样本数，变回 mean loss 的尺度。
             grad_scale = 1.0 / float(valid_samples)
             for param in self.model_wrapper.trainable_parameters():
                 if param.grad is not None:
@@ -834,16 +861,16 @@ class GRPOEngine:
 
             metrics.update(
                 {
-                    "loss": fmean(loss_values) if loss_values else 0.0,
-                    "loss_pg": loss_pg_mean,
-                    "loss_pg_abs_mean": loss_pg_abs_mean,
-                    "loss_kl": loss_kl_mean,
-                    "kl_dominance_ratio": kl_dominance_ratio,
-                    "updated": 1.0,
+                    "loss": fmean(loss_values) if loss_values else 0.0,  # 有效样本上的平均总 loss。
+                    "loss_pg": loss_pg_mean,  # PPO clipped policy loss 均值，主要反映 advantage 驱动项。
+                    "loss_pg_abs_mean": loss_pg_abs_mean,  # policy loss 绝对值均值，用于和 KL 项比较量级。
+                    "loss_kl": loss_kl_mean,  # ref KL loss 均值，约束 actor 不要偏离基座太远。
+                    "kl_dominance_ratio": kl_dominance_ratio,  # KL 绝对量级占 loss_pg+loss_kl 的比例。
+                    "updated": 1.0,  # 标记本 train_step 已执行 optimizer.step()。
                 }
             )
             if collect_best_queries:
-                metrics["best_query_pairs"] = best_query_pairs
+                metrics["best_query_pairs"] = best_query_pairs  # 可选调试字段：每组 reward 最高的 rewrite。
             return metrics
         finally:
             self.model_wrapper.actor_model.train(previous_mode)

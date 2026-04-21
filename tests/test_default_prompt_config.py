@@ -105,50 +105,52 @@ class DefaultPromptConfigTests(unittest.TestCase):
     def test_default_prompt_uses_p23_demo_profile(self):
         config = get_default_config()
 
-        self.assertEqual(config.prompt.prompt_id, "p24_diverse_lexical")
-        self.assertEqual(config.prompt.max_new_tokens, 16)
+        self.assertEqual(config.prompt.prompt_id, "p24_diverse_lexical_top20")
+        self.assertEqual(config.prompt.max_new_tokens, 10)
         self.assertEqual(config.prompt.temperature, 0.0)
         self.assertEqual(config.prompt.top_p, 1.0)
         self.assertEqual(config.prompt.stop_on, "\n")
         self.assertTrue(config.prompt.enforce_single_line)
         self.assertIn("Strategy ID: P23 [FewShot]", config.prompt.system_prompt)
-        self.assertIn("MRR@50", config.prompt.system_prompt)
+        self.assertIn("MRR@20", config.prompt.system_prompt)
+        self.assertIn("Recall@50", config.prompt.system_prompt)
         self.assertIn("anemia symptoms women", config.prompt.template)
 
     def test_training_defaults_remain_stochastic(self):
         config = get_default_config()
 
-        self.assertEqual(config.train.group_size, 10)
-        self.assertEqual(config.train.max_group_size, 14)
-        self.assertEqual(config.train.actor_chunk_size, 4)
-        self.assertEqual(config.train.kl_beta, 0.03)
-        self.assertEqual(config.train.max_new_tokens, 12)
-        self.assertEqual(config.train.temperature, 0.85)
-        self.assertEqual(config.train.top_p, 0.95)
+        self.assertEqual(config.train.batch_size, 24)
+        self.assertEqual(config.train.group_size, 8)
+        self.assertEqual(config.train.max_group_size, 12)
+        self.assertEqual(config.train.actor_chunk_size, 2)
+        self.assertEqual(config.train.kl_beta, 0.04)
+        self.assertEqual(config.train.max_new_tokens, 10)
+        self.assertEqual(config.train.temperature, 0.82)
+        self.assertEqual(config.train.top_p, 0.93)
+        self.assertTrue(config.train.curriculum_enable)
         self.assertEqual(config.model.projection_chunk_size, 64)
 
-    def test_reward_defaults_use_dense_three_layer_formula(self):
+    def test_reward_defaults_use_top20_delta_formula(self):
         config = get_default_config()
 
-        self.assertEqual(config.reward.mrr_k, 50)
-        self.assertEqual(config.reward.recall_k, 50)
-        self.assertEqual(config.reward.recall_dense_k, 100)
-        self.assertEqual(config.reward.reward_mode, "legacy")
-        self.assertEqual(config.reward.w_mrr, 0.40)
-        self.assertEqual(config.reward.w_recall_dense, 0.15)
+        self.assertEqual(config.reward.mrr_k, 20)
+        self.assertEqual(config.reward.recall_k, 20)
+        self.assertEqual(config.reward.recall_dense_k, 50)
+        self.assertEqual(config.reward.reward_mode, "top20_delta")
+        self.assertEqual(config.reward.w_mrr, 0.52)
+        self.assertEqual(config.reward.w_recall, 0.22)
+        self.assertEqual(config.reward.w_recall_dense, 0.16)
         self.assertEqual(config.reward.w_rank_bonus, 0.10)
-        self.assertEqual(config.reward.w_term_preserve, 0.10)
-        self.assertEqual(config.reward.w_length_score, 0.08)
-        self.assertEqual(config.reward.w_clean_format, 0.07)
-        self.assertEqual(config.reward.w_bad_format, 0.15)
-        self.assertEqual(config.reward.w_unsafe_copy, 0.08)
-        self.assertEqual(config.reward.w_overedit, 0.10)
-        self.assertEqual(config.reward.overedit_tau, 0.40)
+        self.assertEqual(config.reward.w_bad_format, 0.18)
+        self.assertEqual(config.reward.w_unsafe_copy, 0.14)
+        self.assertEqual(config.reward.w_overedit, 0.08)
+        self.assertEqual(config.reward.overedit_tau, 0.45)
         self.assertEqual(config.reward.recall_drop_lambda, 0.80)
         self.assertEqual(config.reward.anchor_bonus_value, 0.05)
 
     def test_top20_reward_mode_updates_stock_prompt_wording(self):
         config = get_default_config()
+        config.prompt.prompt_id = "p24_diverse_lexical"
         config.reward.reward_mode = "top20_delta"
 
         updated = apply_reward_mode_prompt_defaults(config)
