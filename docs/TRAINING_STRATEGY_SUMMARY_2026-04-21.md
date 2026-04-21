@@ -62,7 +62,7 @@
 
 这条线是更“针对检索排名”的新实验：
 
-- 现在保留 `delta_mrr@20` 的相对提升目标，同时用绝对 `Recall@20 / Recall@50 / rank bonus` 做支撑项。
+- 不再奖励 rewrite 的绝对分数，而是奖励“相对原 query 的提升”。
 - 重点优化 `MRR@20 / Recall@20 / Recall@50 / rank bonus`。
 - 加入 curriculum，把训练 query 分阶段采样。
 - 两阶段训练，phase2 从 phase1 的 best adapter 热启动。
@@ -171,7 +171,7 @@
 如果一组 rewrite 太“塌”，会触发额外重采样：
 
 - 唯一 final query 数低于 `min_unique_final_queries`
-- 输出带标签污染、多行、脏格式
+- 输出标带签污染、多行、脏格式
 - 与原 query 完全相同
 
 这时会对部分槽位做更高温度的 regenerate，替换掉：
@@ -280,36 +280,27 @@ w_unsafe_copy = 0.08
 
 ## 7.2 `top20_delta` 模式：相对提升奖励
 
-`top20_delta` v2 保留 `delta_mrr` 的相对提升目标，但不再把所有项都写成 delta：
+`top20_delta` 不再奖励 rewrite 的绝对值，而是奖励它相对原 query 的增量：
 
 ```text
 main_reward =
   w_mrr * (mrr - orig_mrr)
-  + w_recall * recall
-  + w_recall_dense * recall_dense
-  + w_rank_bonus * rank_bonus
+  + w_recall * (recall - orig_recall)
+  + w_recall_dense * (recall_dense - orig_recall_aux)
+  + w_rank_bonus * (rank_bonus - orig_rank_bonus)
 
 total =
   main_reward
-  + anchor_bonus
   - w_bad_format * bad_format_penalty
   - w_unsafe_copy * unsafe_copy_penalty
   - w_overedit * overedit_penalty
-  - recall_drop_penalty
-```
-
-其中：
-
-```text
-recall_drop_penalty = recall_drop_lambda * max(0, orig_recall@20 - recall@20)
-anchor_bonus = anchor_bonus_value, when mrr@20 >= orig_mrr@20 and recall@20 >= orig_recall@20
 ```
 
 这条线的理念是：
 
 - 原 query 本来就可能很强。
 - 训练目标不该是“让模型输出高分 query”，而是“比原 query 更好”。
-- 所以最重要的是 `delta_mrr`、absolute recall 支撑，以及 top-rank 改善。
+- 所以最重要的是 `delta_mrr`、`delta_recall` 和 top-rank 改善。
 
 ## 7.3 排名 bonus
 
@@ -709,31 +700,24 @@ loss = loss_pg + loss_kl
 | `EVAL_QUERY_BATCH_SIZE` | `8` |
 | `ACTOR_CHUNK_SIZE` | `2` |
 | `PROJECTION_CHUNK_SIZE` | `64` |
-| `GROUP_TEMPERATURE_STRIDE` | `0.08` |
-| `GROUP_TOP_P_STRIDE` | `0.02` |
-| `MIN_UNIQUE_FINAL_QUERIES` | `5` |
-| `MAX_REGEN_ROUNDS` | `3` |
-| `REWARD_GAP_THRESHOLD` | `0.12` |
-| `GAP_SAMPLING_TEMPERATURE_DELTA` | `0.18` |
+| `GROUP_TEMPERATURE_STRIDE` | `0.07` |
+| `GROUP_TOP_P_STRIDE` | `0.015` |
+| `MIN_UNIQUE_FINAL_QUERIES` | `4` |
+| `MAX_REGEN_ROUNDS` | `2` |
+| `REWARD_GAP_THRESHOLD` | `0.08` |
+| `GAP_SAMPLING_TEMPERATURE_DELTA` | `0.15` |
 | `TRAIN_MAX_VAL_QUERIES` | `400` |
 | `reward_mode` | `top20_delta` |
 | `reward_mrr_k` | `20` |
 | `reward_recall_k` | `20` |
 | `reward_recall_dense_k` | `50` |
 | `reward_w_bad_format` | `0.18` |
-| `reward_w_unsafe_copy` | `0.14` |
-| `reward_w_overedit` | `0.08` |
-| `overedit_tau` | `0.45` |
+| `reward_w_unsafe_copy` | `0.12` |
+| `reward_w_overedit` | `0.10` |
+| `overedit_tau` | `0.40` |
 | `format_max_tokens` | `12` |
-| `format_min_english_ratio` | `0.85` |
-| `format_max_unreadable_ratio` | `0.20` |
-| `recall_drop_lambda` | `0.8` |
-| `anchor_bonus_value` | `0.05` |
-
-- v2 `top20_delta` keeps `delta_mrr@20` relative, but uses absolute `recall@20`, `recall@50`, and `rank_bonus`.
-- Guardrails:
-  - `recall_drop_penalty = recall_drop_lambda * max(0, orig_recall@20 - recall@20)`
-  - `anchor_bonus = anchor_bonus_value` when `mrr@20 >= orig_mrr@20` and `recall@20 >= orig_recall@20`
+| `format_min_english_ratio` | `0.8` |
+| `format_max_unreadable_ratio` | `0.25` |
 
 ## 13.3 phase1 参数
 
@@ -743,23 +727,23 @@ loss = loss_pg + loss_kl
 | `group_size` | `8` |
 | `max_group_size` | `12` |
 | `learning_rate` | `1.0e-5` |
-| `kl_beta` | `0.040` |
-| `temperature` | `0.82` |
-| `top_p` | `0.93` |
+| `kl_beta` | `0.045` |
+| `temperature` | `0.75` |
+| `top_p` | `0.92` |
 | `max_new_tokens` | `10` |
 | `eval_every_steps` | `20` |
-| `max_steps` | `100` |
-| `reward_w_mrr` | `0.40` |
-| `reward_w_recall` | `0.28` |
-| `reward_w_recall_dense` | `0.22` |
+| `max_steps` | `80` |
+| `reward_w_mrr` | `0.55` |
+| `reward_w_recall` | `0.20` |
+| `reward_w_recall_dense` | `0.15` |
 | `reward_w_rank_bonus` | `0.10` |
 
 phase1 的倾向是：
 
-- 先稳住 recall，再去学 `delta_mrr`
-- `Recall@20 / Recall@50 / rank bonus` 都还保留明确权重
-- 解码更开放一些，优先拉开 group 差异
-- 学习率略大一些，先把“安全改写 + 不丢召回”学稳
+- 更看重 `delta_mrr`
+- 仍保留 recall 和 rank bonus
+- 解码稍微保守
+- 学习率略大一些，先把“能学到的相对提升”快速学起来
 
 ## 13.4 phase2 参数
 
@@ -769,24 +753,23 @@ phase1 的倾向是：
 | `batch_size` | `24` |
 | `group_size` | `8` |
 | `max_group_size` | `12` |
-| `learning_rate` | `6.0e-6` |
-| `kl_beta` | `0.055` |
-| `temperature` | `0.80` |
-| `top_p` | `0.92` |
+| `learning_rate` | `8e-6` |
+| `kl_beta` | `0.05` |
+| `temperature` | `0.70` |
+| `top_p` | `0.90` |
 | `max_new_tokens` | `10` |
 | `eval_every_steps` | `20` |
 | `max_steps` | `60` |
-| `reward_w_mrr` | `0.52` |
-| `reward_w_recall` | `0.22` |
-| `reward_w_recall_dense` | `0.16` |
+| `reward_w_mrr` | `0.65` |
+| `reward_w_recall` | `0.15` |
+| `reward_w_recall_dense` | `0.10` |
 | `reward_w_rank_bonus` | `0.10` |
 
 phase2 的倾向是：
 
-- `delta_mrr` 主导，但仍保留 recall guard
+- 更强地把优化重点推到 `delta_mrr`
 - 学习率更低
 - 继续 warm-start 微调
-- 不把温度收得太死，避免 group 再次塌缩
 
 一句话说，phase2 比 phase1 更像“收口调优”。
 
@@ -1026,3 +1009,4 @@ phase2 的倾向是：
 如果只用一句话总结当前项目状态，我会这样写：
 
 - 这套系统已经从“一个可跑的 RL demo”进化成“一个有明确检索目标、有 reward 约束、有多样性控制、有课程学习分支、并且能细粒度诊断训练行为的查询改写训练框架”；当前最现实的下一步，不是再改一堆机制，而是把 `4B conservative_mrr` 和 `4B top20_delta curriculum` 两条线跑成完整可比的正式结果。
+
