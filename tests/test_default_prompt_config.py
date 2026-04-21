@@ -144,6 +144,8 @@ class DefaultPromptConfigTests(unittest.TestCase):
         self.assertEqual(config.reward.w_unsafe_copy, 0.08)
         self.assertEqual(config.reward.w_overedit, 0.10)
         self.assertEqual(config.reward.overedit_tau, 0.40)
+        self.assertEqual(config.reward.recall_drop_lambda, 0.80)
+        self.assertEqual(config.reward.anchor_bonus_value, 0.05)
 
     def test_top20_reward_mode_updates_stock_prompt_wording(self):
         config = get_default_config()
@@ -216,6 +218,8 @@ class TrainEvaluationDecodeTests(unittest.TestCase):
         self.assertAlmostEqual(metrics["mrr_mean"], 0.25)
         self.assertAlmostEqual(metrics["recall_dense_mean"], 0.2)
         self.assertAlmostEqual(metrics["unsafe_copy_penalty_mean"], 0.0)
+        self.assertAlmostEqual(metrics["anchor_bonus_mean"], 0.0)
+        self.assertAlmostEqual(metrics["recall_drop_penalty_mean"], 0.0)
         self.assertIn("orig_mrr20_mean", metrics)
         self.assertIn("rewrite_mrr20_mean", metrics)
         self.assertIn("delta_mrr20_positive_ratio", metrics)

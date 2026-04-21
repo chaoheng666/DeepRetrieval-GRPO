@@ -113,6 +113,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--reward-w-unsafe-copy", type=float, default=None, help="Weight for unsafe-copy penalty term.")
     parser.add_argument("--reward-w-overedit", type=float, default=None, help="Weight for overedit penalty term.")
     parser.add_argument("--overedit-tau", type=float, default=None, help="Keyword preserve threshold before overedit penalty applies.")
+    parser.add_argument("--recall-drop-lambda", type=float, default=None, help="Recall@20 drop penalty scale for top20_delta mode.")
+    parser.add_argument("--anchor-bonus-value", type=float, default=None, help="Bonus added when rewrite is no worse than original on MRR@20 and Recall@20.")
     parser.add_argument("--length-score-min-terms", type=int, default=None, help="Token count where length score starts above zero.")
     parser.add_argument("--length-score-ideal-min-terms", type=int, default=None, help="Lower bound of the ideal token-count plateau.")
     parser.add_argument("--length-score-ideal-max-terms", type=int, default=None, help="Upper bound of the ideal token-count plateau.")
@@ -300,6 +302,10 @@ def apply_overrides(config: AppConfig, args: argparse.Namespace) -> AppConfig:
         config.reward.w_overedit = args.reward_w_overedit
     if args.overedit_tau is not None:
         config.reward.overedit_tau = args.overedit_tau
+    if args.recall_drop_lambda is not None:
+        config.reward.recall_drop_lambda = args.recall_drop_lambda
+    if args.anchor_bonus_value is not None:
+        config.reward.anchor_bonus_value = args.anchor_bonus_value
     if args.length_score_min_terms is not None:
         config.reward.length_score_min_terms = args.length_score_min_terms
     if args.length_score_ideal_min_terms is not None:
@@ -498,6 +504,12 @@ def apply_runtime_mode_adjustments(config: AppConfig, args: argparse.Namespace) 
     if config.reward.bad_format_cap < 0.0:
         print(f"[warn] bad_format_cap={config.reward.bad_format_cap} is invalid; auto-adjusting to 0.0.")
         config.reward.bad_format_cap = 0.0
+    if config.reward.recall_drop_lambda < 0.0:
+        print(f"[warn] recall_drop_lambda={config.reward.recall_drop_lambda} is invalid; auto-adjusting to 0.0.")
+        config.reward.recall_drop_lambda = 0.0
+    if config.reward.anchor_bonus_value < 0.0:
+        print(f"[warn] anchor_bonus_value={config.reward.anchor_bonus_value} is invalid; auto-adjusting to 0.0.")
+        config.reward.anchor_bonus_value = 0.0
 
     if config.train.max_regen_rounds < 0:
         print(

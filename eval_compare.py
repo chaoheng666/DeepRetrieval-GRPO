@@ -58,6 +58,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--reward-w-unsafe-copy", type=float, default=None)
     parser.add_argument("--reward-w-overedit", type=float, default=None)
     parser.add_argument("--overedit-tau", type=float, default=None)
+    parser.add_argument("--recall-drop-lambda", type=float, default=None)
+    parser.add_argument("--anchor-bonus-value", type=float, default=None)
     parser.add_argument("--length-score-min-terms", type=int, default=None)
     parser.add_argument("--length-score-ideal-min-terms", type=int, default=None)
     parser.add_argument("--length-score-ideal-max-terms", type=int, default=None)
@@ -146,6 +148,10 @@ def apply_overrides(config: AppConfig, args: argparse.Namespace) -> AppConfig:
         config.reward.w_overedit = args.reward_w_overedit
     if args.overedit_tau is not None:
         config.reward.overedit_tau = args.overedit_tau
+    if args.recall_drop_lambda is not None:
+        config.reward.recall_drop_lambda = max(0.0, args.recall_drop_lambda)
+    if args.anchor_bonus_value is not None:
+        config.reward.anchor_bonus_value = max(0.0, args.anchor_bonus_value)
     if args.length_score_min_terms is not None:
         config.reward.length_score_min_terms = max(0, args.length_score_min_terms)
     if args.length_score_ideal_min_terms is not None:
@@ -206,6 +212,8 @@ def reward_breakdown_to_report_dict(score: RewardBreakdown) -> dict[str, Any]:
         "delta_recall_aux": getattr(score, "delta_recall_aux", 0.0),
         "delta_rank_bonus": getattr(score, "delta_rank_bonus", 0.0),
         "main_reward": getattr(score, "main_reward", 0.0),
+        "anchor_bonus": getattr(score, "anchor_bonus", 0.0),
+        "recall_drop_penalty": getattr(score, "recall_drop_penalty", 0.0),
         "overedit_penalty": getattr(score, "overedit_penalty", 0.0),
         "bad_format_penalty": getattr(score, "bad_format_penalty", 0.0),
         "unsafe_copy_penalty": getattr(score, "unsafe_copy_penalty", 0.0),

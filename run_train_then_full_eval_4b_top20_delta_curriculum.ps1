@@ -12,36 +12,38 @@ try {
   $searchThreads = if ($env:SEARCH_THREADS) { $env:SEARCH_THREADS } else { "16" }
   $trainMaxValQueries = if ($env:TRAIN_MAX_VAL_QUERIES) { $env:TRAIN_MAX_VAL_QUERIES } else { "400" }
   $evalQueryBatchSize = if ($env:EVAL_QUERY_BATCH_SIZE) { $env:EVAL_QUERY_BATCH_SIZE } else { "8" }
-  $actorChunkSize = if ($env:ACTOR_CHUNK_SIZE) { $env:ACTOR_CHUNK_SIZE } else { "4" }
+  $actorChunkSize = if ($env:ACTOR_CHUNK_SIZE) { $env:ACTOR_CHUNK_SIZE } else { "2" }
   $projectionChunkSize = if ($env:PROJECTION_CHUNK_SIZE) { $env:PROJECTION_CHUNK_SIZE } else { "64" }
-  $groupTemperatureStride = if ($env:GROUP_TEMPERATURE_STRIDE) { $env:GROUP_TEMPERATURE_STRIDE } else { "0.07" }
-  $groupTopPStride = if ($env:GROUP_TOP_P_STRIDE) { $env:GROUP_TOP_P_STRIDE } else { "0.015" }
-  $minUniqueFinalQueries = if ($env:MIN_UNIQUE_FINAL_QUERIES) { $env:MIN_UNIQUE_FINAL_QUERIES } else { "4" }
-  $maxRegenRounds = if ($env:MAX_REGEN_ROUNDS) { $env:MAX_REGEN_ROUNDS } else { "2" }
-  $rewardGapThreshold = if ($env:REWARD_GAP_THRESHOLD) { $env:REWARD_GAP_THRESHOLD } else { "0.08" }
-  $gapSamplingTemperatureDelta = if ($env:GAP_SAMPLING_TEMPERATURE_DELTA) { $env:GAP_SAMPLING_TEMPERATURE_DELTA } else { "0.15" }
+  $groupTemperatureStride = if ($env:GROUP_TEMPERATURE_STRIDE) { $env:GROUP_TEMPERATURE_STRIDE } else { "0.08" }
+  $groupTopPStride = if ($env:GROUP_TOP_P_STRIDE) { $env:GROUP_TOP_P_STRIDE } else { "0.02" }
+  $minUniqueFinalQueries = if ($env:MIN_UNIQUE_FINAL_QUERIES) { $env:MIN_UNIQUE_FINAL_QUERIES } else { "5" }
+  $maxRegenRounds = if ($env:MAX_REGEN_ROUNDS) { $env:MAX_REGEN_ROUNDS } else { "3" }
+  $rewardGapThreshold = if ($env:REWARD_GAP_THRESHOLD) { $env:REWARD_GAP_THRESHOLD } else { "0.12" }
+  $gapSamplingTemperatureDelta = if ($env:GAP_SAMPLING_TEMPERATURE_DELTA) { $env:GAP_SAMPLING_TEMPERATURE_DELTA } else { "0.18" }
   $formatMaxTokens = if ($env:FORMAT_MAX_TOKENS) { $env:FORMAT_MAX_TOKENS } else { "12" }
-  $formatMinEnglishRatio = if ($env:FORMAT_MIN_ENGLISH_RATIO) { $env:FORMAT_MIN_ENGLISH_RATIO } else { "0.8" }
-  $formatMaxUnreadableRatio = if ($env:FORMAT_MAX_UNREADABLE_RATIO) { $env:FORMAT_MAX_UNREADABLE_RATIO } else { "0.25" }
+  $formatMinEnglishRatio = if ($env:FORMAT_MIN_ENGLISH_RATIO) { $env:FORMAT_MIN_ENGLISH_RATIO } else { "0.85" }
+  $formatMaxUnreadableRatio = if ($env:FORMAT_MAX_UNREADABLE_RATIO) { $env:FORMAT_MAX_UNREADABLE_RATIO } else { "0.20" }
+  $recallDropLambda = if ($env:RECALL_DROP_LAMBDA) { $env:RECALL_DROP_LAMBDA } else { "0.8" }
+  $anchorBonusValue = if ($env:ANCHOR_BONUS_VALUE) { $env:ANCHOR_BONUS_VALUE } else { "0.05" }
 
   $phase1Batch = if ($env:PHASE1_BATCH_SIZE) { $env:PHASE1_BATCH_SIZE } else { "24" }
   $phase1Group = if ($env:PHASE1_GROUP_SIZE) { $env:PHASE1_GROUP_SIZE } else { "8" }
   $phase1MaxGroup = if ($env:PHASE1_MAX_GROUP_SIZE) { $env:PHASE1_MAX_GROUP_SIZE } else { "12" }
   $phase1Lr = if ($env:PHASE1_LR) { $env:PHASE1_LR } else { "1.0e-5" }
-  $phase1Kl = if ($env:PHASE1_KL_BETA) { $env:PHASE1_KL_BETA } else { "0.045" }
-  $phase1Temp = if ($env:PHASE1_TEMPERATURE) { $env:PHASE1_TEMPERATURE } else { "0.75" }
-  $phase1TopP = if ($env:PHASE1_TOP_P) { $env:PHASE1_TOP_P } else { "0.92" }
+  $phase1Kl = if ($env:PHASE1_KL_BETA) { $env:PHASE1_KL_BETA } else { "0.040" }
+  $phase1Temp = if ($env:PHASE1_TEMPERATURE) { $env:PHASE1_TEMPERATURE } else { "0.82" }
+  $phase1TopP = if ($env:PHASE1_TOP_P) { $env:PHASE1_TOP_P } else { "0.93" }
   $phase1MaxNewTokens = if ($env:PHASE1_MAX_NEW_TOKENS) { $env:PHASE1_MAX_NEW_TOKENS } else { "10" }
   $phase1EvalEvery = if ($env:PHASE1_EVAL_EVERY_STEPS) { $env:PHASE1_EVAL_EVERY_STEPS } else { "20" }
-  $phase1MaxSteps = if ($env:PHASE1_MAX_STEPS) { $env:PHASE1_MAX_STEPS } else { "80" }
+  $phase1MaxSteps = if ($env:PHASE1_MAX_STEPS) { $env:PHASE1_MAX_STEPS } else { "100" }
 
   $phase2Batch = if ($env:PHASE2_BATCH_SIZE) { $env:PHASE2_BATCH_SIZE } else { "24" }
   $phase2Group = if ($env:PHASE2_GROUP_SIZE) { $env:PHASE2_GROUP_SIZE } else { "8" }
   $phase2MaxGroup = if ($env:PHASE2_MAX_GROUP_SIZE) { $env:PHASE2_MAX_GROUP_SIZE } else { "12" }
-  $phase2Lr = if ($env:PHASE2_LR) { $env:PHASE2_LR } else { "8e-6" }
-  $phase2Kl = if ($env:PHASE2_KL_BETA) { $env:PHASE2_KL_BETA } else { "0.05" }
-  $phase2Temp = if ($env:PHASE2_TEMPERATURE) { $env:PHASE2_TEMPERATURE } else { "0.70" }
-  $phase2TopP = if ($env:PHASE2_TOP_P) { $env:PHASE2_TOP_P } else { "0.90" }
+  $phase2Lr = if ($env:PHASE2_LR) { $env:PHASE2_LR } else { "6.0e-6" }
+  $phase2Kl = if ($env:PHASE2_KL_BETA) { $env:PHASE2_KL_BETA } else { "0.055" }
+  $phase2Temp = if ($env:PHASE2_TEMPERATURE) { $env:PHASE2_TEMPERATURE } else { "0.80" }
+  $phase2TopP = if ($env:PHASE2_TOP_P) { $env:PHASE2_TOP_P } else { "0.92" }
   $phase2MaxNewTokens = if ($env:PHASE2_MAX_NEW_TOKENS) { $env:PHASE2_MAX_NEW_TOKENS } else { "10" }
   $phase2EvalEvery = if ($env:PHASE2_EVAL_EVERY_STEPS) { $env:PHASE2_EVAL_EVERY_STEPS } else { "20" }
   $phase2MaxSteps = if ($env:PHASE2_MAX_STEPS) { $env:PHASE2_MAX_STEPS } else { "60" }
@@ -88,9 +90,11 @@ try {
     "--reward-recall-k", "20",
     "--reward-recall-dense-k", "50",
     "--reward-w-bad-format", "0.18",
-    "--reward-w-unsafe-copy", "0.12",
-    "--reward-w-overedit", "0.10",
-    "--overedit-tau", "0.40",
+    "--reward-w-unsafe-copy", "0.14",
+    "--reward-w-overedit", "0.08",
+    "--overedit-tau", "0.45",
+    "--recall-drop-lambda", $recallDropLambda,
+    "--anchor-bonus-value", $anchorBonusValue,
     "--format-max-tokens", $formatMaxTokens,
     "--format-min-english-ratio", $formatMinEnglishRatio,
     "--format-max-unreadable-ratio", $formatMaxUnreadableRatio,
@@ -98,7 +102,7 @@ try {
     "--curriculum-metadata-path", $curriculumMetadataPath
   )
 
-  Write-Host "[phase1] batch=$phase1Batch group=$phase1Group max_group=$phase1MaxGroup lr=$phase1Lr kl=$phase1Kl decode=($phase1MaxNewTokens,$phase1Temp,$phase1TopP) reward=(0.55,0.20,0.15,0.10)"
+  Write-Host "[phase1] batch=$phase1Batch group=$phase1Group max_group=$phase1MaxGroup lr=$phase1Lr kl=$phase1Kl decode=($phase1MaxNewTokens,$phase1Temp,$phase1TopP) reward=(0.40,0.28,0.22,0.10)"
   & $pythonBin train.py @commonTrainArgs `
     --curriculum-phase phase1 `
     --batch-size $phase1Batch `
@@ -114,9 +118,9 @@ try {
     --eval-top-p $phase1TopP `
     --eval-every-steps $phase1EvalEvery `
     --max-steps $phase1MaxSteps `
-    --reward-w-mrr 0.55 `
-    --reward-w-recall 0.20 `
-    --reward-w-recall-dense 0.15 `
+    --reward-w-mrr 0.40 `
+    --reward-w-recall 0.28 `
+    --reward-w-recall-dense 0.22 `
     --reward-w-rank-bonus 0.10 `
     --save-dir $phase1CheckpointDir `
     --log-path $phase1LogPath `
@@ -127,7 +131,7 @@ try {
     throw "phase1 best checkpoint not found: $phase1Best"
   }
 
-  Write-Host "[phase2] batch=$phase2Batch group=$phase2Group max_group=$phase2MaxGroup lr=$phase2Lr kl=$phase2Kl decode=($phase2MaxNewTokens,$phase2Temp,$phase2TopP) reward=(0.65,0.15,0.10,0.10)"
+  Write-Host "[phase2] batch=$phase2Batch group=$phase2Group max_group=$phase2MaxGroup lr=$phase2Lr kl=$phase2Kl decode=($phase2MaxNewTokens,$phase2Temp,$phase2TopP) reward=(0.52,0.22,0.16,0.10)"
   & $pythonBin train.py @commonTrainArgs `
     --curriculum-phase phase2 `
     --adapter-path $phase1Best `
@@ -144,9 +148,9 @@ try {
     --eval-top-p $phase2TopP `
     --eval-every-steps $phase2EvalEvery `
     --max-steps $phase2MaxSteps `
-    --reward-w-mrr 0.65 `
-    --reward-w-recall 0.15 `
-    --reward-w-recall-dense 0.10 `
+    --reward-w-mrr 0.52 `
+    --reward-w-recall 0.22 `
+    --reward-w-recall-dense 0.16 `
     --reward-w-rank-bonus 0.10 `
     --save-dir $phase2CheckpointDir `
     --log-path $phase2LogPath `
@@ -172,14 +176,16 @@ try {
     --reward-mrr-k 20 `
     --reward-recall-k 20 `
     --reward-recall-dense-k 50 `
-    --reward-w-mrr 0.65 `
-    --reward-w-recall 0.15 `
-    --reward-w-recall-dense 0.10 `
+    --reward-w-mrr 0.52 `
+    --reward-w-recall 0.22 `
+    --reward-w-recall-dense 0.16 `
     --reward-w-rank-bonus 0.10 `
     --reward-w-bad-format 0.18 `
-    --reward-w-unsafe-copy 0.12 `
-    --reward-w-overedit 0.10 `
-    --overedit-tau 0.40 `
+    --reward-w-unsafe-copy 0.14 `
+    --reward-w-overedit 0.08 `
+    --overedit-tau 0.45 `
+    --recall-drop-lambda $recallDropLambda `
+    --anchor-bonus-value $anchorBonusValue `
     --format-max-tokens $formatMaxTokens `
     --format-min-english-ratio $formatMinEnglishRatio `
     --format-max-unreadable-ratio $formatMaxUnreadableRatio `

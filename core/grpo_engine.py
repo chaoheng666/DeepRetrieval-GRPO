@@ -37,6 +37,8 @@ class Sample:
     delta_recall: float
     delta_recall_aux: float
     delta_rank_bonus: float
+    anchor_bonus: float
+    recall_drop_penalty: float
     term_preserve: float
     keyword_preserve: float
     locked_term_preserve: float
@@ -359,11 +361,13 @@ class GRPOEngine:
             delta_recall_scores: list[float] = []
             delta_recall_aux_scores: list[float] = []
             delta_rank_bonus_scores: list[float] = []
+            anchor_bonus_scores: list[float] = []
             term_preserve_scores: list[float] = []
             keyword_preserve_scores: list[float] = []
             locked_term_preserve_scores: list[float] = []
             length_scores: list[float] = []
             clean_format_scores: list[float] = []
+            recall_drop_penalties: list[float] = []
             overedit_penalties: list[float] = []
             bad_format_penalties: list[float] = []
             unsafe_copy_penalties: list[float] = []
@@ -490,6 +494,8 @@ class GRPOEngine:
                             delta_recall=getattr(reward, "delta_recall", 0.0),
                             delta_recall_aux=getattr(reward, "delta_recall_aux", 0.0),
                             delta_rank_bonus=getattr(reward, "delta_rank_bonus", 0.0),
+                            anchor_bonus=getattr(reward, "anchor_bonus", 0.0),
+                            recall_drop_penalty=getattr(reward, "recall_drop_penalty", 0.0),
                             term_preserve=reward.term_preserve,
                             keyword_preserve=keyword_preserve,
                             locked_term_preserve=locked_term_preserve,
@@ -555,11 +561,13 @@ class GRPOEngine:
                         "group_delta_recall_aux": [sample.delta_recall_aux for sample in group_samples],
                         "group_delta_rank_bonus": [sample.delta_rank_bonus for sample in group_samples],
                         "group_main_rewards": [sample.main_reward for sample in group_samples],
+                        "group_anchor_bonus": [sample.anchor_bonus for sample in group_samples],
                         "group_term_preserve": [sample.term_preserve for sample in group_samples],
                         "group_keyword_preserve": [sample.keyword_preserve for sample in group_samples],
                         "group_locked_term_preserve": [sample.locked_term_preserve for sample in group_samples],
                         "group_length_scores": [sample.length_score for sample in group_samples],
                         "group_clean_format_scores": [sample.clean_format for sample in group_samples],
+                        "group_recall_drop_penalties": [sample.recall_drop_penalty for sample in group_samples],
                         "group_overedit_penalties": [sample.overedit_penalty for sample in group_samples],
                         "group_bad_format_penalties": [sample.bad_format_penalty for sample in group_samples],
                         "group_unsafe_copy_penalties": [sample.unsafe_copy_penalty for sample in group_samples],
@@ -595,11 +603,13 @@ class GRPOEngine:
                     delta_recall_scores.append(sample.delta_recall)
                     delta_recall_aux_scores.append(sample.delta_recall_aux)
                     delta_rank_bonus_scores.append(sample.delta_rank_bonus)
+                    anchor_bonus_scores.append(sample.anchor_bonus)
                     term_preserve_scores.append(sample.term_preserve)
                     keyword_preserve_scores.append(sample.keyword_preserve)
                     locked_term_preserve_scores.append(sample.locked_term_preserve)
                     length_scores.append(sample.length_score)
                     clean_format_scores.append(sample.clean_format)
+                    recall_drop_penalties.append(sample.recall_drop_penalty)
                     overedit_penalties.append(sample.overedit_penalty)
                     bad_format_penalties.append(sample.bad_format_penalty)
                     unsafe_copy_penalties.append(sample.unsafe_copy_penalty)
@@ -735,6 +745,7 @@ class GRPOEngine:
                 "delta_recall50_mean": fmean(delta_recall_aux_scores) if delta_recall_aux_scores else 0.0,
                 "orig_rank_bonus_mean": fmean(orig_rank_bonus_scores) if orig_rank_bonus_scores else 0.0,
                 "delta_rank_bonus_mean": fmean(delta_rank_bonus_scores) if delta_rank_bonus_scores else 0.0,
+                "anchor_bonus_mean": fmean(anchor_bonus_scores) if anchor_bonus_scores else 0.0,
                 "term_preserve_mean": fmean(term_preserve_scores) if term_preserve_scores else 0.0,
                 "keyword_preserve_mean": fmean(keyword_preserve_scores) if keyword_preserve_scores else 0.0,
                 "locked_term_preserve_mean": (
@@ -742,6 +753,9 @@ class GRPOEngine:
                 ),
                 "length_score_mean": fmean(length_scores) if length_scores else 0.0,
                 "clean_format_mean": fmean(clean_format_scores) if clean_format_scores else 0.0,
+                "recall_drop_penalty_mean": (
+                    fmean(recall_drop_penalties) if recall_drop_penalties else 0.0
+                ),
                 "overedit_penalty_mean": fmean(overedit_penalties) if overedit_penalties else 0.0,
                 "bad_format_penalty_mean": fmean(bad_format_penalties) if bad_format_penalties else 0.0,
                 "unsafe_copy_penalty_mean": fmean(unsafe_copy_penalties) if unsafe_copy_penalties else 0.0,
@@ -758,6 +772,12 @@ class GRPOEngine:
                 "delta_recall20_positive_ratio": (
                     sum(1 for value in delta_recall_scores if value > 0.0) / len(delta_recall_scores)
                 ) if delta_recall_scores else 0.0,
+                "anchor_hit_ratio": (
+                    sum(1 for value in anchor_bonus_scores if value > 0.0) / len(anchor_bonus_scores)
+                ) if anchor_bonus_scores else 0.0,
+                "recall_drop_ratio": (
+                    sum(1 for value in recall_drop_penalties if value > 0.0) / len(recall_drop_penalties)
+                ) if recall_drop_penalties else 0.0,
                 "adv_mean": fmean(all_advantages) if all_advantages else 0.0,
                 "adv_std": float(torch.tensor(all_advantages).std(unbiased=False)) if all_advantages else 0.0,
                 "unique_final_query_mean": fmean(unique_final_query_counts) if unique_final_query_counts else 0.0,

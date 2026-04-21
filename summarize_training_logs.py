@@ -138,6 +138,8 @@ def build_group_steps(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         orig_mrr_values = flatten_numeric_lists(step_rows, "group_orig_mrr")
         delta_mrr_values = flatten_numeric_lists(step_rows, "group_delta_mrr")
         main_reward_values = flatten_numeric_lists(step_rows, "group_main_rewards")
+        anchor_bonus_values = flatten_numeric_lists(step_rows, "group_anchor_bonus")
+        recall_drop_penalty_values = flatten_numeric_lists(step_rows, "group_recall_drop_penalties")
         overedit_values = flatten_numeric_lists(step_rows, "group_overedit_penalties")
         term_preserve_values = flatten_numeric_lists(step_rows, "group_term_preserve")
         keyword_preserve_values = flatten_numeric_lists(step_rows, "group_keyword_preserve")
@@ -210,11 +212,13 @@ def build_group_steps(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "trace_orig_mrr20_mean": safe_mean(orig_mrr_values),
             "trace_delta_mrr20_mean": safe_mean(delta_mrr_values),
             "trace_main_reward_mean": safe_mean(main_reward_values),
+            "trace_anchor_bonus_mean": safe_mean(anchor_bonus_values),
             "trace_term_preserve_mean": safe_mean(term_preserve_values),
             "trace_keyword_preserve_mean": safe_mean(keyword_preserve_values),
             "trace_locked_term_preserve_mean": safe_mean(locked_term_preserve_values),
             "trace_length_score_mean": safe_mean(length_score_values),
             "trace_clean_format_mean": safe_mean(clean_format_values),
+            "trace_recall_drop_penalty_mean": safe_mean(recall_drop_penalty_values),
             "trace_overedit_penalty_mean": safe_mean(overedit_values),
             "trace_bad_format_penalty_mean": safe_mean(bad_format_values),
             "trace_unsafe_copy_penalty_mean": safe_mean(unsafe_copy_values),
@@ -227,6 +231,10 @@ def build_group_steps(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "trace_flat_main_reward_group_ratio": safe_mean(row_flat_main_reward_flags),
             "trace_best_reward_hit_best_mrr20_ratio": safe_mean(row_best_reward_hit_best_mrr_flags),
             "trace_all_same_final_query_ratio": safe_mean(row_all_same_query_flags),
+            "trace_anchor_hit_ratio": safe_mean([1.0 if value > 0.0 else 0.0 for value in anchor_bonus_values]),
+            "trace_recall_drop_ratio": safe_mean(
+                [1.0 if value > 0.0 else 0.0 for value in recall_drop_penalty_values]
+            ),
             "collapsed_group_ratio": safe_mean([1.0 if row.get("collapsed_group") else 0.0 for row in step_rows]),
             "reward_gap_met_ratio": safe_mean([1.0 if row.get("reward_gap_met") else 0.0 for row in step_rows]),
             "max_group_size_hit_ratio": safe_mean(
@@ -400,6 +408,16 @@ def build_summary(
             "best_reward_hit_best_mrr20_ratio": safe_mean(
                 metric_series(merged_steps, "best_reward_hit_best_mrr20_ratio")
             ),
+            "anchor_bonus_mean": safe_mean(metric_series(merged_steps, "anchor_bonus_mean")),
+            "trace_anchor_bonus_mean": safe_mean(metric_series(merged_steps, "trace_anchor_bonus_mean")),
+            "recall_drop_penalty_mean": safe_mean(metric_series(merged_steps, "recall_drop_penalty_mean")),
+            "trace_recall_drop_penalty_mean": safe_mean(
+                metric_series(merged_steps, "trace_recall_drop_penalty_mean")
+            ),
+            "anchor_hit_ratio": safe_mean(metric_series(merged_steps, "anchor_hit_ratio")),
+            "trace_anchor_hit_ratio": safe_mean(metric_series(merged_steps, "trace_anchor_hit_ratio")),
+            "recall_drop_ratio": safe_mean(metric_series(merged_steps, "recall_drop_ratio")),
+            "trace_recall_drop_ratio": safe_mean(metric_series(merged_steps, "trace_recall_drop_ratio")),
             "recall_mean": safe_mean(metric_series(merged_steps, "recall_mean")),
             "trace_recall_mean": safe_mean(metric_series(merged_steps, "trace_recall_mean")),
             "recall_dense_mean": safe_mean(metric_series(merged_steps, "recall_dense_mean")),

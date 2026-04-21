@@ -30,6 +30,8 @@ class SummarizeTrainingLogsTests(unittest.TestCase):
                 "group_mrr": [0.2, 0.3],
                 "group_recall": [0.1, 0.3],
                 "group_recall_dense": [0.4, 0.6],
+                "group_anchor_bonus": [0.05, 0.0],
+                "group_recall_drop_penalties": [0.0, 0.2],
                 "group_copy_penalties": [1.0, 0.0],
                 "group_final_queries": ["query a", "query b"],
                 "group_fallback_to_original": [False, True],
@@ -55,6 +57,10 @@ class SummarizeTrainingLogsTests(unittest.TestCase):
         self.assertEqual(train_steps[0]["main_reward_mean"], 0.5)
         self.assertEqual(train_steps[0]["flat_main_reward_group_ratio"], 0.25)
         self.assertAlmostEqual(group_steps[0]["trace_unsafe_copy_penalty_mean"], 0.5)
+        self.assertAlmostEqual(group_steps[0]["trace_anchor_bonus_mean"], 0.025)
+        self.assertAlmostEqual(group_steps[0]["trace_recall_drop_penalty_mean"], 0.1)
+        self.assertAlmostEqual(group_steps[0]["trace_anchor_hit_ratio"], 0.5)
+        self.assertAlmostEqual(group_steps[0]["trace_recall_drop_ratio"], 0.5)
         self.assertIsNone(group_steps[0]["trace_orig_mrr20_mean"])
         self.assertEqual(summary["best_train_rewrite_mrr20_mean"]["rewrite_mrr20_mean"], 0.2)
         self.assertEqual(
@@ -62,6 +68,7 @@ class SummarizeTrainingLogsTests(unittest.TestCase):
             0.25,
         )
         self.assertIsNone(summary["averages"]["trace_orig_mrr20_mean"])
+        self.assertIsNone(summary["averages"]["anchor_bonus_mean"])
 
     def test_new_fields_take_precedence_over_legacy_aliases(self):
         train_rows = [
@@ -97,6 +104,8 @@ class SummarizeTrainingLogsTests(unittest.TestCase):
                 "group_recall_dense": [0.5, 0.9],
                 "group_orig_mrr": [0.1, 0.2],
                 "group_delta_mrr": [0.6, 0.6],
+                "group_anchor_bonus": [0.05, 0.0],
+                "group_recall_drop_penalties": [0.0, 0.2],
                 "group_unsafe_copy_penalties": [0.25, 0.75],
                 "group_final_queries": ["query c", "query d"],
                 "group_fallback_to_original": [False, False],
@@ -121,6 +130,10 @@ class SummarizeTrainingLogsTests(unittest.TestCase):
         self.assertEqual(train_steps[0]["flat_main_reward_group_ratio"], 0.15)
         self.assertAlmostEqual(group_steps[0]["trace_unsafe_copy_penalty_mean"], 0.5)
         self.assertAlmostEqual(group_steps[0]["trace_main_reward_mean"], 0.1)
+        self.assertAlmostEqual(group_steps[0]["trace_anchor_bonus_mean"], 0.025)
+        self.assertAlmostEqual(group_steps[0]["trace_recall_drop_penalty_mean"], 0.1)
+        self.assertAlmostEqual(group_steps[0]["trace_anchor_hit_ratio"], 0.5)
+        self.assertAlmostEqual(group_steps[0]["trace_recall_drop_ratio"], 0.5)
         self.assertAlmostEqual(group_steps[0]["trace_flat_main_reward_group_ratio"], 0.0)
         self.assertAlmostEqual(group_steps[0]["trace_orig_mrr20_mean"], 0.15)
 

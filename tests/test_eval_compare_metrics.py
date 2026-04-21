@@ -21,6 +21,8 @@ class _DummyReward:
         self.delta_recall_aux = overrides.get("delta_recall_aux", 0.0)
         self.delta_rank_bonus = overrides.get("delta_rank_bonus", 0.0)
         self.main_reward = overrides.get("main_reward", 0.0)
+        self.anchor_bonus = overrides.get("anchor_bonus", 0.0)
+        self.recall_drop_penalty = overrides.get("recall_drop_penalty", 0.0)
         self.overedit_penalty = overrides.get("overedit_penalty", 0.0)
         self.bad_format_penalty = overrides.get("bad_format_penalty", 0.0)
         self.unsafe_copy_penalty = overrides.get("unsafe_copy_penalty", 0.0)
@@ -170,6 +172,8 @@ class EvalCompareMetricTests(unittest.TestCase):
                     delta_recall_aux=0.6,
                     delta_rank_bonus=0.3,
                     main_reward=0.55,
+                    anchor_bonus=0.05,
+                    recall_drop_penalty=0.0,
                     overedit_penalty=0.05,
                     bad_format_penalty=0.02,
                     unsafe_copy_penalty=0.01,
@@ -202,6 +206,8 @@ class EvalCompareMetricTests(unittest.TestCase):
         self.assertEqual(per_qid[0]["zero_shot"]["delta_recall_aux"], 0.6)
         self.assertEqual(per_qid[0]["zero_shot"]["delta_rank_bonus"], 0.3)
         self.assertEqual(per_qid[0]["zero_shot"]["main_reward"], 0.55)
+        self.assertEqual(per_qid[0]["zero_shot"]["anchor_bonus"], 0.05)
+        self.assertEqual(per_qid[0]["zero_shot"]["recall_drop_penalty"], 0.0)
         self.assertEqual(per_qid[0]["zero_shot"]["overedit_penalty"], 0.05)
         self.assertEqual(per_qid[0]["zero_shot"]["bad_format_penalty"], 0.02)
         self.assertEqual(per_qid[0]["zero_shot"]["unsafe_copy_penalty"], 0.01)

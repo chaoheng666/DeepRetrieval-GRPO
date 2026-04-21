@@ -218,6 +218,8 @@ class RewardConfig:
     w_rank_bonus: float = 0.10
     w_overedit: float = 0.10
     overedit_tau: float = 0.40
+    recall_drop_lambda: float = 0.80
+    anchor_bonus_value: float = 0.05
     # Length score piecewise anchors.
     length_score_min_terms: int = 1
     length_score_ideal_min_terms: int = 4

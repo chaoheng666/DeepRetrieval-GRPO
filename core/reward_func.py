@@ -131,6 +131,8 @@ class RewardBreakdown:
     delta_recall: float = 0.0
     delta_recall_aux: float = 0.0
     delta_rank_bonus: float = 0.0
+    anchor_bonus: float = 0.0
+    recall_drop_penalty: float = 0.0
     overedit_penalty: float = 0.0
     bad_format_penalty: float = 0.0
     unsafe_copy_penalty: float = 0.0
@@ -419,6 +421,17 @@ def compute_overedit_penalty(keyword_preserve: float, cfg: RewardConfig) -> floa
     return max(0.0, float(getattr(cfg, "overedit_tau", 0.40)) - float(keyword_preserve))
 
 
+def compute_recall_drop_penalty(recall: float, orig_recall: float, cfg: RewardConfig) -> float:
+    recall_drop = max(0.0, float(orig_recall) - float(recall))
+    return float(getattr(cfg, "recall_drop_lambda", 0.80)) * recall_drop
+
+
+def compute_anchor_bonus(mrr: float, recall: float, orig_mrr: float, orig_recall: float, cfg: RewardConfig) -> float:
+    if float(mrr) >= float(orig_mrr) and float(recall) >= float(orig_recall):
+        return float(getattr(cfg, "anchor_bonus_value", 0.05))
+    return 0.0
+
+
 def compose_reward(
     *,
     mrr: float,
@@ -439,20 +452,21 @@ def compose_reward(
 ) -> float:
     if getattr(cfg, "reward_mode", "legacy") == "top20_delta":
         delta_mrr = float(mrr) - float(orig_mrr)
-        delta_recall = float(recall) - float(orig_recall)
-        delta_recall_aux = float(recall_dense) - float(orig_recall_aux)
-        delta_rank_bonus = float(rank_bonus) - float(orig_rank_bonus)
         main_reward = (
             cfg.w_mrr * delta_mrr
-            + cfg.w_recall * delta_recall
-            + cfg.w_recall_dense * delta_recall_aux
-            + cfg.w_rank_bonus * delta_rank_bonus
+            + cfg.w_recall * float(recall)
+            + cfg.w_recall_dense * float(recall_dense)
+            + cfg.w_rank_bonus * float(rank_bonus)
         )
+        anchor_bonus = compute_anchor_bonus(mrr, recall, orig_mrr, orig_recall, cfg)
+        recall_drop_penalty = compute_recall_drop_penalty(recall, orig_recall, cfg)
         return (
             main_reward
+            + anchor_bonus
             - cfg.w_bad_format * bad_format_penalty
             - cfg.w_unsafe_copy * unsafe_copy_penalty
             - cfg.w_overedit * overedit_penalty
+            - recall_drop_penalty
         )
 
     return (
@@ -668,6 +682,7 @@ def summarize_reward_breakdowns(
             "orig_rank_bonus_mean": 0.0,
             "delta_rank_bonus_mean": 0.0,
             "main_reward_mean": 0.0,
+            "anchor_bonus_mean": 0.0,
             "term_preserve_mean": 0.0,
             "keyword_preserve_mean": 0.0,
             "locked_term_preserve_mean": 0.0,
@@ -675,11 +690,14 @@ def summarize_reward_breakdowns(
             "clean_format_mean": 0.0,
             "bad_format_penalty_mean": 0.0,
             "unsafe_copy_penalty_mean": 0.0,
+            "recall_drop_penalty_mean": 0.0,
             "overedit_penalty_mean": 0.0,
             "nonzero_mrr20_ratio": 0.0,
             "nonzero_recall20_ratio": 0.0,
             "delta_mrr20_positive_ratio": 0.0,
             "delta_recall20_positive_ratio": 0.0,
+            "anchor_hit_ratio": 0.0,
+            "recall_drop_ratio": 0.0,
             "count": 0.0,
         }
 
@@ -700,6 +718,7 @@ def summarize_reward_breakdowns(
         "orig_rank_bonus_mean": fmean(get(item, "orig_rank_bonus") for item in items),
         "delta_rank_bonus_mean": fmean(get(item, "delta_rank_bonus") for item in items),
         "main_reward_mean": fmean(get(item, "main_reward") for item in items),
+        "anchor_bonus_mean": fmean(get(item, "anchor_bonus") for item in items),
         "term_preserve_mean": fmean(get(item, "term_preserve", 1.0) for item in items),
         "keyword_preserve_mean": fmean(get(item, "keyword_preserve", get(item, "term_preserve", 1.0)) for item in items),
         "locked_term_preserve_mean": fmean(get(item, "locked_term_preserve", get(item, "term_preserve", 1.0)) for item in items),
@@ -707,6 +726,7 @@ def summarize_reward_breakdowns(
         "clean_format_mean": fmean(get(item, "clean_format") for item in items),
         "bad_format_penalty_mean": fmean(get(item, "bad_format_penalty") for item in items),
         "unsafe_copy_penalty_mean": fmean(get(item, "unsafe_copy_penalty") for item in items),
+        "recall_drop_penalty_mean": fmean(get(item, "recall_drop_penalty") for item in items),
         "overedit_penalty_mean": fmean(get(item, "overedit_penalty") for item in items),
         "nonzero_mrr20_ratio": (
             sum(1 for item in items if get(item, "mrr") > 0.0) / float(len(items))
@@ -719,6 +739,12 @@ def summarize_reward_breakdowns(
         ),
         "delta_recall20_positive_ratio": (
             sum(1 for item in items if get(item, "delta_recall") > 0.0) / float(len(items))
+        ),
+        "anchor_hit_ratio": (
+            sum(1 for item in items if get(item, "anchor_bonus") > 0.0) / float(len(items))
+        ),
+        "recall_drop_ratio": (
+            sum(1 for item in items if get(item, "recall_drop_penalty") > 0.0) / float(len(items))
         ),
         "count": float(len(items)),
     }
@@ -928,13 +954,15 @@ class Rewarder:
         delta_recall = recall - orig_recall
         delta_recall_aux = recall_dense - orig_recall_aux
         delta_rank_bonus = rank_bonus - orig_rank_bonus
+        anchor_bonus = compute_anchor_bonus(mrr, recall, orig_mrr, orig_recall, self.cfg)
+        recall_drop_penalty = compute_recall_drop_penalty(recall, orig_recall, self.cfg)
 
         if getattr(self.cfg, "reward_mode", "legacy") == "top20_delta":
             main_reward = (
                 self.cfg.w_mrr * delta_mrr
-                + self.cfg.w_recall * delta_recall
-                + self.cfg.w_recall_dense * delta_recall_aux
-                + self.cfg.w_rank_bonus * delta_rank_bonus
+                + self.cfg.w_recall * recall
+                + self.cfg.w_recall_dense * recall_dense
+                + self.cfg.w_rank_bonus * rank_bonus
             )
         else:
             main_reward = (
@@ -987,6 +1015,8 @@ class Rewarder:
             delta_recall=delta_recall,
             delta_recall_aux=delta_recall_aux,
             delta_rank_bonus=delta_rank_bonus,
+            anchor_bonus=anchor_bonus,
+            recall_drop_penalty=recall_drop_penalty,
             overedit_penalty=overedit_penalty,
             bad_format_penalty=bad_format_penalty,
             unsafe_copy_penalty=unsafe_copy_penalty,

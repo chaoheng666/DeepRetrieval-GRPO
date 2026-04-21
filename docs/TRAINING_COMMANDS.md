@@ -139,5 +139,7 @@ python eval_compare.py `
   - phase2 output: `<run_root>/phase2/`
   - eval output: `<run_root>/eval/`
   - reward mode: `top20_delta`
+  - reward semantics: `delta_mrr@20 + absolute recall@20/50 + absolute rank_bonus`
+  - guardrails: `recall_drop_lambda=0.8`, `anchor_bonus_value=0.05`
   - cutoffs: `MRR@20`, `Recall@20`, `Recall@50`
   - phase2 always warm-starts from `phase1/checkpoints/best`

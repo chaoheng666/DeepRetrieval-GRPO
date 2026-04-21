@@ -9,6 +9,7 @@ from core.reward_func import (
     Rewarder,
     clean_rewritten_query,
     compose_reward,
+    compute_anchor_bonus,
     compute_bad_format_penalty,
     compute_clean_format_score,
     compute_keyword_preserve,
@@ -17,6 +18,7 @@ from core.reward_func import (
     compute_mrr_at_k,
     compute_overedit_penalty,
     compute_rank_bonus,
+    compute_recall_drop_penalty,
     compute_recall_at_k,
     compute_term_preserve,
     compute_unsafe_copy_penalty,
@@ -170,6 +172,19 @@ class RewardMathTests(unittest.TestCase):
         self.assertAlmostEqual(compute_overedit_penalty(0.10, cfg), 0.30)
         self.assertEqual(compute_overedit_penalty(0.45, cfg), 0.0)
 
+    def test_recall_drop_penalty_only_applies_to_recall20_drop(self):
+        cfg = RewardConfig(recall_drop_lambda=0.8)
+        self.assertAlmostEqual(compute_recall_drop_penalty(0.25, 0.50, cfg), 0.20)
+        self.assertEqual(compute_recall_drop_penalty(0.50, 0.50, cfg), 0.0)
+        self.assertEqual(compute_recall_drop_penalty(0.75, 0.50, cfg), 0.0)
+
+    def test_anchor_bonus_uses_inclusive_safety_check(self):
+        cfg = RewardConfig(anchor_bonus_value=0.05)
+        self.assertEqual(compute_anchor_bonus(0.2, 0.4, 0.2, 0.4, cfg), 0.05)
+        self.assertEqual(compute_anchor_bonus(0.3, 0.4, 0.2, 0.4, cfg), 0.05)
+        self.assertEqual(compute_anchor_bonus(0.2, 0.3, 0.2, 0.4, cfg), 0.0)
+        self.assertEqual(compute_anchor_bonus(0.1, 0.4, 0.2, 0.4, cfg), 0.0)
+
     def test_total_reward_formula(self):
         cfg = RewardConfig()
         total = compose_reward(
@@ -205,6 +220,8 @@ class RewardMathTests(unittest.TestCase):
             w_bad_format=0.18,
             w_unsafe_copy=0.12,
             w_overedit=0.10,
+            recall_drop_lambda=0.8,
+            anchor_bonus_value=0.05,
         )
         total = compose_reward(
             mrr=0.25,
@@ -222,12 +239,51 @@ class RewardMathTests(unittest.TestCase):
         )
         expected = (
             0.55 * 0.20
-            + 0.20 * 0.25
-            + 0.15 * 0.25
-            + 0.10 * 0.25
+            + 0.20 * 0.50
+            + 0.15 * 0.75
+            + 0.10 * 0.30
+            + 0.05
             - 0.18 * 0.20
             - 0.12 * 1.0
             - 0.10 * 0.10
+        )
+        self.assertAlmostEqual(total, expected)
+
+    def test_top20_delta_reward_formula_penalizes_recall_drop(self):
+        cfg = RewardConfig(
+            reward_mode="top20_delta",
+            w_mrr=0.52,
+            w_recall=0.22,
+            w_recall_dense=0.16,
+            w_rank_bonus=0.10,
+            w_bad_format=0.18,
+            w_unsafe_copy=0.14,
+            w_overedit=0.08,
+            recall_drop_lambda=0.8,
+            anchor_bonus_value=0.05,
+        )
+        total = compose_reward(
+            mrr=0.30,
+            recall=0.20,
+            recall_dense=0.40,
+            rank_bonus=0.15,
+            orig_mrr=0.25,
+            orig_recall=0.50,
+            orig_recall_aux=0.60,
+            orig_rank_bonus=0.10,
+            bad_format_penalty=0.10,
+            unsafe_copy_penalty=0.0,
+            overedit_penalty=0.05,
+            cfg=cfg,
+        )
+        expected = (
+            0.52 * 0.05
+            + 0.22 * 0.20
+            + 0.16 * 0.40
+            + 0.10 * 0.15
+            - 0.18 * 0.10
+            - 0.08 * 0.05
+            - 0.8 * (0.50 - 0.20)
         )
         self.assertAlmostEqual(total, expected)
 
