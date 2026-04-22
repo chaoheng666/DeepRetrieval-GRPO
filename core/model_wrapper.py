@@ -34,6 +34,8 @@ class GeneratedSample:
     logprob_old: torch.Tensor
     # 原始解码文本，保留给 trace 诊断模型是否输出了多余内容。
     raw_response_text: str = ""
+    # The exact prompt used for this rollout. Retry rollouts may include diversity hints.
+    prompt_text: str = ""
 
 
 def _str_to_dtype(dtype_name: str) -> torch.dtype:
@@ -643,6 +645,7 @@ class ModelWrapper:
         scores: Sequence[torch.Tensor] | None,
         sequence_index: int,
         with_logprob: bool,
+        prompt_text: str = "",
     ) -> GeneratedSample:
         # generate 返回的是完整序列；这里切掉 prompt，只保留 response，
         # 并把 token logprob 对齐到截断后的 response_text。
@@ -657,6 +660,7 @@ class ModelWrapper:
                 response_token_ids=truncated_ids,
                 logprob_old=torch.empty(0),
                 raw_response_text=raw_response_text,
+                prompt_text=prompt_text,
             )
 
         score_steps = list(scores or [])
@@ -667,6 +671,7 @@ class ModelWrapper:
                 response_token_ids=truncated_ids,
                 logprob_old=torch.empty(0),
                 raw_response_text=raw_response_text,
+                prompt_text=prompt_text,
             )
 
         token_logprobs: list[torch.Tensor] = []
@@ -681,6 +686,7 @@ class ModelWrapper:
             response_token_ids=truncated_ids[:steps],
             logprob_old=torch.stack(token_logprobs).to(torch.float32),
             raw_response_text=raw_response_text,
+            prompt_text=prompt_text,
         )
 
     def _policy_model(self, policy: PolicyName) -> torch.nn.Module:
@@ -725,6 +731,7 @@ class ModelWrapper:
             scores=output.scores,
             sequence_index=0,
             with_logprob=with_logprob,
+            prompt_text=prompt,
         )
 
     def generate_with_logprob(
@@ -805,6 +812,7 @@ class ModelWrapper:
                     scores=scores,
                     sequence_index=seq_idx,
                     with_logprob=True,
+                    prompt_text=prompt_list[seq_idx],
                 )
             )
         return results
@@ -921,6 +929,7 @@ class ModelWrapper:
                     scores=scores,
                     sequence_index=seq_idx,
                     with_logprob=True,
+                    prompt_text=prompt,
                 )
             )
 

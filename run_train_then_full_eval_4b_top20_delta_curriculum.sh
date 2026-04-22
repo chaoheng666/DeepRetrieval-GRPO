@@ -124,9 +124,12 @@ run_train_phase() {
   local group_top_p_stride="${13}"
   local min_unique_final_queries="${14}"
   local max_regen_rounds="${15}"
-  local save_dir="${16}"
-  local log_path="${17}"
-  local trace_path="${18}"
+  local reward_gap_threshold="${16}"
+  local recall_drop_lambda="${17}"
+  local anchor_bonus_value="${18}"
+  local save_dir="${19}"
+  local log_path="${20}"
+  local trace_path="${21}"
 
   local args=(
     # train.py 已经默认 top20_delta/4bit/curriculum，这里只传 phase 差异和路径。
@@ -146,6 +149,7 @@ run_train_phase() {
     --group-top-p-stride "$group_top_p_stride"
     --min-unique-final-queries "$min_unique_final_queries"
     --max-regen-rounds "$max_regen_rounds"
+    --reward-gap-threshold "$reward_gap_threshold"
     --eval-max-new-tokens 10
     --eval-temperature "$temperature"
     --eval-top-p "$top_p"
@@ -156,6 +160,8 @@ run_train_phase() {
     --reward-w-recall "$w_recall"
     --reward-w-recall-dense "$w_recall_dense"
     --reward-w-rank-bonus 0.10
+    --recall-drop-lambda "$recall_drop_lambda"
+    --anchor-bonus-value "$anchor_bonus_value"
     --save-dir "$save_dir"
     --log-path "$log_path"
     --group-trace-log-path "$trace_path"
@@ -169,9 +175,9 @@ run_train_phase() {
 }
 
 # phase1：更偏 recall 和探索，先让模型学会产生有效 top20 rewrite。
-echo "[phase1] epochs=2 batch=24 group=8 max_group=12 lr=1.0e-5 kl=0.040 decode=(10,0.88,0.95) diversity=(temp_stride=0.12,top_p_stride=0.03,min_unique=6,regen=4) reward=(0.38,0.30,0.22,0.10)"
+echo "[phase1] epochs=2 batch=24 group=8 max_group=12 lr=1.0e-5 kl=0.040 decode=(10,0.88,0.95) diversity=(temp_stride=0.12,top_p_stride=0.03,min_unique=4,regen=2,gap=0.06) reward=(0.38,0.30,0.22,0.10) recall_drop=1.50 anchor=0.00"
 run_train_phase \
-  phase1 "$PHASE1_ADAPTER_PATH" 2 1.0e-5 0.040 0.88 0.95 100 0.38 0.30 0.22 0.12 0.03 6 4 \
+  phase1 "$PHASE1_ADAPTER_PATH" 2 1.0e-5 0.040 0.88 0.95 100 0.38 0.30 0.22 0.12 0.03 4 2 0.06 1.50 0.00 \
   "$PHASE1_CHECKPOINT_DIR" "${PHASE1_DIR}/train_log.jsonl" "${PHASE1_DIR}/group_trace_log.jsonl"
 
 # phase2 必须从 phase1 best 热启动；如果没有 best，说明 phase1 没有完成可用训练。
@@ -182,10 +188,10 @@ if [[ ! -d "$PHASE2_INIT_ADAPTER_PATH" ]]; then
 fi
 
 # phase2：降低学习率、略提高 KL，奖励权重切回正式 top20 delta 配方。
-echo "[phase2] epochs=1 batch=24 group=8 max_group=12 lr=6.0e-6 kl=0.055 decode=(10,0.84,0.94) diversity=(temp_stride=0.10,top_p_stride=0.025,min_unique=5,regen=3) reward=(0.52,0.22,0.16,0.10)"
+echo "[phase2] epochs=1 batch=24 group=8 max_group=12 lr=6.0e-6 kl=0.055 decode=(10,0.84,0.94) diversity=(temp_stride=0.10,top_p_stride=0.025,min_unique=4,regen=2,gap=0.08) reward=(0.52,0.22,0.16,0.10) recall_drop=1.20 anchor=0.00"
 echo "[phase2] adapter=${PHASE2_INIT_ADAPTER_PATH}"
 run_train_phase \
-  phase2 "$PHASE2_INIT_ADAPTER_PATH" 1 6.0e-6 0.055 0.84 0.94 60 0.52 0.22 0.16 0.10 0.025 5 3 \
+  phase2 "$PHASE2_INIT_ADAPTER_PATH" 1 6.0e-6 0.055 0.84 0.94 60 0.52 0.22 0.16 0.10 0.025 4 2 0.08 1.20 0.00 \
   "$PHASE2_CHECKPOINT_DIR" "${PHASE2_DIR}/train_log.jsonl" "${PHASE2_DIR}/group_trace_log.jsonl"
 
 PHASE2_BEST="${PHASE2_CHECKPOINT_DIR}/best"

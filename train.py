@@ -567,6 +567,8 @@ def main() -> int:
                 f"max_group_size_hit_ratio={metrics.get('max_group_size_hit_ratio', 0.0):.4f} "
                 f"collapsed_group_ratio={metrics.get('collapsed_group_ratio', 0.0):.4f} "
                 f"flat_main_reward_group_ratio={metrics.get('flat_main_reward_group_ratio', 0.0):.4f} "
+                f"flat_reward_skipped_group_ratio={metrics.get('flat_reward_skipped_group_ratio', 0.0):.4f} "
+                f"trainable_group_ratio={metrics.get('trainable_group_ratio', 0.0):.4f} "
                 f"best_reward_hit_best_mrr20_ratio={metrics.get('best_reward_hit_best_mrr20_ratio', 0.0):.4f}"
             )
 

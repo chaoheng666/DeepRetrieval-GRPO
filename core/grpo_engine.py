@@ -251,6 +251,36 @@ class GRPOEngine:
             temperature=self.temperature,
         )
 
+    @staticmethod
+    def _build_diversity_retry_prompt(base_prompt: str, source_query: str, avoid_queries: Sequence[str]) -> str:
+        del source_query
+        seen: set[str] = set()
+        avoid_list: list[str] = []
+        for query in avoid_queries:
+            query_clean = " ".join((query or "").strip().split())
+            if not query_clean:
+                continue
+            key = query_clean.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            avoid_list.append(query_clean)
+        if not avoid_list:
+            return base_prompt
+
+        avoid_block = "\n".join(f"- {query}" for query in avoid_list[:8])
+        suffix = "Better BM25 query:"
+        prompt_prefix = base_prompt.rstrip()
+        if prompt_prefix.endswith(suffix):
+            prompt_prefix = prompt_prefix[: -len(suffix)].rstrip()
+        return (
+            f"{prompt_prefix}\n"
+            "Retry constraint: prefer a meaning-preserving variant that is not a verbatim repeat "
+            "of the previous rewrites. Keep entities and numbers intact.\n"
+            f"Previous rewrites to avoid:\n{avoid_block}\n"
+            f"{suffix}"
+        )
+
     def _generate_batch_group_rollouts(self, batch_queries: Sequence[QueryExample]) -> list[list[object]]:
         query_list = list(batch_queries)
         if not query_list:
@@ -332,9 +362,10 @@ class GRPOEngine:
                 other_queries = {
                     record.final_query for pos, record in enumerate(stabilized_group) if pos != idx and record.final_query
                 }
+                retry_prompt = self._build_diversity_retry_prompt(prompt, source_query, other_queries)
 
                 regenerated = self.model_wrapper.generate_with_logprob(
-                    prompt,
+                    retry_prompt,
                     max_new_tokens=self.max_new_tokens,
                     temperature=regen_temperature,
                     top_p=min(0.995, self.top_p + max(self.group_top_p_stride, 0.01) * (round_idx + 1)),
@@ -455,6 +486,8 @@ class GRPOEngine:
             generated_sample_counts: list[float] = []  # 每组最终生成候选数，包含补采样，用于看采样成本。
             reward_gap_raw_values: list[float] = []  # 每组最高/最低 reward 差，用于判断组内信号是否拉开。
             flat_reward_group_count = 0  # reward 全相同的组数；越高说明 reward 区分度越差。
+            flat_reward_skipped_group_count = 0  # reward 全相同的组不再做 actor/ref logprob，避免 KL-only 更新。
+            flat_main_reward_skipped_group_count = 0  # 被跳过且 main_reward 也全相同的组数。
             flat_mrr_group_count = 0  # MRR@20 全相同的组数；用于诊断检索指标是否太稀疏。
             flat_main_reward_group_count = 0  # main_reward 全相同的组数；用于诊断主奖励是否变平。
             collapsed_group_count = 0  # final_query 全坍缩成同一个文本的组数。
@@ -524,8 +557,9 @@ class GRPOEngine:
                         6,
                     )
                     gap_sampling_temperatures.append(extra_temperature)
+                    extra_prompt = self._build_diversity_retry_prompt(prompt, query.text, final_query_group)
                     extra_generated_group = self._generate_rollouts(
-                        prompt,
+                        extra_prompt,
                         num_samples=1,
                         temperature=extra_temperature,
                     )
@@ -564,7 +598,7 @@ class GRPOEngine:
                     group_samples.append(
                         Sample(
                             qid=query.qid,
-                            prompt=prompt,
+                            prompt=getattr(generated, "prompt_text", "") or prompt,
                             response_text=generated.response_text,
                             cleaned_query=stabilized.cleaned_query,
                             final_query=stabilized.final_query,
@@ -599,11 +633,13 @@ class GRPOEngine:
                 if group_collapsed:
                     collapsed_group_count += 1
                     all_same_final_query_group_count += 1
-                if len({sample.reward for sample in group_samples}) == 1:
+                group_flat_reward = len({sample.reward for sample in group_samples}) == 1
+                group_flat_main_reward = len({sample.main_reward for sample in group_samples}) == 1
+                if group_flat_reward:
                     flat_reward_group_count += 1
                 if len({sample.mrr for sample in group_samples}) == 1:
                     flat_mrr_group_count += 1
-                if len({sample.main_reward for sample in group_samples}) == 1:
+                if group_flat_main_reward:
                     flat_main_reward_group_count += 1
                 if group_samples:
                     best_reward_sample = max(group_samples, key=lambda sample: sample.reward)
@@ -694,6 +730,11 @@ class GRPOEngine:
                     unsafe_copy_penalties.append(sample.unsafe_copy_penalty)
 
                 if group_collapsed:
+                    continue
+                if group_flat_reward:
+                    flat_reward_skipped_group_count += 1
+                    if group_flat_main_reward:
+                        flat_main_reward_skipped_group_count += 1
                     continue
 
                 valid_group_samples = [
@@ -866,6 +907,13 @@ class GRPOEngine:
                 "flat_mrr20_group_ratio": (flat_mrr_group_count / num_groups) if num_groups else 0.0,  # 组内 MRR@20 全相同的比例。
                 "flat_main_reward_group_ratio": (  # 组内 main_reward 全相同的比例，用于发现主奖励变平。
                     flat_main_reward_group_count / num_groups
+                ) if num_groups else 0.0,
+                "flat_reward_skipped_group_ratio": (flat_reward_skipped_group_count / num_groups) if num_groups else 0.0,
+                "flat_main_reward_skipped_group_ratio": (
+                    flat_main_reward_skipped_group_count / num_groups
+                ) if num_groups else 0.0,
+                "trainable_group_ratio": (
+                    (num_groups - collapsed_group_count - flat_reward_skipped_group_count) / num_groups
                 ) if num_groups else 0.0,
                 "best_reward_hit_best_mrr20_ratio": (  # reward 最高样本同时也是组内最高 MRR@20 的比例。
                     best_reward_hit_best_mrr20_count / num_groups

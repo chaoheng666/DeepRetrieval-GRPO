@@ -439,7 +439,15 @@ def compute_recall_drop_penalty(recall: float, orig_recall: float, cfg: RewardCo
 
 
 def compute_anchor_bonus(mrr: float, recall: float, orig_mrr: float, orig_recall: float, cfg: RewardConfig) -> float:
-    if float(mrr) >= float(orig_mrr) and float(recall) >= float(orig_recall):
+    mrr = float(mrr)
+    recall = float(recall)
+    orig_mrr = float(orig_mrr)
+    orig_recall = float(orig_recall)
+    eps = 1e-12
+    has_retrieval_signal = mrr > eps or recall > eps
+    no_worse_than_original = mrr + eps >= orig_mrr and recall + eps >= orig_recall
+    strictly_improved = mrr > orig_mrr + eps or recall > orig_recall + eps
+    if has_retrieval_signal and no_worse_than_original and strictly_improved:
         return float(getattr(cfg, "anchor_bonus_value", 0.05))
     return 0.0
 
@@ -462,15 +470,17 @@ def compose_reward(
     overedit_penalty: float = 0.0,
     cfg: RewardConfig,
 ) -> float:
-    # top20_delta 固定公式：
-    # reward = delta_mrr20 + recall20 + recall50 + rank_bonus
+    # top20_delta fixed formula: optimize gains over the original query.
+    # reward = delta_mrr20 + delta_recall20 + delta_recall50 + rank_bonus
     #          + anchor_bonus - format/copy/overedit/recall_drop penalties
-    del term_preserve, length_score, clean_format, orig_recall_aux, orig_rank_bonus
+    del term_preserve, length_score, clean_format, orig_rank_bonus
     delta_mrr = float(mrr) - float(orig_mrr)
+    delta_recall = float(recall) - float(orig_recall)
+    delta_recall_aux = float(recall_dense) - float(orig_recall_aux)
     main_reward = (
         cfg.w_mrr * delta_mrr
-        + cfg.w_recall * float(recall)
-        + cfg.w_recall_dense * float(recall_dense)
+        + cfg.w_recall * delta_recall
+        + cfg.w_recall_dense * delta_recall_aux
         + cfg.w_rank_bonus * float(rank_bonus)
     )
     anchor_bonus = compute_anchor_bonus(mrr, recall, orig_mrr, orig_recall, cfg)
@@ -957,8 +967,8 @@ class Rewarder:
 
         main_reward = (
             self.cfg.w_mrr * delta_mrr
-            + self.cfg.w_recall * recall
-            + self.cfg.w_recall_dense * recall_dense
+            + self.cfg.w_recall * delta_recall
+            + self.cfg.w_recall_dense * delta_recall_aux
             + self.cfg.w_rank_bonus * rank_bonus
         )
 
