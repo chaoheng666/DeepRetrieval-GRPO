@@ -10,7 +10,7 @@ cd "$SCRIPT_DIR"
 PYTHON_BIN="/root/miniconda3/bin/python"
 MODEL_NAME="/root/autodl-tmp/hf_models/Qwen3-4B-Instruct-2507"
 LOG_DIR="log"
-RUN_ROOT="train_and_eval_data_model_0421/artifacts_4b_top20_delta_curriculum"
+RUN_ROOT="train_and_eval_data_model_0422/artifacts_4b_top20_delta_curriculum"
 CURRICULUM_METADATA_PATH="${RUN_ROOT}/curriculum_query_metadata.jsonl"
 
 PHASE1_DIR="${RUN_ROOT}/phase1"
