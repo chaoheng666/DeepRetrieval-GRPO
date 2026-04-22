@@ -133,7 +133,7 @@ class TrainConfig:
     regen_temperature_delta: float = 0.15
     reward_gap_threshold: float = 0.12
     gap_sampling_temperature_delta: float = 0.18
-    actor_chunk_size: int = 8
+    actor_chunk_size: int = 6
     eval_every_steps: int = 20
     max_steps: int | None = 100
     save_dir: str = f"{DEFAULT_TRAIN_DIR}/checkpoints"
