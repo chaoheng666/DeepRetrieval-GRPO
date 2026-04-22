@@ -161,9 +161,9 @@ run_train_phase() {
 }
 
 # phase1：更偏 recall 和探索，先让模型学会产生有效 top20 rewrite。
-echo "[phase1] epochs=2 batch=24 group=8 max_group=12 lr=1.0e-5 kl=0.040 decode=(10,0.82,0.93) reward=(0.40,0.28,0.22,0.10)"
+echo "[phase1] epochs=2 batch=24 group=8 max_group=12 lr=1.0e-5 kl=0.040 decode=(10,0.82,0.93) reward=(0.38,0.30,0.22,0.10)"
 run_train_phase \
-  phase1 "$PHASE1_ADAPTER_PATH" 2 1.0e-5 0.040 0.82 0.93 100 0.40 0.28 0.22 \
+  phase1 "$PHASE1_ADAPTER_PATH" 2 1.0e-5 0.040 0.82 0.93 100 0.38 0.30 0.22 \
   "$PHASE1_CHECKPOINT_DIR" "${PHASE1_DIR}/train_log.jsonl" "${PHASE1_DIR}/group_trace_log.jsonl"
 
 # phase2 必须从 phase1 best 热启动；如果没有 best，说明 phase1 没有完成可用训练。

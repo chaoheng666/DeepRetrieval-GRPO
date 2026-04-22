@@ -251,6 +251,39 @@ class GRPOEngine:
             temperature=self.temperature,
         )
 
+    def _generate_batch_group_rollouts(self, batch_queries: Sequence[QueryExample]) -> list[list[object]]:
+        query_list = list(batch_queries)
+        if not query_list:
+            return []
+
+        prompts = [self.model_wrapper.build_prompt(query.text) for query in query_list]
+        rollout_groups: list[list[object]] = [[] for _ in query_list]
+        rollout_schedule = self._build_group_sampling_schedule(
+            self.group_size,
+            base_temperature=self.temperature,
+            base_top_p=self.top_p,
+        )
+
+        if not hasattr(self.model_wrapper, "generate_with_logprob_batch"):
+            return [self._generate_group_rollouts(prompt) for prompt in prompts]
+
+        for sample_temperature, sample_top_p in rollout_schedule:
+            slot_samples = self.model_wrapper.generate_with_logprob_batch(
+                prompts,
+                max_new_tokens=self.max_new_tokens,
+                temperature=sample_temperature,
+                top_p=sample_top_p,
+            )
+            if len(slot_samples) != len(rollout_groups):
+                raise RuntimeError(
+                    "Batch rollout generation returned "
+                    f"{len(slot_samples)} samples for {len(rollout_groups)} prompts."
+                )
+            for rollout_group, sample in zip(rollout_groups, slot_samples):
+                rollout_group.append(sample)
+
+        return rollout_groups
+
     def _maybe_regenerate_group(
         self,
         *,
@@ -438,13 +471,19 @@ class GRPOEngine:
             sampled = 0  # 本 batch 总采样候选数，包含无效样本和补采样。
             num_groups = 0  # 本 batch 的 query 组数，一个 query 对应一个 group。
 
-            for query in batch_queries:
+            batch_query_list = list(batch_queries)
+            initial_rollout_groups = self._generate_batch_group_rollouts(batch_query_list)
+            if len(initial_rollout_groups) != len(batch_query_list):
+                raise RuntimeError(
+                    "Batch rollout grouping returned "
+                    f"{len(initial_rollout_groups)} groups for {len(batch_query_list)} queries."
+                )
+            for query, generated_group in zip(batch_query_list, initial_rollout_groups):
                 num_groups += 1
                 prompt = self.model_wrapper.build_prompt(query.text)
                 group_samples: list[Sample] = []
 
                 # 1) 生成一组候选 rewrite，并先过 guardrail 得到 final_query。
-                generated_group = self._generate_group_rollouts(prompt)
                 stabilized_group = [
                     self._stabilize_generated_sample(query.text, sample) for sample in generated_group
                 ]

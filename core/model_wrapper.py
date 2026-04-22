@@ -745,6 +745,110 @@ class ModelWrapper:
             with_logprob=True,
         )
 
+    def _generate_with_logprob_batch_once(
+        self,
+        prompts: Sequence[str],
+        *,
+        max_new_tokens: int,
+        temperature: float,
+        top_p: float,
+    ) -> list[GeneratedSample]:
+        """Generate one sampled response per prompt in a single actor forward."""
+
+        prompt_list = list(prompts)
+        if not prompt_list:
+            return []
+
+        original_padding_side = getattr(self.tokenizer, "padding_side", "right")
+        self.tokenizer.padding_side = "left"
+        try:
+            inputs = self.tokenizer(
+                prompt_list,
+                return_tensors="pt",
+                padding=True,
+            )
+        finally:
+            self.tokenizer.padding_side = original_padding_side
+
+        device = self._infer_model_device(self.actor_model)
+        inputs = {key: value.to(device) for key, value in inputs.items()}
+        prompt_len = int(inputs["input_ids"].shape[1])
+        kwargs = self._build_generate_kwargs(
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            with_logprob=True,
+        )
+
+        with torch.no_grad():
+            output = self.actor_model.generate(**inputs, **kwargs)
+
+        sequences = output.sequences
+        scores = output.scores or []
+        results: list[GeneratedSample] = []
+        for seq_idx in range(int(sequences.shape[0])):
+            sequence = sequences[seq_idx]
+            response_ids = sequence[prompt_len:].tolist()
+            results.append(
+                self._finalize_generated_sample(
+                    response_ids,
+                    scores=scores,
+                    sequence_index=seq_idx,
+                    with_logprob=True,
+                )
+            )
+        return results
+
+    def generate_with_logprob_batch(
+        self,
+        prompts: Sequence[str],
+        *,
+        max_new_tokens: int,
+        temperature: float,
+        top_p: float,
+    ) -> list[GeneratedSample]:
+        """Generate one rollout per prompt, splitting automatically on CUDA OOM."""
+
+        prompt_list = list(prompts)
+        if not prompt_list:
+            return []
+        if len(prompt_list) == 1:
+            return [
+                self.generate_with_logprob(
+                    prompt_list[0],
+                    max_new_tokens=max_new_tokens,
+                    temperature=temperature,
+                    top_p=top_p,
+                )
+            ]
+
+        try:
+            return self._generate_with_logprob_batch_once(
+                prompt_list,
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+                top_p=top_p,
+            )
+        except RuntimeError as exc:
+            if not (torch.cuda.is_available() and self._is_cuda_oom_error(exc)):
+                raise
+            gc.collect()
+            torch.cuda.empty_cache()
+            mid = max(1, len(prompt_list) // 2)
+            left = self.generate_with_logprob_batch(
+                prompt_list[:mid],
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+                top_p=top_p,
+            )
+            right = self.generate_with_logprob_batch(
+                prompt_list[mid:],
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+                top_p=top_p,
+            )
+            return left + right
+
     def generate_group_with_logprob(
         self,
         prompt: str,
