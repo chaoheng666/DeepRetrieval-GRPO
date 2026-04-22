@@ -104,6 +104,7 @@ class ModelWrapper:
         self.enable_lora = enable_lora
         self.adapter_path = adapter_path
         self.projection_chunk_size = max(1, int(getattr(model_cfg, "projection_chunk_size", 64)))
+        self._rollout_batch_prompt_counts: list[int] = []
         self.ref_precision_used: str | None = None
         self.ref_dtype_used: torch.dtype | None = None
         self.actor_device_map = self._resolve_runtime_device_map(model_cfg.actor_device_map, model_role="actor")
@@ -745,6 +746,14 @@ class ModelWrapper:
             with_logprob=True,
         )
 
+    def reset_rollout_batch_stats(self) -> None:
+        self._rollout_batch_prompt_counts.clear()
+
+    def consume_rollout_batch_stats(self) -> list[int]:
+        counts = list(self._rollout_batch_prompt_counts)
+        self._rollout_batch_prompt_counts.clear()
+        return counts
+
     def _generate_with_logprob_batch_once(
         self,
         prompts: Sequence[str],
@@ -782,6 +791,7 @@ class ModelWrapper:
 
         with torch.no_grad():
             output = self.actor_model.generate(**inputs, **kwargs)
+        self._rollout_batch_prompt_counts.append(len(prompt_list))
 
         sequences = output.sequences
         scores = output.scores or []
@@ -813,14 +823,14 @@ class ModelWrapper:
         if not prompt_list:
             return []
         if len(prompt_list) == 1:
-            return [
-                self.generate_with_logprob(
-                    prompt_list[0],
-                    max_new_tokens=max_new_tokens,
-                    temperature=temperature,
-                    top_p=top_p,
-                )
-            ]
+            sample = self.generate_with_logprob(
+                prompt_list[0],
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+                top_p=top_p,
+            )
+            self._rollout_batch_prompt_counts.append(1)
+            return [sample]
 
         try:
             return self._generate_with_logprob_batch_once(

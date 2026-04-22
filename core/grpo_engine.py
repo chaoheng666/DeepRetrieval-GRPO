@@ -166,7 +166,7 @@ class GRPOEngine:
         regen_temperature_delta: float = 0.15,
         reward_gap_threshold: float = 0.08,
         gap_sampling_temperature_delta: float = 0.15,
-        actor_chunk_size: int = 4,
+        actor_chunk_size: int = 8,
     ) -> None:
         self.model_wrapper = model_wrapper
         self.rewarder = rewarder
@@ -472,7 +472,14 @@ class GRPOEngine:
             num_groups = 0  # 本 batch 的 query 组数，一个 query 对应一个 group。
 
             batch_query_list = list(batch_queries)
+            if hasattr(self.model_wrapper, "reset_rollout_batch_stats"):
+                self.model_wrapper.reset_rollout_batch_stats()
             initial_rollout_groups = self._generate_batch_group_rollouts(batch_query_list)
+            rollout_batch_prompt_counts = (
+                self.model_wrapper.consume_rollout_batch_stats()
+                if hasattr(self.model_wrapper, "consume_rollout_batch_stats")
+                else []
+            )
             if len(initial_rollout_groups) != len(batch_query_list):
                 raise RuntimeError(
                     "Batch rollout grouping returned "
@@ -867,6 +874,25 @@ class GRPOEngine:
                 "valid_samples": float(valid_samples),  # 真正参与反传更新的有效样本数。
                 "group_query_summaries": group_query_summaries,  # 每个 query 组的详细 trace，调用方会写入 group_trace_log。
             }
+            metrics.update(
+                {
+                    "rollout_batch_prompt_count_mean": (
+                        fmean(rollout_batch_prompt_counts) if rollout_batch_prompt_counts else 0.0
+                    ),
+                    "rollout_batch_prompt_count_min": (
+                        float(min(rollout_batch_prompt_counts)) if rollout_batch_prompt_counts else 0.0
+                    ),
+                    "rollout_batch_prompt_count_max": (
+                        float(max(rollout_batch_prompt_counts)) if rollout_batch_prompt_counts else 0.0
+                    ),
+                    "rollout_batch_call_count": float(len(rollout_batch_prompt_counts)),
+                    "rollout_batch_total_prompts": float(sum(rollout_batch_prompt_counts)),
+                    "rollout_batch_expected_prompts": float(len(batch_query_list) * self.group_size),
+                    "rollout_batch_fallback_split_count": float(
+                        max(0, len(rollout_batch_prompt_counts) - self.group_size)
+                    ),
+                }
+            )
 
             if valid_samples == 0:
                 metrics.update(
