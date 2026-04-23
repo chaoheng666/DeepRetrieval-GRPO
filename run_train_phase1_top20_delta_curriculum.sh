@@ -20,8 +20,8 @@ OUTPUT_DIR="${OUTPUT_DIR:-${RUN_ROOT}/phase1_${RUN_TS}}"
 SOURCE_CHECKPOINT="${SOURCE_CHECKPOINT:-${ADAPTER_PATH:-}}"
 LOG_DIR="${LOG_DIR:-log}"
 
-NUM_EPOCHS="${NUM_EPOCHS:-2}"
-MAX_STEPS="${MAX_STEPS:-100}"
+NUM_EPOCHS="${NUM_EPOCHS:-1}"
+MAX_STEPS="${MAX_STEPS:-300}"
 EVAL_EVERY_STEPS="${EVAL_EVERY_STEPS:-20}"
 MAX_TRAIN_QUERIES="${MAX_TRAIN_QUERIES:-}"
 MAX_VAL_QUERIES="${MAX_VAL_QUERIES:-}"
@@ -30,24 +30,24 @@ BATCH_SIZE="${BATCH_SIZE:-24}"
 GROUP_SIZE="${GROUP_SIZE:-8}"
 MAX_GROUP_SIZE="${MAX_GROUP_SIZE:-12}"
 LEARNING_RATE="${LEARNING_RATE:-1.0e-5}"
-KL_BETA="${KL_BETA:-0.040}"
+KL_BETA="${KL_BETA:-0.035}"
 MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-10}"
-TEMPERATURE="${TEMPERATURE:-0.88}"
-TOP_P="${TOP_P:-0.95}"
+TEMPERATURE="${TEMPERATURE:-0.90}"
+TOP_P="${TOP_P:-0.96}"
 EVAL_QUERY_BATCH_SIZE="${EVAL_QUERY_BATCH_SIZE:-8}"
 
-GROUP_TEMPERATURE_STRIDE="${GROUP_TEMPERATURE_STRIDE:-0.12}"
+GROUP_TEMPERATURE_STRIDE="${GROUP_TEMPERATURE_STRIDE:-0.14}"
 GROUP_TOP_P_STRIDE="${GROUP_TOP_P_STRIDE:-0.03}"
-MIN_UNIQUE_FINAL_QUERIES="${MIN_UNIQUE_FINAL_QUERIES:-4}"
-MAX_REGEN_ROUNDS="${MAX_REGEN_ROUNDS:-2}"
-REWARD_GAP_THRESHOLD="${REWARD_GAP_THRESHOLD:-0.06}"
+MIN_UNIQUE_FINAL_QUERIES="${MIN_UNIQUE_FINAL_QUERIES:-5}"
+MAX_REGEN_ROUNDS="${MAX_REGEN_ROUNDS:-3}"
+REWARD_GAP_THRESHOLD="${REWARD_GAP_THRESHOLD:-0.04}"
 
-REWARD_W_MRR="${REWARD_W_MRR:-0.38}"
-REWARD_W_RECALL="${REWARD_W_RECALL:-0.30}"
-REWARD_W_RECALL_DENSE="${REWARD_W_RECALL_DENSE:-0.22}"
+REWARD_W_MRR="${REWARD_W_MRR:-0.28}"
+REWARD_W_RECALL="${REWARD_W_RECALL:-0.42}"
+REWARD_W_RECALL_DENSE="${REWARD_W_RECALL_DENSE:-0.20}"
 REWARD_W_RANK_BONUS="${REWARD_W_RANK_BONUS:-0.10}"
-RECALL_DROP_LAMBDA="${RECALL_DROP_LAMBDA:-1.50}"
-ANCHOR_BONUS_VALUE="${ANCHOR_BONUS_VALUE:-0.00}"
+RECALL_DROP_LAMBDA="${RECALL_DROP_LAMBDA:-2.00}"
+ANCHOR_BONUS_VALUE="${ANCHOR_BONUS_VALUE:-0.02}"
 
 EXTRA_ARGS=()
 
@@ -64,21 +64,28 @@ Options:
   --metadata-path PATH       Curriculum metadata jsonl path.
   --model-name PATH          Base model name/path.
   --python-bin PATH          Python executable.
-  --num-epochs N             Default: 2
-  --max-steps N              Default: 100
+  --num-epochs N             Default: 1
+  --max-steps N              Default: 300
   --eval-every-steps N       Default: 20
   --max-train-queries N      Optional train-query cap passed to train.py.
   --max-val-queries N        Optional val-query cap passed to train.py.
   --learning-rate VALUE      Default: 1.0e-5
-  --kl-beta VALUE            Default: 0.040
-  --temperature VALUE        Default: 0.88
-  --top-p VALUE              Default: 0.95
-  --reward-w-mrr VALUE       Default: 0.38
-  --reward-w-recall VALUE    Default: 0.30
-  --reward-w-recall-dense V  Default: 0.22
+  --kl-beta VALUE            Default: 0.035
+  --temperature VALUE        Default: 0.90
+  --top-p VALUE              Default: 0.96
+  --group-temperature-stride VALUE
+                              Default: 0.14
+  --group-top-p-stride VALUE Default: 0.03
+  --min-unique-final-queries N
+                              Default: 5
+  --max-regen-rounds N       Default: 3
+  --reward-w-mrr VALUE       Default: 0.28
+  --reward-w-recall VALUE    Default: 0.42
+  --reward-w-recall-dense V  Default: 0.20
   --reward-w-rank-bonus V    Default: 0.10
-  --recall-drop-lambda V     Default: 1.50
-  --reward-gap-threshold V   Default: 0.06
+  --recall-drop-lambda V     Default: 2.00
+  --anchor-bonus-value V     Default: 0.02
+  --reward-gap-threshold V   Default: 0.04
   -h, --help                 Show this help.
 
 Common env overrides:
@@ -177,6 +184,26 @@ while [[ $# -gt 0 ]]; do
       TOP_P="$2"
       shift 2
       ;;
+    --group-temperature-stride)
+      [[ $# -ge 2 ]] || { echo "[error] --group-temperature-stride requires a value" >&2; exit 1; }
+      GROUP_TEMPERATURE_STRIDE="$2"
+      shift 2
+      ;;
+    --group-top-p-stride)
+      [[ $# -ge 2 ]] || { echo "[error] --group-top-p-stride requires a value" >&2; exit 1; }
+      GROUP_TOP_P_STRIDE="$2"
+      shift 2
+      ;;
+    --min-unique-final-queries)
+      [[ $# -ge 2 ]] || { echo "[error] --min-unique-final-queries requires a value" >&2; exit 1; }
+      MIN_UNIQUE_FINAL_QUERIES="$2"
+      shift 2
+      ;;
+    --max-regen-rounds)
+      [[ $# -ge 2 ]] || { echo "[error] --max-regen-rounds requires a value" >&2; exit 1; }
+      MAX_REGEN_ROUNDS="$2"
+      shift 2
+      ;;
     --reward-w-mrr)
       [[ $# -ge 2 ]] || { echo "[error] --reward-w-mrr requires a value" >&2; exit 1; }
       REWARD_W_MRR="$2"
@@ -200,6 +227,11 @@ while [[ $# -gt 0 ]]; do
     --recall-drop-lambda)
       [[ $# -ge 2 ]] || { echo "[error] --recall-drop-lambda requires a value" >&2; exit 1; }
       RECALL_DROP_LAMBDA="$2"
+      shift 2
+      ;;
+    --anchor-bonus-value)
+      [[ $# -ge 2 ]] || { echo "[error] --anchor-bonus-value requires a value" >&2; exit 1; }
+      ANCHOR_BONUS_VALUE="$2"
       shift 2
       ;;
     --reward-gap-threshold)
@@ -292,7 +324,7 @@ echo "[log] command output is also saved to: $RUN_LOG_PATH"
 echo "[phase1] output_dir=$OUTPUT_DIR"
 echo "[phase1] source_checkpoint=${SOURCE_CHECKPOINT:-<fresh>}"
 echo "[phase1] metadata=$CURRICULUM_METADATA_PATH"
-echo "[phase1] epochs=$NUM_EPOCHS max_steps=$MAX_STEPS lr=$LEARNING_RATE kl=$KL_BETA reward_mrr=$REWARD_W_MRR"
+echo "[phase1] epochs=$NUM_EPOCHS max_steps=$MAX_STEPS lr=$LEARNING_RATE kl=$KL_BETA reward=($REWARD_W_MRR,$REWARD_W_RECALL,$REWARD_W_RECALL_DENSE,$REWARD_W_RANK_BONUS)"
 
 "$PYTHON_BIN" train.py "${args[@]}"
 

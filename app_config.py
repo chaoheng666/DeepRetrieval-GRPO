@@ -133,7 +133,7 @@ class TrainConfig:
     regen_temperature_delta: float = 0.15
     reward_gap_threshold: float = 0.12
     gap_sampling_temperature_delta: float = 0.18
-    actor_chunk_size: int = 3
+    actor_chunk_size: int = 2
     eval_every_steps: int = 20
     max_steps: int | None = 100
     save_dir: str = f"{DEFAULT_TRAIN_DIR}/checkpoints"
@@ -143,7 +143,10 @@ class TrainConfig:
     curriculum_enable: bool = True
     curriculum_phase: str = "phase1"
     curriculum_metadata_path: str | None = f"{DEFAULT_RUN_ROOT}/curriculum_query_metadata.jsonl"
-    early_stop_patience: int = 3
+    early_stop_patience: int = 2
+    early_stop_degrade_threshold: float = 0.01
+    early_stop_degrade_patience: int = 2
+    early_stop_warmup_evals: int = 3
 
 
 @dataclass(slots=True)

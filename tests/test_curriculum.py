@@ -67,42 +67,55 @@ class CurriculumBucketTests(unittest.TestCase):
 
 
 class CurriculumSamplingTests(unittest.TestCase):
-    def test_phase1_sampling_prefers_a_bucket(self):
-        queries = [
-            QueryExample(qid="a1", text="a1"),
-            QueryExample(qid="a2", text="a2"),
-            QueryExample(qid="b1", text="b1"),
-            QueryExample(qid="c1", text="c1"),
-        ]
+    def test_phase1_sampling_uses_80_10_10_mix(self):
+        queries = [QueryExample(qid=f"a{i}", text=f"a{i}") for i in range(1, 5)]
+        queries += [QueryExample(qid=f"b{i}", text=f"b{i}") for i in range(1, 4)]
+        queries += [QueryExample(qid=f"c{i}", text=f"c{i}") for i in range(1, 4)]
         metadata = {
-            "a1": CurriculumQueryMetadata("a1", "a1", 0.1, 0.1, 1.0, 5, "A"),
-            "a2": CurriculumQueryMetadata("a2", "a2", 0.1, 0.1, 1.0, 5, "A"),
-            "b1": CurriculumQueryMetadata("b1", "b1", 0.0, 0.0, 0.0, None, "B"),
-            "c1": CurriculumQueryMetadata("c1", "c1", 0.5, 0.5, 1.0, 1, "C"),
+            query.qid: CurriculumQueryMetadata(
+                query.qid,
+                query.text,
+                0.1 if query.qid.startswith("a") else 0.0,
+                0.1 if query.qid.startswith("a") else 0.0,
+                1.0,
+                5,
+                "A" if query.qid.startswith("a") else "B" if query.qid.startswith("b") else "C",
+            )
+            for query in queries
         }
 
         sampled = sample_curriculum_queries(queries, metadata, phase="phase1", seed=7, epoch=1)
-
         sampled_buckets = [metadata[query.qid].bucket for query in sampled]
-        self.assertEqual(len(sampled), 4)
-        self.assertGreaterEqual(sampled_buckets.count("A"), 2)
 
-    def test_sampling_reweights_when_bucket_missing(self):
-        queries = [
-            QueryExample(qid="a1", text="a1"),
-            QueryExample(qid="a2", text="a2"),
-            QueryExample(qid="c1", text="c1"),
-        ]
+        self.assertEqual(len(sampled), 10)
+        self.assertEqual(sampled_buckets.count("A"), 8)
+        self.assertEqual(sampled_buckets.count("B"), 1)
+        self.assertEqual(sampled_buckets.count("C"), 1)
+
+    def test_phase2_sampling_uses_65_25_10_mix(self):
+        queries = [QueryExample(qid=f"a{i}", text=f"a{i}") for i in range(1, 5)]
+        queries += [QueryExample(qid=f"b{i}", text=f"b{i}") for i in range(1, 4)]
+        queries += [QueryExample(qid=f"c{i}", text=f"c{i}") for i in range(1, 4)]
         metadata = {
-            "a1": CurriculumQueryMetadata("a1", "a1", 0.1, 0.1, 1.0, 5, "A"),
-            "a2": CurriculumQueryMetadata("a2", "a2", 0.1, 0.1, 1.0, 5, "A"),
-            "c1": CurriculumQueryMetadata("c1", "c1", 0.5, 0.5, 1.0, 1, "C"),
+            query.qid: CurriculumQueryMetadata(
+                query.qid,
+                query.text,
+                0.1 if query.qid.startswith("a") else 0.0,
+                0.1 if query.qid.startswith("a") else 0.0,
+                1.0,
+                5,
+                "A" if query.qid.startswith("a") else "B" if query.qid.startswith("b") else "C",
+            )
+            for query in queries
         }
 
         sampled = sample_curriculum_queries(queries, metadata, phase="phase2", seed=13, epoch=2)
+        sampled_buckets = [metadata[query.qid].bucket for query in sampled]
 
-        self.assertEqual(len(sampled), 3)
-        self.assertTrue(all(query.qid in metadata for query in sampled))
+        self.assertEqual(len(sampled), 10)
+        self.assertEqual(sampled_buckets.count("A"), 7)
+        self.assertEqual(sampled_buckets.count("B"), 2)
+        self.assertEqual(sampled_buckets.count("C"), 1)
 
 
 if __name__ == "__main__":

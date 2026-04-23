@@ -21,7 +21,7 @@ SOURCE_CHECKPOINT="${SOURCE_CHECKPOINT:-${ADAPTER_PATH:-}}"
 LOG_DIR="${LOG_DIR:-log}"
 
 NUM_EPOCHS="${NUM_EPOCHS:-1}"
-MAX_STEPS="${MAX_STEPS:-60}"
+MAX_STEPS="${MAX_STEPS:-200}"
 EVAL_EVERY_STEPS="${EVAL_EVERY_STEPS:-20}"
 MAX_TRAIN_QUERIES="${MAX_TRAIN_QUERIES:-}"
 MAX_VAL_QUERIES="${MAX_VAL_QUERIES:-}"
@@ -29,8 +29,8 @@ MAX_VAL_QUERIES="${MAX_VAL_QUERIES:-}"
 BATCH_SIZE="${BATCH_SIZE:-24}"
 GROUP_SIZE="${GROUP_SIZE:-8}"
 MAX_GROUP_SIZE="${MAX_GROUP_SIZE:-12}"
-LEARNING_RATE="${LEARNING_RATE:-6.0e-6}"
-KL_BETA="${KL_BETA:-0.055}"
+LEARNING_RATE="${LEARNING_RATE:-5.0e-6}"
+KL_BETA="${KL_BETA:-0.050}"
 MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-10}"
 TEMPERATURE="${TEMPERATURE:-0.84}"
 TOP_P="${TOP_P:-0.94}"
@@ -38,14 +38,14 @@ EVAL_QUERY_BATCH_SIZE="${EVAL_QUERY_BATCH_SIZE:-8}"
 
 GROUP_TEMPERATURE_STRIDE="${GROUP_TEMPERATURE_STRIDE:-0.10}"
 GROUP_TOP_P_STRIDE="${GROUP_TOP_P_STRIDE:-0.025}"
-MIN_UNIQUE_FINAL_QUERIES="${MIN_UNIQUE_FINAL_QUERIES:-4}"
-MAX_REGEN_ROUNDS="${MAX_REGEN_ROUNDS:-2}"
-REWARD_GAP_THRESHOLD="${REWARD_GAP_THRESHOLD:-0.08}"
+MIN_UNIQUE_FINAL_QUERIES="${MIN_UNIQUE_FINAL_QUERIES:-5}"
+MAX_REGEN_ROUNDS="${MAX_REGEN_ROUNDS:-3}"
+REWARD_GAP_THRESHOLD="${REWARD_GAP_THRESHOLD:-0.04}"
 
-REWARD_W_MRR="${REWARD_W_MRR:-0.52}"
-REWARD_W_RECALL="${REWARD_W_RECALL:-0.22}"
-REWARD_W_RECALL_DENSE="${REWARD_W_RECALL_DENSE:-0.16}"
-REWARD_W_RANK_BONUS="${REWARD_W_RANK_BONUS:-0.10}"
+REWARD_W_MRR="${REWARD_W_MRR:-0.62}"
+REWARD_W_RECALL="${REWARD_W_RECALL:-0.20}"
+REWARD_W_RECALL_DENSE="${REWARD_W_RECALL_DENSE:-0.10}"
+REWARD_W_RANK_BONUS="${REWARD_W_RANK_BONUS:-0.08}"
 RECALL_DROP_LAMBDA="${RECALL_DROP_LAMBDA:-1.20}"
 ANCHOR_BONUS_VALUE="${ANCHOR_BONUS_VALUE:-0.00}"
 
@@ -65,20 +65,27 @@ Options:
   --model-name PATH          Base model name/path.
   --python-bin PATH          Python executable.
   --num-epochs N             Default: 1
-  --max-steps N              Default: 60
+  --max-steps N              Default: 200
   --eval-every-steps N       Default: 20
   --max-train-queries N      Optional train-query cap passed to train.py.
   --max-val-queries N        Optional val-query cap passed to train.py.
-  --learning-rate VALUE      Default: 6.0e-6
-  --kl-beta VALUE            Default: 0.055
+  --learning-rate VALUE      Default: 5.0e-6
+  --kl-beta VALUE            Default: 0.050
   --temperature VALUE        Default: 0.84
   --top-p VALUE              Default: 0.94
-  --reward-w-mrr VALUE       Default: 0.52
-  --reward-w-recall VALUE    Default: 0.22
-  --reward-w-recall-dense V  Default: 0.16
-  --reward-w-rank-bonus V    Default: 0.10
+  --group-temperature-stride VALUE
+                              Default: 0.10
+  --group-top-p-stride VALUE Default: 0.025
+  --min-unique-final-queries N
+                              Default: 5
+  --max-regen-rounds N       Default: 3
+  --reward-w-mrr VALUE       Default: 0.62
+  --reward-w-recall VALUE    Default: 0.20
+  --reward-w-recall-dense V  Default: 0.10
+  --reward-w-rank-bonus V    Default: 0.08
   --recall-drop-lambda V     Default: 1.20
-  --reward-gap-threshold V   Default: 0.08
+  --anchor-bonus-value V     Default: 0.00
+  --reward-gap-threshold V   Default: 0.04
   -h, --help                 Show this help.
 
 Common env overrides:
@@ -177,6 +184,26 @@ while [[ $# -gt 0 ]]; do
       TOP_P="$2"
       shift 2
       ;;
+    --group-temperature-stride)
+      [[ $# -ge 2 ]] || { echo "[error] --group-temperature-stride requires a value" >&2; exit 1; }
+      GROUP_TEMPERATURE_STRIDE="$2"
+      shift 2
+      ;;
+    --group-top-p-stride)
+      [[ $# -ge 2 ]] || { echo "[error] --group-top-p-stride requires a value" >&2; exit 1; }
+      GROUP_TOP_P_STRIDE="$2"
+      shift 2
+      ;;
+    --min-unique-final-queries)
+      [[ $# -ge 2 ]] || { echo "[error] --min-unique-final-queries requires a value" >&2; exit 1; }
+      MIN_UNIQUE_FINAL_QUERIES="$2"
+      shift 2
+      ;;
+    --max-regen-rounds)
+      [[ $# -ge 2 ]] || { echo "[error] --max-regen-rounds requires a value" >&2; exit 1; }
+      MAX_REGEN_ROUNDS="$2"
+      shift 2
+      ;;
     --reward-w-mrr)
       [[ $# -ge 2 ]] || { echo "[error] --reward-w-mrr requires a value" >&2; exit 1; }
       REWARD_W_MRR="$2"
@@ -200,6 +227,11 @@ while [[ $# -gt 0 ]]; do
     --recall-drop-lambda)
       [[ $# -ge 2 ]] || { echo "[error] --recall-drop-lambda requires a value" >&2; exit 1; }
       RECALL_DROP_LAMBDA="$2"
+      shift 2
+      ;;
+    --anchor-bonus-value)
+      [[ $# -ge 2 ]] || { echo "[error] --anchor-bonus-value requires a value" >&2; exit 1; }
+      ANCHOR_BONUS_VALUE="$2"
       shift 2
       ;;
     --reward-gap-threshold)
@@ -292,7 +324,7 @@ echo "[log] command output is also saved to: $RUN_LOG_PATH"
 echo "[phase2] output_dir=$OUTPUT_DIR"
 echo "[phase2] source_checkpoint=${SOURCE_CHECKPOINT:-<fresh>}"
 echo "[phase2] metadata=$CURRICULUM_METADATA_PATH"
-echo "[phase2] epochs=$NUM_EPOCHS max_steps=$MAX_STEPS lr=$LEARNING_RATE kl=$KL_BETA reward_mrr=$REWARD_W_MRR"
+echo "[phase2] epochs=$NUM_EPOCHS max_steps=$MAX_STEPS lr=$LEARNING_RATE kl=$KL_BETA reward=($REWARD_W_MRR,$REWARD_W_RECALL,$REWARD_W_RECALL_DENSE,$REWARD_W_RANK_BONUS)"
 
 "$PYTHON_BIN" train.py "${args[@]}"
 

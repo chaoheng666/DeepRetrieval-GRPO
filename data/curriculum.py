@@ -75,8 +75,8 @@ STOPWORD_TOKENS = {
     "would",
 }
 PHASE_BUCKET_WEIGHTS: dict[str, dict[str, float]] = {
-    "phase1": {"A": 0.80, "C": 0.15, "B": 0.05},
-    "phase2": {"A": 0.60, "B": 0.20, "C": 0.20},
+    "phase1": {"A": 0.80, "B": 0.10, "C": 0.10},
+    "phase2": {"A": 0.65, "B": 0.25, "C": 0.10},
 }
 PHASE_SEED_OFFSETS: dict[str, int] = {
     "phase1": 0,

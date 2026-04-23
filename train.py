@@ -14,7 +14,6 @@ import argparse
 import json
 import os
 import random
-from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Sequence
@@ -292,6 +291,27 @@ def apply_runtime_mode_adjustments(config: AppConfig, args: argparse.Namespace |
     if config.reward.anchor_bonus_value < 0.0:
         print(f"[warn] anchor_bonus_value={config.reward.anchor_bonus_value} is invalid; auto-adjusting to 0.0.")
         config.reward.anchor_bonus_value = 0.0
+    if config.train.early_stop_patience < 1:
+        print(f"[warn] early_stop_patience={config.train.early_stop_patience} is invalid; auto-adjusting to 1.")
+        config.train.early_stop_patience = 1
+    if getattr(config.train, "early_stop_degrade_patience", 1) < 1:
+        print(
+            f"[warn] early_stop_degrade_patience={config.train.early_stop_degrade_patience} is invalid; "
+            "auto-adjusting to 1."
+        )
+        config.train.early_stop_degrade_patience = 1
+    if getattr(config.train, "early_stop_warmup_evals", 0) < 0:
+        print(
+            f"[warn] early_stop_warmup_evals={config.train.early_stop_warmup_evals} is invalid; "
+            "auto-adjusting to 0."
+        )
+        config.train.early_stop_warmup_evals = 0
+    if getattr(config.train, "early_stop_degrade_threshold", 0.0) < 0.0:
+        print(
+            f"[warn] early_stop_degrade_threshold={config.train.early_stop_degrade_threshold} is invalid; "
+            "auto-adjusting to 0.0."
+        )
+        config.train.early_stop_degrade_threshold = 0.0
 
     config.train.curriculum_enable = True
     config.reward.reward_mode = "top20_delta"
@@ -408,6 +428,94 @@ def evaluate_original(
     return summarize_reward_breakdowns(scored_values)
 
 
+def resolve_phase_metric_key(curriculum_phase: str) -> str:
+    phase_key = str(curriculum_phase or "phase1").strip().lower()
+    if phase_key == "phase1":
+        return "rewrite_recall20_mean"
+    if phase_key == "phase2":
+        return "rewrite_mrr20_mean"
+    raise ValueError(f"Unsupported curriculum phase: {curriculum_phase}")
+
+
+def resolve_phase_metric_value(eval_metrics: dict[str, float], metric_key: str) -> float:
+    if metric_key in eval_metrics:
+        return float(eval_metrics[metric_key])
+    fallback_key = "recall_mean" if metric_key == "rewrite_recall20_mean" else "mrr_mean"
+    return float(eval_metrics[fallback_key])
+
+
+def ensure_num_epochs_covers_max_steps(
+    *,
+    num_epochs: int,
+    num_train_queries: int,
+    batch_size: int,
+    max_steps: int | None,
+) -> int:
+    resolved_epochs = max(1, int(num_epochs))
+    if max_steps is None or num_train_queries <= 0:
+        return resolved_epochs
+
+    steps_per_epoch = max(1, (int(num_train_queries) + max(1, int(batch_size)) - 1) // max(1, int(batch_size)))
+    required_epochs = max(1, (int(max_steps) + steps_per_epoch - 1) // steps_per_epoch)
+    return max(resolved_epochs, required_epochs)
+
+
+def update_best_so_far_early_stop(
+    *,
+    current_metric: float,
+    best_metric_so_far: float,
+    degrade_streak: int,
+    eval_count: int,
+    drop_threshold: float,
+    degrade_patience: int,
+    warmup_evals: int,
+) -> dict[str, float | int | bool | str]:
+    current = float(current_metric)
+    best_before = float(best_metric_so_far)
+    streak_before = max(0, int(degrade_streak))
+    threshold = max(0.0, float(drop_threshold))
+    patience = max(1, int(degrade_patience))
+    warmup = max(0, int(warmup_evals))
+
+    if best_before == float("-inf"):
+        drop_from_best = 0.0
+    else:
+        drop_from_best = max(0.0, best_before - current)
+
+    is_new_best = current > best_before
+    matched_best = best_before != float("-inf") and current == best_before
+    best_after = current if is_new_best else best_before
+
+    if is_new_best:
+        streak_after = 0
+        stop_reason = "new_best"
+    elif matched_best:
+        streak_after = 0
+        stop_reason = "matched_best"
+    elif eval_count <= warmup:
+        streak_after = 0
+        stop_reason = "warmup_baseline"
+    elif drop_from_best >= threshold:
+        streak_after = streak_before + 1
+        stop_reason = "significant_drop"
+    else:
+        streak_after = 0
+        stop_reason = "within_tolerance"
+
+    should_stop = eval_count > warmup and streak_after >= patience
+    if should_stop and stop_reason == "significant_drop":
+        stop_reason = "significant_drop_stop"
+
+    return {
+        "best_metric_so_far": best_after,
+        "drop_from_best": drop_from_best,
+        "degrade_streak": streak_after,
+        "should_save_best": is_new_best,
+        "should_stop": should_stop,
+        "stop_reason": stop_reason,
+    }
+
+
 def main() -> int:
     args = parse_args()
     # 1) 配置收敛：默认 top20_delta，CLI 只做主线覆盖。
@@ -447,11 +555,29 @@ def main() -> int:
     if not train_queries:
         raise RuntimeError("Curriculum filtering left no train queries.")
 
+    adjusted_num_epochs = ensure_num_epochs_covers_max_steps(
+        num_epochs=config.train.num_epochs,
+        num_train_queries=len(train_queries),
+        batch_size=config.train.batch_size,
+        max_steps=config.train.max_steps,
+    )
+    if adjusted_num_epochs != config.train.num_epochs:
+        print(
+            f"[config-adjust] num_epochs {config.train.num_epochs} -> {adjusted_num_epochs} "
+            f"to cover max_steps={config.train.max_steps}"
+        )
+        config.train.num_epochs = adjusted_num_epochs
+
+    steps_per_epoch = max(1, (len(train_queries) + config.train.batch_size - 1) // config.train.batch_size)
+
     print(
         f"[curriculum] phase={config.train.curriculum_phase} "
         f"metadata={metadata_path} bucket_counts={curriculum_bucket_counts}"
     )
-    print(f"[data] train_queries={len(train_queries)}, val_queries={len(val_queries)}, qrels_qids={len(qrels)}")
+    print(
+        f"[data] train_queries={len(train_queries)}, val_queries={len(val_queries)}, qrels_qids={len(qrels)} "
+        f"steps_per_epoch={steps_per_epoch} num_epochs={config.train.num_epochs}"
+    )
 
     # 4) 原 query baseline 用来判断 rewrite 是否真正提升，而不是只看绝对 MRR。
     mrr_label = f"MRR@{config.reward.mrr_k}"
@@ -503,13 +629,22 @@ def main() -> int:
     latest_path = ckpt_root / "latest"
 
     global_step = 0
-    best_val_mrr = float("-inf")
+    best_checkpoint_metric = float("-inf")
+    best_metric_so_far = float("-inf")
     should_stop = False
-    is_phase1 = config.train.curriculum_phase == "phase1"
-    early_stop_patience = 5 if is_phase1 else max(1, int(config.train.early_stop_patience))
-    early_stop_metric_key = "rewrite_recall20_mean" if is_phase1 else "rewrite_mrr20_mean"
-    eval_history: deque[dict[str, float]] = deque(maxlen=early_stop_patience)
-    print(f"[early-stop] metric={early_stop_metric_key} patience={early_stop_patience}")
+    phase_metric_key = resolve_phase_metric_key(config.train.curriculum_phase)
+    degrade_patience = max(
+        1,
+        int(getattr(config.train, "early_stop_degrade_patience", getattr(config.train, "early_stop_patience", 2))),
+    )
+    drop_threshold = max(0.0, float(getattr(config.train, "early_stop_degrade_threshold", 0.01)))
+    warmup_evals = max(0, int(getattr(config.train, "early_stop_warmup_evals", 3)))
+    degrade_streak = 0
+    eval_count = 0
+    print(
+        f"[early-stop] metric={phase_metric_key} drop_threshold={drop_threshold:.4f} "
+        f"patience={degrade_patience} warmup_evals={warmup_evals}"
+    )
 
     # 7) 主训练循环：每个 epoch 先按 curriculum phase 重排 query，再按 batch 更新。
     for epoch in range(1, config.train.num_epochs + 1):
@@ -585,12 +720,40 @@ def main() -> int:
                     top_p=float(eval_decode["top_p"]),
                     query_batch_size=int(eval_decode["query_batch_size"]),
                 )
+                eval_count += 1
+                current_phase_metric = resolve_phase_metric_value(eval_metrics, phase_metric_key)
+                early_stop_update = update_best_so_far_early_stop(
+                    current_metric=current_phase_metric,
+                    best_metric_so_far=best_metric_so_far,
+                    degrade_streak=degrade_streak,
+                    eval_count=eval_count,
+                    drop_threshold=drop_threshold,
+                    degrade_patience=degrade_patience,
+                    warmup_evals=warmup_evals,
+                )
+                best_metric_so_far = float(early_stop_update["best_metric_so_far"])
+                degrade_streak = int(early_stop_update["degrade_streak"])
+                drop_from_best = float(early_stop_update["drop_from_best"])
+                stop_reason = str(early_stop_update["stop_reason"])
+
+                model.save_adapter(str(latest_path))
+                if bool(early_stop_update["should_save_best"]) or not best_path.exists():
+                    best_checkpoint_metric = current_phase_metric
+                    model.save_adapter(str(best_path))
+                    print(f"[ckpt] best updated: {phase_metric_key}={best_checkpoint_metric:.4f} -> {best_path}")
+                elif best_checkpoint_metric == float("-inf"):
+                    best_checkpoint_metric = best_metric_so_far
                 eval_metrics.update(
                     {
                         "phase": "eval",
                         "epoch": epoch,
                         "step": global_step,
                         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                        "best_metric_so_far": best_metric_so_far,
+                        "drop_from_best": drop_from_best,
+                        "degrade_streak": degrade_streak,
+                        "best_checkpoint_metric": best_checkpoint_metric,
+                        "stop_reason": stop_reason,
                     }
                 )
                 append_jsonl(log_path, eval_metrics)
@@ -598,6 +761,7 @@ def main() -> int:
                     f"[eval] step={global_step} "
                     f"val_orig_mrr20={eval_metrics.get('orig_mrr20_mean', 0.0):.4f} "
                     f"val_rewrite_mrr20={eval_metrics.get('rewrite_mrr20_mean', 0.0):.4f} "
+                    f"val_rewrite_recall20={eval_metrics.get('rewrite_recall20_mean', eval_metrics.get('recall_mean', 0.0)):.4f} "
                     f"val_reward={eval_metrics['reward_mean']:.4f} "
                     f"val_main_reward={eval_metrics.get('main_reward_mean', 0.0):.4f} "
                     f"val_delta_mrr20_pos_ratio={eval_metrics.get('delta_mrr20_positive_ratio', 0.0):.4f} "
@@ -605,64 +769,22 @@ def main() -> int:
                     f"val_keyword_preserve={eval_metrics.get('keyword_preserve_mean', 0.0):.4f} "
                     f"val_overedit_penalty={eval_metrics.get('overedit_penalty_mean', 0.0):.4f} "
                     f"val_bad_format_penalty={eval_metrics.get('bad_format_penalty_mean', 0.0):.4f} "
-                    f"val_unsafe_copy_penalty={eval_metrics.get('unsafe_copy_penalty_mean', 0.0):.4f}"
+                    f"val_unsafe_copy_penalty={eval_metrics.get('unsafe_copy_penalty_mean', 0.0):.4f} "
+                    f"{phase_metric_key}={current_phase_metric:.4f} "
+                    f"best_metric_so_far={best_metric_so_far:.4f} "
+                    f"drop_from_best={drop_from_best:.4f} "
+                    f"degrade_streak={degrade_streak}/{degrade_patience} "
+                    f"best_checkpoint_metric={best_checkpoint_metric:.4f} "
+                    f"stop_reason={stop_reason}"
                 )
-
-                model.save_adapter(str(latest_path))
-                current_eval_mrr = float(eval_metrics.get("rewrite_mrr20_mean", eval_metrics["mrr_mean"]))
-                if current_eval_mrr > best_val_mrr:
-                    best_val_mrr = current_eval_mrr
-                    model.save_adapter(str(best_path))
-                    print(f"[ckpt] best updated: rewrite_mrr20={best_val_mrr:.4f} -> {best_path}")
-
-                eval_history.append(
-                    {
-                        "early_stop_score": float(
-                            eval_metrics.get(
-                                early_stop_metric_key,
-                                eval_metrics["recall_mean"] if is_phase1 else eval_metrics["mrr_mean"],
-                            )
-                        ),
-                        "rewrite_mrr20_mean": current_eval_mrr,
-                        "flat_main_reward_group_ratio": float(metrics.get("flat_main_reward_group_ratio", 0.0)),
-                        "kl_dominance_ratio": float(metrics.get("kl_dominance_ratio", 0.0)),
-                        "delta_mrr20_positive_ratio": float(metrics.get("delta_mrr20_positive_ratio", 0.0)),
-                    }
-                )
-                if len(eval_history) >= early_stop_patience:
-                    # phase1 waits for Recall@20 to stall; phase2 keeps the stricter MRR/flat/KL guard.
-                    history_rows = list(eval_history)
-                    primary_stalled = all(
-                        history_rows[idx]["early_stop_score"] <= history_rows[idx - 1]["early_stop_score"]
-                        for idx in range(1, len(history_rows))
+                if bool(early_stop_update["should_stop"]):
+                    print(
+                        f"[early-stop] step={global_step} metric={phase_metric_key} "
+                        f"drop_from_best={drop_from_best:.4f} streak={degrade_streak}/{degrade_patience} "
+                        f"reason={stop_reason}"
                     )
-                    flat_stalled = all(
-                        history_rows[idx]["flat_main_reward_group_ratio"]
-                        >= history_rows[idx - 1]["flat_main_reward_group_ratio"]
-                        for idx in range(1, len(history_rows))
-                    )
-                    kl_bad = all(
-                        history_rows[idx]["kl_dominance_ratio"] >= history_rows[idx - 1]["kl_dominance_ratio"]
-                        for idx in range(1, len(history_rows))
-                    ) and all(
-                        history_rows[idx]["delta_mrr20_positive_ratio"]
-                        <= history_rows[idx - 1]["delta_mrr20_positive_ratio"]
-                        for idx in range(1, len(history_rows))
-                    )
-                    should_early_stop = primary_stalled if is_phase1 else (primary_stalled or flat_stalled or kl_bad)
-                    if should_early_stop:
-                        reason = (
-                            "rewrite_recall20_stalled"
-                            if is_phase1
-                            else "rewrite_mrr20_stalled"
-                            if primary_stalled
-                            else "flat_main_reward_not_improving"
-                            if flat_stalled
-                            else "kl_up_without_delta_mrr_gain"
-                        )
-                        print(f"[early-stop] step={global_step} reason={reason}")
-                        should_stop = True
-                        break
+                    should_stop = True
+                    break
 
             if config.train.max_steps is not None and global_step >= config.train.max_steps:
                 should_stop = True
@@ -683,16 +805,21 @@ def main() -> int:
         top_p=float(eval_decode["top_p"]),
         query_batch_size=int(eval_decode["query_batch_size"]),
     )
-    final_rewrite_mrr20 = float(final_eval.get("rewrite_mrr20_mean", final_eval["mrr_mean"]))
-    if final_rewrite_mrr20 > best_val_mrr or not best_path.exists():
+    final_phase_metric = resolve_phase_metric_value(final_eval, phase_metric_key)
+    if final_phase_metric > best_checkpoint_metric or not best_path.exists():
         model.save_adapter(str(best_path))
-        best_val_mrr = final_rewrite_mrr20
-        print(f"[ckpt] best updated from final eval: rewrite_mrr20={best_val_mrr:.4f} -> {best_path}")
+        best_checkpoint_metric = final_phase_metric
+        best_metric_so_far = max(best_metric_so_far, final_phase_metric)
+        print(f"[ckpt] best updated from final eval: {phase_metric_key}={best_checkpoint_metric:.4f} -> {best_path}")
 
     print(
         f"[done] final_val_{mrr_label}={final_eval['mrr_mean']:.4f} "
         f"original_val_{mrr_label}={base_original_val['mrr_mean']:.4f} "
         f"delta={final_eval['mrr_mean'] - base_original_val['mrr_mean']:+.4f}"
+    )
+    print(
+        f"[done] final_{phase_metric_key}={final_phase_metric:.4f} "
+        f"best_checkpoint_metric={best_checkpoint_metric:.4f}"
     )
     print(f"[done] checkpoints: best={best_path}, latest={latest_path}")
     print(f"[done] train log: {log_path}")

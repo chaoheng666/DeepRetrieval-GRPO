@@ -9,10 +9,12 @@ cd "$SCRIPT_DIR"
 
 PHASE1_SCRIPT="./run_train_phase1_top20_delta_curriculum.sh"
 PHASE2_SCRIPT="./run_train_phase2_top20_delta_curriculum.sh"
+SWEEP_SCRIPT="./run_train_then_full_eval_4b_top20_delta_curriculum.sh"
 
 required_files=(
   "$PHASE1_SCRIPT"
   "$PHASE2_SCRIPT"
+  "$SWEEP_SCRIPT"
   "./train.py"
 )
 
@@ -24,6 +26,9 @@ required_flags=(
   "--learning-rate"
   "--reward-w-mrr"
   "--reward-gap-threshold"
+  "--group-temperature-stride"
+  "--min-unique-final-queries"
+  "--anchor-bonus-value"
 )
 
 echo "[check] required files"
@@ -40,6 +45,8 @@ bash -n "$PHASE1_SCRIPT"
 echo "  ok: $PHASE1_SCRIPT"
 bash -n "$PHASE2_SCRIPT"
 echo "  ok: $PHASE2_SCRIPT"
+bash -n "$SWEEP_SCRIPT"
+echo "  ok: $SWEEP_SCRIPT"
 
 echo "[check] wrapper help flags"
 for script in "$PHASE1_SCRIPT" "$PHASE2_SCRIPT"; do
@@ -53,6 +60,25 @@ for script in "$PHASE1_SCRIPT" "$PHASE2_SCRIPT"; do
   echo "  ok: $script"
 done
 
+echo "[check] sweep help flags"
+sweep_required_flags=(
+  "--phase1-adapter-path"
+  "--phase2-start-from"
+  "--run-root"
+  "--max-train-queries"
+  "--max-val-queries"
+  "--max-eval-queries"
+  "--target-delta-vs-zero"
+)
+sweep_help_text="$(bash "$SWEEP_SCRIPT" --help)"
+for flag in "${sweep_required_flags[@]}"; do
+  if ! grep -q -- "$flag" <<<"$sweep_help_text"; then
+    echo "[error] $SWEEP_SCRIPT help is missing flag: $flag" >&2
+    exit 1
+  fi
+done
+echo "  ok: $SWEEP_SCRIPT"
+
 echo "[check] train.py accepts wrapper-forwarded arguments"
 train_required_flags=(
   "--adapter-path"
@@ -63,6 +89,9 @@ train_required_flags=(
   "--group-trace-log-path"
   "--reward-w-mrr"
   "--reward-gap-threshold"
+  "--group-temperature-stride"
+  "--min-unique-final-queries"
+  "--anchor-bonus-value"
 )
 
 for flag in "${train_required_flags[@]}"; do
