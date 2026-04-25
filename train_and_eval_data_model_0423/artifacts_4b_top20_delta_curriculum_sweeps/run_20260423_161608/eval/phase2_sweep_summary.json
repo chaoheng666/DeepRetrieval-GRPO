@@ -1,0 +1,42 @@
+{
+  "target_delta_vs_zero": 0.01,
+  "leaderboard": [
+    {
+      "variant": "mrr_strict",
+      "checkpoint_path": "train_and_eval_data_model_0423/artifacts_4b_top20_delta_curriculum_sweeps/run_20260423_161608/phase2_sweep/mrr_strict/checkpoints/best",
+      "report_path": "train_and_eval_data_model_0423/artifacts_4b_top20_delta_curriculum_sweeps/run_20260423_161608/eval/eval_compare_report_mrr_strict.json",
+      "rl_minus_zero_mrr": 0.006847648467640827,
+      "rl_minus_original_mrr": 0.009098351726781528,
+      "rl_recall20": 0.49653772683858644,
+      "meets_target": false
+    },
+    {
+      "variant": "mrr_balanced",
+      "checkpoint_path": "train_and_eval_data_model_0423/artifacts_4b_top20_delta_curriculum_sweeps/run_20260423_161608/phase2_sweep/mrr_balanced/checkpoints/best",
+      "report_path": "train_and_eval_data_model_0423/artifacts_4b_top20_delta_curriculum_sweeps/run_20260423_161608/eval/eval_compare_report_mrr_balanced.json",
+      "rl_minus_zero_mrr": 0.005044877141319237,
+      "rl_minus_original_mrr": 0.00875724128896066,
+      "rl_recall20": 0.49832855778414514,
+      "meets_target": false
+    },
+    {
+      "variant": "mrr_diverse",
+      "checkpoint_path": "train_and_eval_data_model_0423/artifacts_4b_top20_delta_curriculum_sweeps/run_20260423_161608/phase2_sweep/mrr_diverse/checkpoints/best",
+      "report_path": "train_and_eval_data_model_0423/artifacts_4b_top20_delta_curriculum_sweeps/run_20260423_161608/eval/eval_compare_report_mrr_diverse.json",
+      "rl_minus_zero_mrr": 0.0034958148199929207,
+      "rl_minus_original_mrr": 0.009301707002707021,
+      "rl_recall20": 0.5008357211079274,
+      "meets_target": false
+    }
+  ],
+  "winner": {
+    "variant": "mrr_strict",
+    "checkpoint_path": "train_and_eval_data_model_0423/artifacts_4b_top20_delta_curriculum_sweeps/run_20260423_161608/phase2_sweep/mrr_strict/checkpoints/best",
+    "report_path": "train_and_eval_data_model_0423/artifacts_4b_top20_delta_curriculum_sweeps/run_20260423_161608/eval/eval_compare_report_mrr_strict.json",
+    "rl_minus_zero_mrr": 0.006847648467640827,
+    "rl_minus_original_mrr": 0.009098351726781528,
+    "rl_recall20": 0.49653772683858644,
+    "meets_target": false
+  },
+  "winner_meets_target": false
+}
