@@ -210,3 +210,11 @@ __marimo__/
 # Local retrieval artifacts (rebuildable)
 index/
 runs/
+
+# training artifacts / checkpoints
+train_and_eval_data_model_*/
+**/checkpoints/
+*.safetensors
+*.pt
+*.pth
+*.bin
